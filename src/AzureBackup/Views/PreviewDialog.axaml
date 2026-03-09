@@ -91,6 +91,21 @@
                     </StackPanel>
                 </StackPanel>
 
+                <!-- Storage Tier Selection (for backup operations) -->
+                <Border Classes="section" IsVisible="{Binding IsBackupOperation}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Storage Tier" FontWeight="SemiBold"/>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <ComboBox ItemsSource="{Binding StorageTierOptions}"
+                                      SelectedItem="{Binding SelectedStorageTier}"
+                                      MinWidth="120"/>
+                            <TextBlock Text="{Binding StorageTierDescription}" VerticalAlignment="Center" Opacity="0.7"/>
+                        </StackPanel>
+                        <TextBlock Text="Default from watched folder settings can be overridden for this backup."
+                                   FontSize="11" Opacity="0.5"/>
+                    </StackPanel>
+                </Border>
+
                 <!-- Files to Create -->
                 <Expander IsVisible="{Binding ShowCreateSection}" IsExpanded="True">
                     <Expander.Header>

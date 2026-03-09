@@ -27,6 +27,17 @@ public partial class WatchedFolderViewModel : ObservableObject
     /// </summary>
     [ObservableProperty]
     private string _excludePatterns = string.Empty;
+    
+    /// <summary>
+    /// The Azure storage tier to use when uploading files from this folder.
+    /// </summary>
+    [ObservableProperty]
+    private StorageTier _storageTier = StorageTier.Cool;
+
+    /// <summary>
+    /// Available storage tier options for UI binding.
+    /// </summary>
+    public static StorageTier[] StorageTierOptions { get; } = [StorageTier.Hot, StorageTier.Cool, StorageTier.Cold];
 
     public WatchedFolderViewModel(WatchedFolder model)
     {
@@ -36,6 +47,7 @@ public partial class WatchedFolderViewModel : ObservableObject
         _excludePatterns = model.ExcludePatterns != null 
             ? string.Join(";", model.ExcludePatterns) 
             : string.Empty;
+        _storageTier = model.StorageTier;
     }
 
     /// <summary>
@@ -47,6 +59,7 @@ public partial class WatchedFolderViewModel : ObservableObject
         IsEnabled = IsEnabled,
         ExcludePatterns = (ExcludePatterns ?? string.Empty)
             .Split(';', StringSplitOptions.RemoveEmptyEntries)
-            .ToList()
+            .ToList(),
+        StorageTier = StorageTier
     };
 }

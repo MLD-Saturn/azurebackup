@@ -1,6 +1,31 @@
 namespace AzureBackup.Core.Models;
 
 /// <summary>
+/// Azure Blob Storage access tier for backup data.
+/// Affects storage cost and retrieval latency.
+/// </summary>
+public enum StorageTier
+{
+    /// <summary>
+    /// Hot tier - highest storage cost, lowest access cost.
+    /// Best for frequently accessed data.
+    /// </summary>
+    Hot,
+    
+    /// <summary>
+    /// Cool tier - lower storage cost, higher access cost.
+    /// Best for infrequently accessed data (recommended for backups).
+    /// </summary>
+    Cool,
+    
+    /// <summary>
+    /// Cold tier - even lower storage cost, higher access cost.
+    /// Best for rarely accessed data stored for longer periods.
+    /// </summary>
+    Cold
+}
+
+/// <summary>
 /// Authentication method for Azure Storage.
 /// </summary>
 public enum AzureAuthMethod
@@ -118,4 +143,10 @@ public class WatchedFolder
     public bool IsEnabled { get; set; } = true;
     public List<string> ExcludePatterns { get; set; } = [];
     public List<string> ExcludeSubfolders { get; set; } = [];
+    
+    /// <summary>
+    /// The Azure storage tier to use when uploading files from this folder.
+    /// Defaults to Cool for cost-effective backup storage.
+    /// </summary>
+    public StorageTier StorageTier { get; set; } = StorageTier.Cool;
 }

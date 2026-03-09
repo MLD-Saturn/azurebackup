@@ -66,6 +66,17 @@ public partial class AzureBlobService : IBlobStorageService
     }
 
     /// <summary>
+    /// Converts the application's StorageTier enum to Azure's AccessTier.
+    /// </summary>
+    private static AccessTier ToAccessTier(StorageTier tier) => tier switch
+    {
+        StorageTier.Hot => AccessTier.Hot,
+        StorageTier.Cool => AccessTier.Cool,
+        StorageTier.Cold => AccessTier.Cold,
+        _ => AccessTier.Cool // Default to Cool for unknown values
+    };
+
+    /// <summary>
     /// Validates a chunk hash to prevent path traversal attacks.
     /// </summary>
     private static void ValidateChunkHash(string hash)
@@ -227,15 +238,16 @@ public partial class AzureBlobService : IBlobStorageService
 
     /// <summary>
     /// Uploads an encrypted chunk to blob storage.
-    /// Uses Cool tier for cost optimization and parallel block transfers for large chunks.
+    /// Uses parallel block transfers for large chunks.
     /// </summary>
     public async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
         ValidateChunkHash(chunkHash);
-        Log($"UploadChunkAsync: Uploading chunk {chunkHash[..8]}... ({chunkData.Length} bytes)");
+        Log($"UploadChunkAsync: Uploading chunk {chunkHash[..8]}... ({chunkData.Length} bytes) to {storageTier} tier");
 
         // Encrypt the chunk before upload
         var encryptedData = _encryptionService.Encrypt(chunkData);
@@ -252,10 +264,10 @@ public partial class AzureBlobService : IBlobStorageService
             return blobName;
         }
 
-        // Upload with Cool tier and parallel transfer options for large chunks
+        // Upload with specified tier and parallel transfer options for large chunks
         BlobUploadOptions options = new()
         {
-            AccessTier = AccessTier.Cool,
+            AccessTier = ToAccessTier(storageTier),
             HttpHeaders = new BlobHttpHeaders
             {
                 ContentType = "application/octet-stream"
@@ -280,12 +292,13 @@ public partial class AzureBlobService : IBlobStorageService
     /// This reduces API calls by 50% for new file uploads.
     /// </summary>
     public async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
         ValidateChunkHash(chunkHash);
-        Log($"UploadChunkDirectAsync: Direct upload chunk {chunkHash[..8]}... ({chunkData.Length} bytes)");
+        Log($"UploadChunkDirectAsync: Direct upload chunk {chunkHash[..8]}... ({chunkData.Length} bytes) to {storageTier} tier");
 
         // Encrypt the chunk before upload
         var encryptedData = _encryptionService.Encrypt(chunkData);
@@ -297,7 +310,7 @@ public partial class AzureBlobService : IBlobStorageService
         // Upload directly without existence check - for new files this saves an API call per chunk
         BlobUploadOptions options = new()
         {
-            AccessTier = AccessTier.Cool,
+            AccessTier = ToAccessTier(storageTier),
             HttpHeaders = new BlobHttpHeaders
             {
                 ContentType = "application/octet-stream"
@@ -316,15 +329,17 @@ public partial class AzureBlobService : IBlobStorageService
         return blobName;
     }
 
+
     /// <summary>
     /// Uploads file metadata (encrypted).
     /// </summary>
-    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, CancellationToken cancellationToken = default)
+    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+        CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(fileInfo);
         ArgumentException.ThrowIfNullOrWhiteSpace(fileInfo.LocalPath);
-        Log($"UploadFileMetadataAsync: Uploading metadata for '{Path.GetFileName(fileInfo.LocalPath)}'");
+        Log($"UploadFileMetadataAsync: Uploading metadata for '{Path.GetFileName(fileInfo.LocalPath)}' to {storageTier} tier");
 
         // Serialize metadata with version for future compatibility
         var metadata = JsonSerializer.Serialize(new MetadataDto(
@@ -347,7 +362,7 @@ public partial class AzureBlobService : IBlobStorageService
         
         BlobUploadOptions options = new()
         {
-            AccessTier = AccessTier.Cool
+            AccessTier = ToAccessTier(storageTier)
         };
 
         await using MemoryStream stream = new(encryptedMetadata);
@@ -423,6 +438,10 @@ public partial class AzureBlobService : IBlobStorageService
         {
             var blobClient = _containerClient!.GetBlobClient(blobName);
             
+            // Get blob properties to retrieve the access tier
+            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+            var accessTier = properties.Value.AccessTier;
+            
             await using MemoryStream stream = new();
             await blobClient.DownloadToAsync(stream, cancellationToken);
             
@@ -446,6 +465,15 @@ public partial class AzureBlobService : IBlobStorageService
                         blobName);
             }
 
+            // Convert Azure AccessTier to our StorageTier enum
+            StorageTier? storageTier = accessTier?.ToString() switch
+            {
+                "Hot" => StorageTier.Hot,
+                "Cool" => StorageTier.Cool,
+                "Cold" => StorageTier.Cold,
+                _ => null
+            };
+
             return new BackedUpFile
             {
                 LocalPath = metadata.LocalPath,
@@ -461,7 +489,8 @@ public partial class AzureBlobService : IBlobStorageService
                     Length = c.Length,
                     BlobName = $"chunks/{c.Hash}"
                 }).ToList(),
-                Status = BackupStatus.Completed
+                Status = BackupStatus.Completed,
+                CurrentStorageTier = storageTier
             };
         }
         catch (RequestFailedException ex) when (ex.Status == 404)

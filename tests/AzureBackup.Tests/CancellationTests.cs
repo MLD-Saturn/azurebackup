@@ -69,7 +69,7 @@ public class CancellationTests : IAsyncLifetime
         CancellationTokenSource cts = new();
 
         // Act - Start upload and cancel during the delay
-        var uploadTask = blobService.UploadChunkAsync(data, hash, null, cts.Token);
+        var uploadTask = blobService.UploadChunkAsync(data, hash, cancellationToken: cts.Token);
         
         // Cancel after a short delay (while still in the simulated latency)
         await Task.Delay(50);
@@ -93,7 +93,7 @@ public class CancellationTests : IAsyncLifetime
 
         // Act & Assert - Should throw immediately
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            blobService.UploadChunkAsync(data, hash, null, cts.Token));
+            blobService.UploadChunkAsync(data, hash, cancellationToken: cts.Token));
     }
 
     #endregion

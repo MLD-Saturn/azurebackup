@@ -123,6 +123,7 @@ public partial class InMemoryBlobService : IBlobStorageService
     #region Blob Operations
 
     public virtual async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -141,7 +142,7 @@ public partial class InMemoryBlobService : IBlobStorageService
             return blobName;
         }
 
-        // Encrypt and store
+        // Encrypt and store (storageTier is ignored for in-memory storage)
         var encryptedData = _encryptionService.Encrypt(chunkData);
         _blobs[blobName] = encryptedData;
         
@@ -157,6 +158,7 @@ public partial class InMemoryBlobService : IBlobStorageService
     /// For InMemoryBlobService, this behaves the same as UploadChunkAsync but skips the dedup check.
     /// </summary>
     public virtual async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -169,6 +171,7 @@ public partial class InMemoryBlobService : IBlobStorageService
         var blobName = $"chunks/{chunkHash}";
         
         // Direct upload - no deduplication check (for new files)
+        // storageTier is ignored for in-memory storage
         var encryptedData = _encryptionService.Encrypt(chunkData);
         _blobs[blobName] = encryptedData;
         
@@ -179,7 +182,8 @@ public partial class InMemoryBlobService : IBlobStorageService
         return blobName;
     }
 
-    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, CancellationToken cancellationToken = default)
+    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+        CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(fileInfo);
@@ -277,7 +281,9 @@ public partial class InMemoryBlobService : IBlobStorageService
                     Length = c.Length,
                     BlobName = $"chunks/{c.Hash}"
                 }).ToList(),
-                Status = BackupStatus.Completed
+                Status = BackupStatus.Completed,
+                // For in-memory service, simulate Cool tier as default
+                CurrentStorageTier = StorageTier.Cool
             };
         }
         catch (Exception ex) when (ex is not DataIntegrityException)

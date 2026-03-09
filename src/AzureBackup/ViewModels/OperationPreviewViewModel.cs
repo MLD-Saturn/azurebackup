@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using AzureBackup.Core.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -172,9 +173,48 @@ public partial class OperationPreviewViewModel : ObservableObject
         _preview.OperationType == OperationType.DeleteFromAzure || 
         (_preview.OperationType == OperationType.MirrorSync && _preview.DeleteCount > 0);
 
+    /// <summary>
+    /// Whether this is a backup operation (shows storage tier selector).
+    /// </summary>
+    public bool IsBackupOperation => _preview.OperationType == OperationType.Backup;
+
+    /// <summary>
+    /// Default storage tier from watched folder settings.
+    /// </summary>
+    public StorageTier DefaultStorageTier => _preview.DefaultStorageTier;
+
+    /// <summary>
+    /// Available storage tier options.
+    /// </summary>
+    public static StorageTier[] StorageTierOptions { get; } = [StorageTier.Hot, StorageTier.Cool, StorageTier.Cold];
+
+    /// <summary>
+    /// User-selected storage tier for this backup operation.
+    /// </summary>
+    [ObservableProperty]
+    private StorageTier _selectedStorageTier;
+
+    /// <summary>
+    /// Description of the selected storage tier.
+    /// </summary>
+    public string StorageTierDescription => SelectedStorageTier switch
+    {
+        StorageTier.Hot => "Hot - Highest cost, fastest access",
+        StorageTier.Cool => "Cool - Lower cost, good for backups (recommended)",
+        StorageTier.Cold => "Cold - Lowest cost, rare access",
+        _ => ""
+    };
+
+    partial void OnSelectedStorageTierChanged(StorageTier value)
+    {
+        _preview.SelectedStorageTier = value;
+        OnPropertyChanged(nameof(StorageTierDescription));
+    }
+
     public OperationPreviewViewModel(OperationPreview preview)
     {
         _preview = preview;
+        _selectedStorageTier = preview.EffectiveStorageTier;
         
         FilesToCreate = new ObservableCollection<PreviewFileAction>(preview.FilesToCreate);
         FilesToOverwrite = new ObservableCollection<PreviewFileAction>(preview.FilesToOverwrite);

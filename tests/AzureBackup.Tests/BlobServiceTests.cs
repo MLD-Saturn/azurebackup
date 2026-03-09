@@ -187,7 +187,7 @@ public class BlobServiceTests : IAsyncLifetime
             Progress<long> progress = new(bytes => reportedBytes = bytes);
 
             // Act
-            await _blobService.UploadChunkAsync(data, hash, progress);
+            await _blobService.UploadChunkAsync(data, hash, progress: progress);
             
             // Give progress time to be reported (it's async)
             await Task.Delay(100);
@@ -336,7 +336,7 @@ public class BlobServiceTests : IAsyncLifetime
             Progress<long> progress = new(b => reportedBytes = b);
 
             // Act
-            await _blobService.UploadChunkDirectAsync(data, hash, progress);
+            await _blobService.UploadChunkDirectAsync(data, hash, progress: progress);
             await Task.Delay(100); // Allow progress callback to execute
 
             // Assert
@@ -603,7 +603,7 @@ public class BlobServiceTests : IAsyncLifetime
         CancellationTokenSource cts = new();
 
         // Act - Start upload and cancel during the delay
-        var uploadTask = blobService.UploadChunkAsync(data, hash, null, cts.Token);
+        var uploadTask = blobService.UploadChunkAsync(data, hash, cancellationToken: cts.Token);
         cts.CancelAfter(50); // Cancel after 50ms (during the 5000ms delay)
 
         // Assert

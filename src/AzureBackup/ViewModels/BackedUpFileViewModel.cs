@@ -1,4 +1,5 @@
 using System;
+using System;
 using System.IO;
 using AzureBackup.Core.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -80,6 +81,21 @@ public partial class BackedUpFileViewModel : ObservableObject
     /// </summary>
     [ObservableProperty]
     private bool _isSelected;
+
+    /// <summary>
+    /// Current storage tier of this file in Azure.
+    /// </summary>
+    public StorageTier? StorageTier => Model.CurrentStorageTier;
+
+    /// <summary>
+    /// Storage tier display text.
+    /// </summary>
+    public string StorageTierText => Model.CurrentStorageTier?.ToString() ?? "Unknown";
+
+    /// <summary>
+    /// Whether the storage tier is known.
+    /// </summary>
+    public bool HasStorageTier => Model.CurrentStorageTier.HasValue;
 
     public BackedUpFileViewModel(BackedUpFile model)
     {

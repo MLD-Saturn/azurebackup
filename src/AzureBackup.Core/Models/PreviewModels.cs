@@ -18,6 +18,7 @@ public enum OperationType
     Backup
 }
 
+
 /// <summary>
 /// Represents a single file action in an operation preview.
 /// </summary>
@@ -52,6 +53,9 @@ public class PreviewFileAction
     
     /// <summary>Reason for this action (e.g., "File is newer", "Not in backup").</summary>
     public string Reason { get; set; } = string.Empty;
+    
+    /// <summary>Storage tier for this file (for backup operations).</summary>
+    public StorageTier? StorageTier { get; set; }
     
     private static string FormatBytes(long bytes)
     {
@@ -116,6 +120,15 @@ public class OperationPreview
     
     /// <summary>Files that will be skipped (unchanged).</summary>
     public List<PreviewFileAction> FilesToSkip { get; set; } = [];
+    
+    /// <summary>Default storage tier based on watched folder settings.</summary>
+    public StorageTier DefaultStorageTier { get; set; } = StorageTier.Cool;
+    
+    /// <summary>User-selected storage tier override (null means use default).</summary>
+    public StorageTier? SelectedStorageTier { get; set; }
+    
+    /// <summary>The effective storage tier to use for this operation.</summary>
+    public StorageTier EffectiveStorageTier => SelectedStorageTier ?? DefaultStorageTier;
     
     /// <summary>Total count of files to create.</summary>
     public int CreateCount => FilesToCreate.Count;

@@ -191,12 +191,16 @@
                              MinHeight="100" MaxHeight="200">
                         <ListBox.ItemTemplate>
                             <DataTemplate x:DataType="vm:WatchedFolderViewModel">
-                                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" Margin="4">
+                                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto" Margin="4">
                                     <CheckBox IsChecked="{Binding IsEnabled}" VerticalAlignment="Center"
                                               ToolTip.Tip="Enable/disable this folder"/>
                                     <TextBlock Grid.Column="1" Text="{Binding Path}" VerticalAlignment="Center" 
                                                Margin="8,0" FontWeight="SemiBold"/>
-                                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="8,2,0,0"
+                                    <Border Grid.Column="2" Background="{DynamicResource SystemAccentColorLight3}" 
+                                            CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding StorageTier}" FontSize="11" Opacity="0.9"/>
+                                    </Border>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="8,2,0,0"
                                                FontSize="11" Opacity="0.6">
                                         <TextBlock.Text>
                                             <MultiBinding StringFormat="Exclude: {0}">
@@ -209,26 +213,45 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                     
-                    <!-- Exclude patterns section - always visible with guidance -->
+                    <!-- Folder configuration section - always visible with guidance -->
                     <Border Background="{DynamicResource SystemControlBackgroundBaseLowBrush}" 
                             CornerRadius="4" Padding="12" Margin="0,8,0,0">
                         <StackPanel Spacing="8">
-                            <TextBlock Text="Exclusion Patterns" FontWeight="SemiBold"/>
+                            <TextBlock Text="Folder Settings" FontWeight="SemiBold"/>
                             
                             <StackPanel IsVisible="{Binding SelectedWatchedFolder, Converter={x:Static ObjectConverters.IsNull}}">
-                                <TextBlock Text="Select a folder above to configure exclusions" 
+                                <TextBlock Text="Select a folder above to configure settings" 
                                            Opacity="0.6" FontStyle="Italic"/>
                             </StackPanel>
                             
-                            <StackPanel Spacing="4" IsVisible="{Binding SelectedWatchedFolder, Converter={x:Static ObjectConverters.IsNotNull}}">
+                            <StackPanel Spacing="8" IsVisible="{Binding SelectedWatchedFolder, Converter={x:Static ObjectConverters.IsNotNull}}">
                                 <TextBlock Text="{Binding SelectedWatchedFolder.Path}" FontWeight="SemiBold" 
                                            TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Text="Exclude files/folders matching these patterns (semicolon separated):" 
-                                           FontSize="12" Opacity="0.7"/>
-                                <TextBox Text="{Binding SelectedWatchedFolder.ExcludePatterns}"
-                                         Watermark="e.g., *.tmp;*.log;node_modules;.git;bin;obj"/>
-                                <TextBlock Text="Common patterns: *.log, *.tmp, *.bak, thumbs.db, .git, node_modules, bin, obj, .vs" 
-                                           FontSize="11" Opacity="0.5" TextWrapping="Wrap"/>
+                                
+                                <!-- Storage Tier Selection -->
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="Storage Tier" FontSize="12"/>
+                                    <ComboBox ItemsSource="{Binding SelectedWatchedFolder.StorageTierOptions}"
+                                              SelectedItem="{Binding SelectedWatchedFolder.StorageTier}"
+                                              HorizontalAlignment="Left" MinWidth="120"/>
+                                    <TextBlock FontSize="11" Opacity="0.5" TextWrapping="Wrap">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}Hot = frequent access, Cool = infrequent (default), Cold = rare access">
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </StackPanel>
+                                
+                                <!-- Exclusion Patterns -->
+                                <StackPanel Spacing="4" Margin="0,8,0,0">
+                                    <TextBlock Text="Exclusion Patterns" FontSize="12"/>
+                                    <TextBlock Text="Exclude files/folders matching these patterns (semicolon separated):" 
+                                               FontSize="11" Opacity="0.7"/>
+                                    <TextBox Text="{Binding SelectedWatchedFolder.ExcludePatterns}"
+                                             Watermark="e.g., *.tmp;*.log;node_modules;.git;bin;obj"/>
+                                    <TextBlock Text="Common patterns: *.log, *.tmp, *.bak, thumbs.db, .git, node_modules, bin, obj, .vs" 
+                                               FontSize="11" Opacity="0.5" TextWrapping="Wrap"/>
+                                </StackPanel>
                             </StackPanel>
                         </StackPanel>
                     </Border>

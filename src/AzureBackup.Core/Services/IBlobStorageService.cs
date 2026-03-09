@@ -61,7 +61,13 @@ public interface IBlobStorageService : IAsyncDisposable
     /// Uploads an encrypted chunk to blob storage.
     /// Checks if chunk already exists for deduplication (use for modified files).
     /// </summary>
+    /// <param name="chunkData">The chunk data to upload</param>
+    /// <param name="chunkHash">The hash of the chunk for content-addressable storage</param>
+    /// <param name="storageTier">The Azure storage tier to use for this upload</param>
+    /// <param name="progress">Optional progress reporter</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -69,13 +75,23 @@ public interface IBlobStorageService : IAsyncDisposable
     /// Use this for new files where all chunks are guaranteed to be new.
     /// This reduces API calls by 50% for new file uploads.
     /// </summary>
+    /// <param name="chunkData">The chunk data to upload</param>
+    /// <param name="chunkHash">The hash of the chunk for content-addressable storage</param>
+    /// <param name="storageTier">The Azure storage tier to use for this upload</param>
+    /// <param name="progress">Optional progress reporter</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Uploads file metadata (encrypted).
     /// </summary>
-    Task UploadFileMetadataAsync(BackedUpFile fileInfo, CancellationToken cancellationToken = default);
+    /// <param name="fileInfo">The file metadata to upload</param>
+    /// <param name="storageTier">The Azure storage tier to use for metadata</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Downloads and decrypts a chunk.

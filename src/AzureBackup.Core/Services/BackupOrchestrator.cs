@@ -84,6 +84,31 @@ public class BackupOrchestrator : IAsyncDisposable
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
         DiagnosticLog?.Invoke(this, $"[{timestamp}] [Orchestrator] {message}");
     }
+    
+    /// <summary>
+    /// Gets the WatchedFolder that contains the specified file path.
+    /// Returns null if the file is not in any watched folder.
+    /// </summary>
+    private WatchedFolder? GetWatchedFolderForFile(string filePath)
+    {
+        var config = _databaseService.GetConfiguration();
+        
+        // Find the watched folder that contains this file
+        // Use case-insensitive comparison for Windows paths
+        return config.WatchedFolders
+            .Where(f => f.IsEnabled)
+            .FirstOrDefault(f => filePath.StartsWith(f.Path, StringComparison.OrdinalIgnoreCase));
+    }
+    
+    /// <summary>
+    /// Gets the storage tier for a file based on its WatchedFolder configuration.
+    /// Defaults to Cool if file is not in a watched folder.
+    /// </summary>
+    private StorageTier GetStorageTierForFile(string filePath)
+    {
+        var folder = GetWatchedFolderForFile(filePath);
+        return folder?.StorageTier ?? StorageTier.Cool;
+    }
 
     /// <summary>
     /// Validates password strength for new setups.
@@ -827,7 +852,10 @@ public class BackupOrchestrator : IAsyncDisposable
             // For new files (no existing backup), skip existence checks - all chunks are new
             // This reduces API calls by 50% for new file uploads
             var isNewFile = existingFile == null;
-            Log($"BackupFileAsync: File is {(isNewFile ? "NEW" : "EXISTING")}, {chunksToUpload.Count} chunks to upload");
+            
+            // Get the storage tier based on the watched folder configuration
+            var storageTier = GetStorageTierForFile(filePath);
+            Log($"BackupFileAsync: File is {(isNewFile ? "NEW" : "EXISTING")}, {chunksToUpload.Count} chunks to upload, tier={storageTier}");
 
             // Upload changed chunks with parallel processing for better bandwidth utilization
             long bytesUploaded = 0;
@@ -851,7 +879,7 @@ public class BackupOrchestrator : IAsyncDisposable
                         // Use direct upload for new files (skip existence check)
                         // Use regular upload for modified files (check for unchanged chunks)
                         chunk.BlobName = isNewFile
-                            ? await _blobService.UploadChunkDirectAsync(chunkData, chunk.Hash,
+                            ? await _blobService.UploadChunkDirectAsync(chunkData, chunk.Hash, storageTier,
                                 new Progress<long>(b =>
                                 {
                                     lock (uploadLock)
@@ -861,7 +889,7 @@ public class BackupOrchestrator : IAsyncDisposable
                                     }
                                 }),
                                 cancellationToken)
-                            : await _blobService.UploadChunkAsync(chunkData, chunk.Hash,
+                            : await _blobService.UploadChunkAsync(chunkData, chunk.Hash, storageTier,
                                 new Progress<long>(b =>
                                 {
                                     lock (uploadLock)
@@ -891,14 +919,14 @@ public class BackupOrchestrator : IAsyncDisposable
                     
                     // Use direct upload for new files (skip existence check)
                     chunk.BlobName = isNewFile
-                        ? await _blobService.UploadChunkDirectAsync(chunkData, chunk.Hash, 
+                        ? await _blobService.UploadChunkDirectAsync(chunkData, chunk.Hash, storageTier,
                             new Progress<long>(b => 
                             {
                                 bytesUploaded += b;
                                 progress?.Report((bytesUploaded, totalFileSize));
                             }), 
                             cancellationToken)
-                        : await _blobService.UploadChunkAsync(chunkData, chunk.Hash, 
+                        : await _blobService.UploadChunkAsync(chunkData, chunk.Hash, storageTier,
                             new Progress<long>(b => 
                             {
                                 bytesUploaded += b;
@@ -927,7 +955,7 @@ public class BackupOrchestrator : IAsyncDisposable
                 Status = BackupStatus.Completed
             };
 
-            await _blobService.UploadFileMetadataAsync(backedUpFile, cancellationToken);
+            await _blobService.UploadFileMetadataAsync(backedUpFile, storageTier, cancellationToken);
             _databaseService.SaveBackedUpFile(backedUpFile);
 
             // Update config stats
@@ -1212,6 +1240,40 @@ public class BackupOrchestrator : IAsyncDisposable
         }
 
         Log($"PreviewBackupSyncAsync: Found {allFiles.Count} files to check");
+        
+        // Get list of files that actually exist in Azure for validation
+        HashSet<string>? azureFilePaths = null;
+        if (_blobService.IsConnected)
+        {
+            try
+            {
+                var metadataBlobs = await _blobService.ListMetadataBlobsAsync(cancellationToken);
+                azureFilePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                
+                foreach (var blobName in metadataBlobs)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var metadata = await _blobService.DownloadFileMetadataAsync(blobName, cancellationToken);
+                        if (metadata?.LocalPath != null)
+                        {
+                            azureFilePaths.Add(metadata.LocalPath);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"PreviewBackupSyncAsync: Error downloading metadata {blobName}: {ex.Message}");
+                    }
+                }
+                Log($"PreviewBackupSyncAsync: Found {azureFilePaths.Count} files in Azure for validation");
+            }
+            catch (Exception ex)
+            {
+                Log($"PreviewBackupSyncAsync: Could not fetch Azure file list for validation: {ex.Message}");
+                // Continue without validation - will use local DB only
+            }
+        }
 
         // Compare each file with existing backup records
         foreach (var filePath in allFiles)
@@ -1224,6 +1286,16 @@ public class BackupOrchestrator : IAsyncDisposable
                 if (!fileInfo.Exists) continue;
 
                 var existingBackup = _databaseService.GetBackedUpFile(filePath);
+                
+                // If we have Azure file list, verify the file actually exists in Azure
+                var actuallyExistsInAzure = azureFilePaths == null || azureFilePaths.Contains(filePath);
+                
+                // If local DB says file exists but Azure says it doesn't, treat as new
+                if (existingBackup != null && !actuallyExistsInAzure)
+                {
+                    Log($"PreviewBackupSyncAsync: {Path.GetFileName(filePath)} - local DB has record but not in Azure, treating as new");
+                    existingBackup = null;
+                }
 
                 if (existingBackup == null)
                 {
@@ -1302,17 +1374,31 @@ public class BackupOrchestrator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Generates a preview of what backing up specific files will do (simple overload).
+    /// </summary>
+    public Task<OperationPreview> PreviewBackupFilesAsync(
+        IList<string> filePaths,
+        CancellationToken cancellationToken)
+    {
+        return PreviewBackupFilesAsync(filePaths, null, cancellationToken);
+    }
+
+    /// <summary>
     /// Generates a preview of what backing up specific files will do.
+    /// Cross-references with actual Azure metadata to ensure accuracy.
     /// </summary>
     /// <param name="filePaths">List of file paths to preview</param>
+    /// <param name="azureFilePaths">Optional set of file paths that actually exist in Azure (for validation)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Preview of the backup operation</returns>
     public Task<OperationPreview> PreviewBackupFilesAsync(
         IList<string> filePaths,
+        ISet<string>? azureFilePaths,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filePaths);
-        Log($"PreviewBackupFilesAsync: Generating preview for {filePaths.Count} files");
+        Log($"PreviewBackupFilesAsync: Generating preview for {filePaths.Count} files" +
+            (azureFilePaths != null ? $", validating against {azureFilePaths.Count} Azure files" : ""));
 
 
         var config = _databaseService.GetConfiguration();
@@ -1339,6 +1425,17 @@ public class BackupOrchestrator : IAsyncDisposable
                 }
 
                 var existingBackup = _databaseService.GetBackedUpFile(filePath);
+                
+                // If we have Azure file list, verify the file actually exists in Azure
+                // This prevents showing "overwrite" for files that were deleted from Azure
+                var actuallyExistsInAzure = azureFilePaths == null || azureFilePaths.Contains(filePath);
+                
+                // If local DB says file exists but Azure says it doesn't, treat as new
+                if (existingBackup != null && !actuallyExistsInAzure)
+                {
+                    Log($"PreviewBackupFilesAsync: {filePath} - local DB has record but not in Azure, treating as new");
+                    existingBackup = null; // Treat as if never backed up
+                }
 
                 if (existingBackup == null)
                 {

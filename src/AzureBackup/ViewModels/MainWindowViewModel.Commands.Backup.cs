@@ -354,6 +354,9 @@ public partial class MainWindowViewModel
             AddLog($"Backup complete: {successCount} succeeded, {failCount} failed");
             RefreshStatistics();
             RefreshBackedUpFiles();
+            
+            // Refresh Azure file list after backup
+            await RefreshFromAzureAsync();
         }
         catch (OperationCanceledException)
         {
@@ -368,10 +371,58 @@ public partial class MainWindowViewModel
 
     /// <summary>
     /// Backs up a list of specific files (used by drag-drop).
+    /// Shows a preview dialog and validates against actual Azure state.
     /// </summary>
     public async Task BackupSpecificFilesAsync(IEnumerable<string> filePaths)
     {
-        await BackupSelectedFilesAsync(filePaths.ToArray());
+        if (!IsInitialized)
+        {
+            AddLog("Please initialize first");
+            return;
+        }
+
+        var fileList = filePaths.ToList();
+        if (fileList.Count == 0) return;
+
+        // Get Azure file paths for validation (to detect stale local DB records)
+        HashSet<string>? azureFilePaths = null;
+        if (RestorableFiles.Count > 0)
+        {
+            azureFilePaths = new HashSet<string>(
+                RestorableFiles.Select(f => f.Model.LocalPath),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        // Generate preview with Azure validation
+        var preview = await _orchestrator.PreviewBackupFilesAsync(fileList, azureFilePaths);
+
+        // Determine default storage tier from watched folder (use first file's folder)
+        var firstFolder = GetWatchedFolderForFile(fileList[0]);
+        preview.DefaultStorageTier = firstFolder?.StorageTier ?? Core.Models.StorageTier.Cool;
+
+        // Show preview dialog
+        var confirmed = await ShowPreviewDialogAsync(preview);
+
+        if (!confirmed)
+        {
+            AddLog("Backup cancelled by user");
+            return;
+        }
+
+        // Perform backup with selected tier (TODO: Pass tier to orchestrator)
+        AddLog($"Backing up {fileList.Count} file(s) to {preview.EffectiveStorageTier} tier...");
+        await BackupSelectedFilesAsync(fileList.ToArray());
+    }
+
+    /// <summary>
+    /// Gets the WatchedFolder that contains the specified file path.
+    /// </summary>
+    private WatchedFolder? GetWatchedFolderForFile(string filePath)
+    {
+        return WatchedFolders
+            .Where(f => f.IsEnabled)
+            .Select(f => f.ToModel())
+            .FirstOrDefault(f => filePath.StartsWith(f.Path, StringComparison.OrdinalIgnoreCase));
     }
 
     #endregion

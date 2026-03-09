@@ -129,7 +129,7 @@ public class ParallelOperationsTests : IAsyncLifetime
         var uploadTasks = chunks.Select(chunk =>
         {
             var hash = ComputeHash(chunk);
-            return _blobService.UploadChunkAsync(chunk, hash, progress);
+            return _blobService.UploadChunkAsync(chunk, hash, progress: progress);
         });
 
         await Task.WhenAll(uploadTasks);
@@ -261,7 +261,7 @@ public class ParallelOperationsTests : IAsyncLifetime
             var hash = ComputeHash(chunk);
             try
             {
-                await _blobService.UploadChunkAsync(chunk, hash, null, cts.Token);
+                await _blobService.UploadChunkAsync(chunk, hash, cancellationToken: cts.Token);
                 return true;
             }
             catch (OperationCanceledException)
@@ -360,7 +360,7 @@ public class ParallelOperationsTests : IAsyncLifetime
                     totalBytesReported += bytes;
                 }
             });
-            await _blobService.UploadChunkAsync(chunk, hash, progress);
+            await _blobService.UploadChunkAsync(chunk, hash, progress: progress);
         }).ToList();
 
         await Task.WhenAll(tasks);

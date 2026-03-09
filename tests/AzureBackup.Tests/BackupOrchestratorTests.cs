@@ -599,6 +599,94 @@ public class BackupOrchestratorTests : IAsyncLifetime
 
     #endregion
 
+    #region Storage Tier Tests
+
+    [Fact]
+    public async Task BackupFileAsync_UsesWatchedFolderStorageTier()
+    {
+        // Arrange
+        StorageTierTrackingBlobService tierTrackingBlobService = new(_encryptionService);
+        await tierTrackingBlobService.ConnectAsync("fake", "container");
+        
+        // Configure watched folder with Hot tier
+        var config = _databaseService.GetConfiguration();
+        config.WatchedFolders.Clear();
+        config.WatchedFolders.Add(new WatchedFolder 
+        { 
+            Path = _sourceDirectory, 
+            IsEnabled = true,
+            StorageTier = StorageTier.Hot
+        });
+        _databaseService.SaveConfiguration(config);
+        
+        BackupOrchestrator tierOrchestrator = new(
+            _databaseService,
+            _encryptionService,
+            new ChunkingService(),
+            tierTrackingBlobService,
+            _fileWatcherService);
+        
+        await tierOrchestrator.InitializeAsync(TestPassword);
+        
+        // Create and backup a file
+        var content = CreateRandomContent(10 * 1024);
+        var filePath = Path.Combine(_sourceDirectory, "tier_test.txt");
+        await File.WriteAllBytesAsync(filePath, content);
+        
+        // Act
+        await tierOrchestrator.BackupFileAsync(filePath);
+        
+        // Assert - All uploads should have used Hot tier
+        Assert.True(tierTrackingBlobService.UploadCount > 0, "Should have uploaded at least one chunk");
+        Assert.All(tierTrackingBlobService.UsedTiers, tier => Assert.Equal(StorageTier.Hot, tier));
+        
+        await tierOrchestrator.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task BackupFileAsync_DefaultsToCoolTierForUnwatchedFiles()
+    {
+        // Arrange
+        StorageTierTrackingBlobService tierTrackingBlobService = new(_encryptionService);
+        await tierTrackingBlobService.ConnectAsync("fake", "container");
+        
+        // Configure watched folder for a DIFFERENT directory
+        var config = _databaseService.GetConfiguration();
+        config.WatchedFolders.Clear();
+        config.WatchedFolders.Add(new WatchedFolder 
+        { 
+            Path = Path.Combine(_testDirectory, "other_folder"), 
+            IsEnabled = true,
+            StorageTier = StorageTier.Hot
+        });
+        _databaseService.SaveConfiguration(config);
+        
+        BackupOrchestrator tierOrchestrator = new(
+            _databaseService,
+            _encryptionService,
+            new ChunkingService(),
+            tierTrackingBlobService,
+            _fileWatcherService);
+        
+        await tierOrchestrator.InitializeAsync(TestPassword);
+        
+        // Create and backup a file NOT in the watched folder
+        var content = CreateRandomContent(10 * 1024);
+        var filePath = Path.Combine(_sourceDirectory, "unwatched_tier_test.txt");
+        await File.WriteAllBytesAsync(filePath, content);
+        
+        // Act
+        await tierOrchestrator.BackupFileAsync(filePath);
+        
+        // Assert - Should default to Cool tier since file is not in any watched folder
+        Assert.True(tierTrackingBlobService.UploadCount > 0, "Should have uploaded at least one chunk");
+        Assert.All(tierTrackingBlobService.UsedTiers, tier => Assert.Equal(StorageTier.Cool, tier));
+        
+        await tierOrchestrator.DisposeAsync();
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static byte[] CreateRandomContent(int size)
@@ -626,22 +714,57 @@ internal class TrackingBlobService : InMemoryBlobService
     }
 
     public override async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         RegularUploadCount++;
-        return await base.UploadChunkAsync(chunkData, chunkHash, progress, cancellationToken);
+        return await base.UploadChunkAsync(chunkData, chunkHash, storageTier, progress, cancellationToken);
     }
 
     public override async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         DirectUploadCount++;
-        return await base.UploadChunkDirectAsync(chunkData, chunkHash, progress, cancellationToken);
+        return await base.UploadChunkDirectAsync(chunkData, chunkHash, storageTier, progress, cancellationToken);
     }
 
     public void ResetCounters()
     {
         DirectUploadCount = 0;
         RegularUploadCount = 0;
+    }
+}
+
+/// <summary>
+/// Test double that tracks which storage tier is used for uploads.
+/// Used to verify the orchestrator passes the correct storage tier based on watched folder configuration.
+/// </summary>
+internal class StorageTierTrackingBlobService : InMemoryBlobService
+{
+    private readonly List<StorageTier> _usedTiers = new();
+    
+    public IReadOnlyList<StorageTier> UsedTiers => _usedTiers;
+    public int UploadCount => _usedTiers.Count;
+
+    public StorageTierTrackingBlobService(EncryptionService encryptionService) 
+        : base(encryptionService)
+    {
+    }
+
+    public override async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
+        IProgress<long>? progress = null, CancellationToken cancellationToken = default)
+    {
+        _usedTiers.Add(storageTier);
+        return await base.UploadChunkAsync(chunkData, chunkHash, storageTier, progress, cancellationToken);
+    }
+
+    public override async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
+        StorageTier storageTier = StorageTier.Cool,
+        IProgress<long>? progress = null, CancellationToken cancellationToken = default)
+    {
+        _usedTiers.Add(storageTier);
+        return await base.UploadChunkDirectAsync(chunkData, chunkHash, storageTier, progress, cancellationToken);
     }
 }

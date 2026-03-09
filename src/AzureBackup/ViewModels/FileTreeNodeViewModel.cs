@@ -48,6 +48,21 @@ public partial class FileTreeNodeViewModel : ObservableObject
     public BackedUpFile? File => _model.File;
 
     /// <summary>
+    /// Storage tier of this file (null for folders or if unknown).
+    /// </summary>
+    public StorageTier? StorageTier => _model.File?.CurrentStorageTier;
+
+    /// <summary>
+    /// Storage tier display text.
+    /// </summary>
+    public string StorageTierText => _model.File?.CurrentStorageTier?.ToString() ?? "";
+
+    /// <summary>
+    /// Whether the storage tier is known (for UI visibility).
+    /// </summary>
+    public bool HasStorageTier => _model.File?.CurrentStorageTier.HasValue == true;
+
+    /// <summary>
     /// Child nodes.
     /// </summary>
     public ObservableCollection<FileTreeNodeViewModel> Children { get; } = [];

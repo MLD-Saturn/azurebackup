@@ -24,6 +24,13 @@ public class BackedUpFile
     /// Backup metadata format version.
     /// </summary>
     public int MetadataVersion { get; set; } = 1;
+    
+    /// <summary>
+    /// The Azure storage tier of the metadata blob.
+    /// This is populated when fetching from Azure and indicates the current tier.
+    /// </summary>
+    [LiteDB.BsonIgnore]
+    public StorageTier? CurrentStorageTier { get; set; }
 }
 
 /// <summary>
