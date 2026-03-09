@@ -156,9 +156,9 @@ public class ChunkingService
     /// </summary>
     public async Task<List<ChunkInfo>> ChunkFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
-        var chunks = new List<ChunkInfo>();
+        List<ChunkInfo> chunks = new();
         
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 
             bufferSize: 1024 * 1024, useAsync: true);
         
         var fileLength = stream.Length;
@@ -167,7 +167,7 @@ public class ChunkingService
         // For small files, treat as single chunk
         if (fileLength <= config.MinChunkSize)
         {
-            var data = new byte[fileLength];
+            byte[] data = new byte[fileLength];
             await stream.ReadExactlyAsync(data, cancellationToken);
             
             chunks.Add(new ChunkInfo
@@ -183,12 +183,12 @@ public class ChunkingService
 
         // Content-defined chunking for larger files
         // Buffer size adapts to max chunk size for the file type
-        var buffer = new byte[config.MaxChunkSize + WindowSize];
+        byte[] buffer = new byte[config.MaxChunkSize + WindowSize];
         var chunkStart = 0L;
         var position = 0L;
         var chunkIndex = 0;
         var rollingHash = 0u;
-        var window = new byte[WindowSize];
+        byte[] window = new byte[WindowSize];
         var windowPos = 0;
         var windowFilled = false;
 
@@ -279,7 +279,7 @@ public class ChunkingService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
             bufferSize: 81920, useAsync: true);
         
         var hash = await SHA256.HashDataAsync(stream, cancellationToken);
@@ -306,11 +306,11 @@ public class ChunkingService
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(chunk);
         
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
             bufferSize: Math.Max(4096, chunk.Length), useAsync: true);
         
         stream.Position = chunk.Offset;
-        var data = new byte[chunk.Length];
+        byte[] data = new byte[chunk.Length];
         await stream.ReadExactlyAsync(data, cancellationToken);
         
         return data;

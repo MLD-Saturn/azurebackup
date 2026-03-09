@@ -370,7 +370,7 @@ public class LocalDatabaseService : IDisposable
                     // Check if the file still exists and matches the backup
                     try
                     {
-                        var fileInfo = new System.IO.FileInfo(change.FilePath);
+                        System.IO.FileInfo fileInfo = new(change.FilePath);
                         if (fileInfo.Exists && fileInfo.Length == backedUp.FileSize)
                         {
                             // File is backed up and size matches - remove from pending
@@ -526,13 +526,13 @@ public class LocalDatabaseService : IDisposable
 
         try
         {
-            var fileInfo = new FileInfo(filePath);
+            FileInfo fileInfo = new(filePath);
             var fileSize = fileInfo.Length;
 
             // Overwrite file with random data (3 passes for extra security)
-            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Write, FileShare.None))
+            using (FileStream stream = new(filePath, FileMode.Open, FileAccess.Write, FileShare.None))
             {
-                var buffer = new byte[4096];
+                byte[] buffer = new byte[4096];
                 
                 for (var pass = 0; pass < 3; pass++)
                 {

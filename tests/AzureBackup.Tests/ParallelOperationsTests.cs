@@ -69,7 +69,7 @@ public class ParallelOperationsTests : IAsyncLifetime
     {
         // Arrange - Create multiple chunks to upload concurrently
         var chunkCount = 10;
-        var chunks = new List<(byte[] data, string hash)>();
+        List<(byte[] data, string hash)> chunks = new();
         
         for (int i = 0; i < chunkCount; i++)
         {
@@ -122,8 +122,8 @@ public class ParallelOperationsTests : IAsyncLifetime
             .Select(_ => CreateRandomContent(32 * 1024))
             .ToList();
         
-        var progressValues = new ConcurrentBag<long>();
-        var progress = new Progress<long>(bytes => progressValues.Add(bytes));
+        ConcurrentBag<long> progressValues = new();
+        Progress<long> progress = new(bytes => progressValues.Add(bytes));
 
         // Act - Upload concurrently with progress reporting
         var uploadTasks = chunks.Select(chunk =>
@@ -147,7 +147,7 @@ public class ParallelOperationsTests : IAsyncLifetime
     {
         // Arrange - Upload multiple chunks first
         var chunkCount = 10;
-        var originalChunks = new Dictionary<string, byte[]>();
+        Dictionary<string, byte[]> originalChunks = new();
         
         for (int i = 0; i < chunkCount; i++)
         {
@@ -199,7 +199,7 @@ public class ParallelOperationsTests : IAsyncLifetime
     public async Task MixedConcurrentOperations_UploadsAndDownloads_NoDataCorruption()
     {
         // Arrange - Pre-upload some chunks
-        var existingChunks = new ConcurrentDictionary<string, byte[]>();
+        ConcurrentDictionary<string, byte[]> existingChunks = new();
         for (int i = 0; i < 5; i++)
         {
             var data = CreateRandomContent(32 * 1024);
@@ -214,7 +214,7 @@ public class ParallelOperationsTests : IAsyncLifetime
             .ToList();
 
         // Act - Mix uploads and downloads concurrently
-        var tasks = new List<Task>();
+        List<Task> tasks = new();
         
         // Download existing chunks
         foreach (var blobName in existingChunks.Keys)
@@ -250,7 +250,7 @@ public class ParallelOperationsTests : IAsyncLifetime
     public async Task ConcurrentUploads_WithCancellation_HandlesGracefully()
     {
         // Arrange
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         var chunks = Enumerable.Range(0, 20)
             .Select(_ => CreateRandomContent(16 * 1024))
             .ToList();
@@ -291,13 +291,13 @@ public class ParallelOperationsTests : IAsyncLifetime
         var maxConcurrency = 4;
         var currentConcurrency = 0;
         var maxObservedConcurrency = 0;
-        var concurrencyLock = new object();
+        object concurrencyLock = new();
         
         var chunks = Enumerable.Range(0, 20)
             .Select(_ => CreateRandomContent(8 * 1024))
             .ToList();
 
-        using var semaphore = new SemaphoreSlim(maxConcurrency);
+        using SemaphoreSlim semaphore = new(maxConcurrency);
 
         // Act
         var tasks = chunks.Select(async chunk =>
@@ -347,13 +347,13 @@ public class ParallelOperationsTests : IAsyncLifetime
             .ToList();
         
         long totalBytesReported = 0;
-        var reportLock = new object();
+        object reportLock = new();
 
         // Act
         var tasks = chunks.Select(async chunk =>
         {
             var hash = ComputeHash(chunk);
-            var progress = new Progress<long>(bytes =>
+            Progress<long> progress = new(bytes =>
             {
                 lock (reportLock)
                 {
@@ -375,14 +375,14 @@ public class ParallelOperationsTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private static string ComputeHash(byte[] data)
     {
-        var hash = SHA256.HashData(data);
+        byte[] hash = SHA256.HashData(data);
         return Convert.ToHexString(hash);
     }
 

@@ -155,8 +155,8 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ChunkFile_RandomData_ChunksWithVariableSizes()
     {
         // Arrange
-        var random = new Random(42);
-        var data = new byte[1024 * 1024]; // 1 MB
+        Random random = new(42);
+        byte[] data = new byte[1024 * 1024]; // 1 MB
         random.NextBytes(data);
         var filePath = Path.Combine(_testDirectory, "random.bin");
         await File.WriteAllBytesAsync(filePath, data);
@@ -177,7 +177,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     {
         // Arrange - Repeating pattern (highly compressible)
         var pattern = "ABCDEFGHIJKLMNOP"u8.ToArray();
-        var data = new byte[500 * 1024];
+        byte[] data = new byte[500 * 1024];
         for (int i = 0; i < data.Length; i++)
         {
             data[i] = pattern[i % pattern.Length];
@@ -201,8 +201,8 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ComputeHash_SimilarContent_ProducesDifferentHashes()
     {
         // Arrange - Two files differing by single byte
-        var data1 = new byte[10000];
-        var data2 = new byte[10000];
+        byte[] data1 = new byte[10000];
+        byte[] data2 = new byte[10000];
         new Random(42).NextBytes(data1);
         data1.CopyTo(data2, 0);
         data2[5000] ^= 0x01; // Flip one bit
@@ -224,7 +224,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ChunkHash_SameContent_SameHash()
     {
         // Arrange - Same content in different files
-        var data = new byte[100 * 1024];
+        byte[] data = new byte[100 * 1024];
         new Random(42).NextBytes(data);
         
         var file1 = Path.Combine(_testDirectory, "same1.bin");
@@ -250,8 +250,8 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public void GetChangedChunks_EmptyOld_ReturnsAllNew()
     {
         // Arrange
-        var oldChunks = new List<ChunkInfo>();
-        var newChunks = new List<ChunkInfo>
+        List<ChunkInfo> oldChunks = new();
+        List<ChunkInfo> newChunks = new()
         {
             new() { Index = 0, Hash = "ABC123", Length = 1000 },
             new() { Index = 1, Hash = "DEF456", Length = 2000 }
@@ -268,11 +268,11 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public void GetChangedChunks_EmptyNew_ReturnsEmpty()
     {
         // Arrange
-        var oldChunks = new List<ChunkInfo>
+        List<ChunkInfo> oldChunks = new()
         {
             new() { Index = 0, Hash = "ABC123", Length = 1000 }
         };
-        var newChunks = new List<ChunkInfo>();
+        List<ChunkInfo> newChunks = new();
 
         // Act
         var changed = _chunkingService.GetChangedChunks(oldChunks, newChunks);
@@ -285,13 +285,13 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public void GetChangedChunks_ReorderedChunks_DetectsCorrectly()
     {
         // Arrange
-        var oldChunks = new List<ChunkInfo>
+        List<ChunkInfo> oldChunks = new()
         {
             new() { Index = 0, Hash = "AAA", Length = 1000 },
             new() { Index = 1, Hash = "BBB", Length = 1000 },
             new() { Index = 2, Hash = "CCC", Length = 1000 }
         };
-        var newChunks = new List<ChunkInfo>
+        List<ChunkInfo> newChunks = new()
         {
             new() { Index = 0, Hash = "CCC", Length = 1000 }, // Moved
             new() { Index = 1, Hash = "BBB", Length = 1000 }, // Same
@@ -309,12 +309,12 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public void GetChangedChunks_MixedChanges_DetectsOnlyNew()
     {
         // Arrange
-        var oldChunks = new List<ChunkInfo>
+        List<ChunkInfo> oldChunks = new()
         {
             new() { Index = 0, Hash = "EXISTING1" },
             new() { Index = 1, Hash = "EXISTING2" }
         };
-        var newChunks = new List<ChunkInfo>
+        List<ChunkInfo> newChunks = new()
         {
             new() { Index = 0, Hash = "EXISTING1" }, // Same
             new() { Index = 1, Hash = "NEW1" },      // Changed
@@ -338,7 +338,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ReadChunk_FirstChunk_ReturnsCorrectData()
     {
         // Arrange
-        var data = new byte[256 * 1024];
+        byte[] data = new byte[256 * 1024];
         new Random(42).NextBytes(data);
         var filePath = Path.Combine(_testDirectory, "read_first.bin");
         await File.WriteAllBytesAsync(filePath, data);
@@ -355,7 +355,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ReadChunk_LastChunk_ReturnsCorrectData()
     {
         // Arrange
-        var data = new byte[500 * 1024];
+        byte[] data = new byte[500 * 1024];
         new Random(42).NextBytes(data);
         var filePath = Path.Combine(_testDirectory, "read_last.bin");
         await File.WriteAllBytesAsync(filePath, data);
@@ -374,7 +374,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     public async Task ReadChunk_MiddleChunk_ReturnsCorrectData()
     {
         // Arrange
-        var data = new byte[1024 * 1024]; // 1 MB - should have multiple chunks
+        byte[] data = new byte[1024 * 1024]; // 1 MB - should have multiple chunks
         new Random(42).NextBytes(data);
         var filePath = Path.Combine(_testDirectory, "read_middle.bin");
         await File.WriteAllBytesAsync(filePath, data);
@@ -465,7 +465,7 @@ public class ChunkingServiceEdgeCaseTests : IAsyncLifetime
     private string CreateTestFile(string name, int size)
     {
         var filePath = Path.Combine(_testDirectory, name);
-        var content = new byte[size];
+        byte[] content = new byte[size];
         new Random(42).NextBytes(content);
         File.WriteAllBytes(filePath, content);
         return filePath;

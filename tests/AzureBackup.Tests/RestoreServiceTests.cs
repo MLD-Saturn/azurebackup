@@ -131,7 +131,7 @@ public class RestoreServiceTests : IAsyncLifetime
         var backedUpFile = await BackupFileAsync(sourceFile);
         Assert.True(backedUpFile.Chunks.Count > 1, "Need multiple chunks to test cancellation");
         
-        using var cts = new CancellationTokenSource();
+        using CancellationTokenSource cts = new();
         cts.Cancel(); // Cancel immediately
 
         // Act - DeleteFileAsync catches exceptions and returns false
@@ -380,14 +380,14 @@ public class RestoreServiceTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private async Task<BackedUpFile> BackupFileAsync(string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
 
@@ -398,7 +398,7 @@ public class RestoreServiceTests : IAsyncLifetime
             chunk.BlobName = await _blobService.UploadChunkAsync(chunkData, chunk.Hash);
         }
 
-        var backedUpFile = new BackedUpFile
+        BackedUpFile backedUpFile = new()
         {
             LocalPath = filePath,
             FileSize = fileInfo.Length,

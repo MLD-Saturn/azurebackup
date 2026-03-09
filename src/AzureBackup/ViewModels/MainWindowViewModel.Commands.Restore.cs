@@ -121,7 +121,7 @@ public partial class MainWindowViewModel
 
         try
         {
-            var progress = new Progress<(long current, long total)>(p =>
+            Progress<(long current, long total)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
@@ -159,7 +159,7 @@ public partial class MainWindowViewModel
 
         try
         {
-            var progress = new Progress<(int current, int total, string file)>(p =>
+            Progress<(int current, int total, string file)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
@@ -274,7 +274,7 @@ public partial class MainWindowViewModel
                     var targetPath = Path.Combine(RestoreDirectory, fileName);
                     
                     // Create progress reporter for individual file
-                    var fileProgress = new Progress<(long current, long total)>(p =>
+                    Progress<(long current, long total)> fileProgress = new(p =>
                     {
                         UpdateFileProgress(fileName, p.current, p.total, i);
                     });

@@ -103,7 +103,7 @@ public class FileWatcherService : IDisposable
             if (_watchers.ContainsKey(folder.Path))
                 return;
 
-            var watcher = new FileSystemWatcher(folder.Path)
+            FileSystemWatcher watcher = new(folder.Path)
             {
                 IncludeSubdirectories = true,
                 InternalBufferSize = 64 * 1024, // 64KB buffer to handle burst changes
@@ -187,7 +187,7 @@ public class FileWatcherService : IDisposable
     /// </summary>
     public async Task<List<string>> ScanFolderAsync(WatchedFolder folder, CancellationToken cancellationToken = default)
     {
-        var files = new List<string>();
+        List<string> files = new();
         var config = _databaseService.GetConfiguration();
 
         await Task.Run(() =>
@@ -285,7 +285,7 @@ public class FileWatcherService : IDisposable
     private void ProcessPendingChanges(object? state)
     {
         var cutoff = DateTime.UtcNow - _debounceDelay;
-        var toProcess = new List<string>();
+        List<string> toProcess = new();
 
         foreach (var kvp in _pendingChanges)
         {
@@ -303,7 +303,7 @@ public class FileWatcherService : IDisposable
                     ? FileChangeType.Modified 
                     : FileChangeType.Deleted;
 
-                var changeEvent = new FileChangeEvent
+                FileChangeEvent changeEvent = new()
                 {
                     FilePath = filePath,
                     ChangeType = changeType,

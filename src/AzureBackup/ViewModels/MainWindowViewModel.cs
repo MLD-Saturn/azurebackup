@@ -471,7 +471,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             
             if (totalFiles == 0) return "No files in watched folders";
             
-            var parts = new System.Collections.Generic.List<string> { $"{totalFiles} total" };
+            System.Collections.Generic.List<string> parts = new() { $"{totalFiles} total" };
             if (newCount > 0) parts.Add($"{newCount} new");
             if (modifiedCount > 0) parts.Add($"{modifiedCount} modified");
             if (backedUpCount > 0) parts.Add($"{backedUpCount} backed up");
@@ -853,7 +853,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             return true;
         }
 
-        var viewModel = new OperationPreviewViewModel(preview);
+        OperationPreviewViewModel viewModel = new(preview);
         return await PreviewDialogRequested.Invoke(viewModel);
     }
 

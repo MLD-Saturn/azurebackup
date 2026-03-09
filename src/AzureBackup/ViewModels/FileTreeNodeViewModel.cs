@@ -148,7 +148,7 @@ public partial class FileTreeNodeViewModel : ObservableObject
             var folderCount = _model.FolderCount;
             var totalSize = _model.TotalSize;
 
-            var parts = new List<string>();
+            List<string> parts = new();
             if (fileCount > 0)
                 parts.Add($"{fileCount} file{(fileCount != 1 ? "s" : "")}");
             if (folderCount > 0)
@@ -185,7 +185,7 @@ public partial class FileTreeNodeViewModel : ObservableObject
         // Build children
         foreach (var childModel in model.Children.OrderByDescending(c => c.IsFolder).ThenBy(c => c.Name))
         {
-            var childVm = new FileTreeNodeViewModel(childModel, this);
+            FileTreeNodeViewModel childVm = new(childModel, this);
             Children.Add(childVm);
         }
     }
@@ -397,7 +397,7 @@ public partial class FileTreeNodeViewModel : ObservableObject
     /// </summary>
     public static List<FileTreeNodeViewModel> BuildTree(IEnumerable<BackedUpFile> files)
     {
-        var rootNodes = new Dictionary<string, FileTreeNode>();
+        Dictionary<string, FileTreeNode> rootNodes = new();
 
         foreach (var file in files)
         {
@@ -443,7 +443,7 @@ public partial class FileTreeNodeViewModel : ObservableObject
                 }
                 else
                 {
-                    var newNode = new FileTreeNode
+                    FileTreeNode newNode = new()
                     {
                         Name = part,
                         FullPath = currentPath,

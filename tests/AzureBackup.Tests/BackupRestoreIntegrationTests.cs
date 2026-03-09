@@ -110,7 +110,7 @@ public class BackupRestoreIntegrationTests : IAsyncLifetime
     public async Task BackupAndRestore_MultipleFiles_AllRestoreCorrectly()
     {
         // Arrange - Create multiple files
-        var files = new Dictionary<string, byte[]>();
+        Dictionary<string, byte[]> files = new();
         for (int i = 0; i < 5; i++)
         {
             var content = CreateRandomContent(50 * 1024 + i * 10000);
@@ -120,7 +120,7 @@ public class BackupRestoreIntegrationTests : IAsyncLifetime
         }
 
         // Act - Backup all files
-        var backedUpFiles = new List<BackedUpFile>();
+        List<BackedUpFile> backedUpFiles = new();
         foreach (var filename in files.Keys)
         {
             var sourcePath = Path.Combine(_sourceDirectory, filename);
@@ -340,7 +340,7 @@ public class BackupRestoreIntegrationTests : IAsyncLifetime
 
     private async Task<BackedUpFile> BackupFileAsync(string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
 
@@ -373,7 +373,7 @@ public class BackupRestoreIntegrationTests : IAsyncLifetime
         }
 
         // Download and reassemble chunks
-        await using var outputStream = new FileStream(restorePath, FileMode.Create);
+        await using FileStream outputStream = new(restorePath, FileMode.Create);
         
         foreach (var chunk in file.Chunks.OrderBy(c => c.Index))
         {
@@ -384,7 +384,7 @@ public class BackupRestoreIntegrationTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }

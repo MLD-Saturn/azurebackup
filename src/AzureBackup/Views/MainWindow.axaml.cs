@@ -76,7 +76,7 @@ public partial class MainWindow : Window
         
         while (attempts < maxAttempts)
         {
-            var dialog = new PasswordDialog();
+            PasswordDialog dialog = new();
             var result = await dialog.ShowDialog<bool?>(this);
             
             if (result != true)
@@ -98,7 +98,7 @@ public partial class MainWindow : Window
             if (attempts < maxAttempts)
             {
                 // Show error in a new dialog
-                var retryDialog = new PasswordDialog();
+                PasswordDialog retryDialog = new();
                 retryDialog.ShowError($"{errorMessage} ({maxAttempts - attempts} attempts remaining)");
                 
                 var retryResult = await retryDialog.ShowDialog<bool?>(this);
@@ -280,7 +280,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var dialog = new PreviewDialog { DataContext = previewViewModel };
+            PreviewDialog dialog = new() { DataContext = previewViewModel };
             var result = await dialog.ShowDialog<bool?>(this);
             return result == true;
         }

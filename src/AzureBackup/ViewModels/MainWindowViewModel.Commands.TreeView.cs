@@ -173,13 +173,13 @@ public partial class MainWindowViewModel
             AddLog($"Restoring {filesWithPaths.Count} files with path remapping...");
 
             // File-level progress (which file we're on)
-            var fileProgress = new Progress<(int current, int total, string file)>(p =>
+            Progress<(int current, int total, string file)> fileProgress = new(p =>
             {
                 // This is handled by the byte-level progress now
             });
             
             // Byte-level progress for individual files
-            var byteProgress = new Progress<(long bytesCompleted, long fileSize, int fileIndex)>(p =>
+            Progress<(long bytesCompleted, long fileSize, int fileIndex)> byteProgress = new(p =>
             {
                 var fileName = Path.GetFileName(filesWithPaths[p.fileIndex].file.LocalPath);
                 UpdateFileProgress(fileName, p.bytesCompleted, p.fileSize, p.fileIndex);
@@ -282,7 +282,7 @@ public partial class MainWindowViewModel
 
             AddLog($"Mirror sync: {sourceFolder} ? {targetFolder}");
 
-            var progress = new Progress<(int current, int total, string file, string action)>(p =>
+            Progress<(int current, int total, string file, string action)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {

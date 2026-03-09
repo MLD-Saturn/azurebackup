@@ -61,7 +61,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BlobService_NotConnected_ThrowsOnUpload()
     {
         // Arrange - Create blob service but don't connect
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
 
@@ -74,7 +74,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BlobService_NotConnected_ThrowsOnDownload()
     {
         // Arrange - Create blob service but don't connect
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
 
         // Act & Assert
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -89,7 +89,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BlobService_WithLatency_StillCompletes()
     {
         // Arrange - Create blob service with 50ms simulated latency
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 50);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 50);
         await blobService.ConnectAsync("fake-connection", "container");
         
         var data = CreateRandomContent(1024);
@@ -117,9 +117,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task RestoreService_FileAlreadyExists_NoOverwrite_ReturnsFalse()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create and backup a file
         var content = CreateRandomContent(10 * 1024);
@@ -143,9 +143,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task RestoreService_FileAlreadyExists_WithOverwrite_Succeeds()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(10 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "overwrite.txt");
@@ -170,9 +170,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task RestoreService_ToNestedDirectory_CreatesDirectories()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(10 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "nested.txt");
@@ -199,9 +199,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task DeleteFileAsync_RemovesMetadata()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(50 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "to_delete.txt");
@@ -230,9 +230,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BackupAndRestore_EmptyFile_Succeeds()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var sourceFile = Path.Combine(_sourceDirectory, "empty.txt");
         await File.WriteAllBytesAsync(sourceFile, []);
@@ -253,9 +253,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BackupAndRestore_ExactlyMinChunkSize_Succeeds()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create file exactly at minimum chunk size boundary (64 KB)
         var content = CreateRandomContent(64 * 1024);
@@ -278,7 +278,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     public async Task BackupAndRestore_OneByteLessThanMinChunk_SingleChunk()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
 
         var content = CreateRandomContent(64 * 1024 - 1); // One byte less than min
@@ -302,9 +302,9 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
         await FlakyTestHelper.RetryAsync(async () =>
         {
             // Arrange
-            var blobService = new InMemoryBlobService(_encryptionService);
+            InMemoryBlobService blobService = new(_encryptionService);
             await blobService.ConnectAsync("fake", "container");
-            var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+            RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
             var content = CreateRandomContent(200 * 1024);
             var sourceFile = Path.Combine(_sourceDirectory, $"progress_{Guid.NewGuid():N}.txt");
@@ -313,8 +313,8 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
             var backedUp = await BackupFileAsync(blobService, sourceFile);
             var restorePath = Path.Combine(_restoreDirectory, $"progress_{Guid.NewGuid():N}.txt");
 
-            var progressReports = new List<(long current, long total)>();
-            var progress = new Progress<(long current, long total)>(p => progressReports.Add(p));
+            List<(long current, long total)> progressReports = new();
+            Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
 
             // Act
             await restoreService.RestoreFileAsync(backedUp, restorePath, true, progress);
@@ -337,7 +337,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
 
     private async Task<BackedUpFile> BackupFileAsync(IBlobStorageService blobService, string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
 
@@ -347,7 +347,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
             chunk.BlobName = await blobService.UploadChunkAsync(chunkData, chunk.Hash);
         }
 
-        var backedUp = new BackedUpFile
+        BackedUpFile backedUp = new()
         {
             LocalPath = filePath,
             BlobName = $"files/{Guid.NewGuid()}",
@@ -367,14 +367,14 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private static string ComputeHash(byte[] data)
     {
-        var hash = SHA256.HashData(data);
+        byte[] hash = SHA256.HashData(data);
         return Convert.ToHexString(hash);
     }
 

@@ -83,7 +83,7 @@ public partial class OperationPreviewViewModel : ObservableObject
     {
         get
         {
-            var parts = new System.Collections.Generic.List<string>();
+            System.Collections.Generic.List<string> parts = new();
             
             if (_preview.CreateCount > 0)
                 parts.Add($"{_preview.CreateCount} new");

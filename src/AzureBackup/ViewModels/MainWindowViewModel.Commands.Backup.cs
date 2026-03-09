@@ -76,7 +76,7 @@ public partial class MainWindowViewModel
             IsOperationInProgress = true;
             AddLog("Starting backup sync...");
             
-            var syncProgress = new Progress<(int current, int total, string file, string status)>(p =>
+            Progress<(int current, int total, string file, string status)> syncProgress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
@@ -177,7 +177,7 @@ public partial class MainWindowViewModel
         {
             // For full scan, we create a preview that shows all files as "to be backed up"
             var config = _databaseService.GetConfiguration();
-            var preview = new OperationPreview
+            OperationPreview preview = new()
             {
                 OperationType = OperationType.Backup,
                 OperationDescription = "Force full scan - re-upload ALL files (ignoring backup history)",
@@ -186,7 +186,7 @@ public partial class MainWindowViewModel
             };
 
             // Scan all watched folders to get file count
-            var allFiles = new List<string>();
+            List<string> allFiles = new();
             foreach (var folder in config.WatchedFolders.Where(f => f.IsEnabled))
             {
                 _operationCts.Token.ThrowIfCancellationRequested();
@@ -199,7 +199,7 @@ public partial class MainWindowViewModel
             {
                 try
                 {
-                    var fileInfo = new FileInfo(filePath);
+                    FileInfo fileInfo = new(filePath);
                     if (fileInfo.Exists)
                     {
                         preview.FilesToCreate.Add(new PreviewFileAction
@@ -236,7 +236,7 @@ public partial class MainWindowViewModel
             IsOperationInProgress = true;
             AddLog("?? Force Full Scan: Re-queuing ALL files (ignoring backup history)...");
             
-            var progress = new Progress<(int current, int total, string file)>(p =>
+            Progress<(int current, int total, string file)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
@@ -295,7 +295,7 @@ public partial class MainWindowViewModel
             {
                 try
                 {
-                    var info = new FileInfo(path);
+                    FileInfo info = new(path);
                     if (info.Exists) totalBytes += info.Length;
                 }
                 catch { /* Skip inaccessible files */ }
@@ -316,7 +316,7 @@ public partial class MainWindowViewModel
                 
                 try
                 {
-                    var info = new FileInfo(file);
+                    FileInfo info = new(file);
                     if (info.Exists) fileSize = info.Length;
                 }
                 catch { /* Proceed with 0 size */ }
@@ -328,7 +328,7 @@ public partial class MainWindowViewModel
                     // Create progress reporter for byte-level progress
                     var fileIndex = i;
                     var currentFileSize = fileSize;
-                    var fileProgress = new Progress<(long current, long total)>(p =>
+                    Progress<(long current, long total)> fileProgress = new(p =>
                     {
                         UpdateFileProgress(fileName, p.current, currentFileSize, fileIndex);
                     });

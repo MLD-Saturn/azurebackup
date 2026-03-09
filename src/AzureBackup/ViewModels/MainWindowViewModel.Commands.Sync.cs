@@ -315,7 +315,7 @@ public partial class MainWindowViewModel
             _operationStartTime = DateTime.Now;
             _lastSpeedUpdate = DateTime.Now;
 
-            var progress = new Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>(p =>
+            Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
@@ -467,7 +467,7 @@ public partial class MainWindowViewModel
                     _operationStartTime = DateTime.Now;
                     _lastSpeedUpdate = DateTime.Now;
 
-                    var backupProgress = new Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>(p =>
+                    Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)> backupProgress = new(p =>
                     {
                         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                         {
@@ -519,7 +519,7 @@ public partial class MainWindowViewModel
                         .Select(f => (file: f.Model, targetPath: RestoreToOriginalLocation ? f.Model.LocalPath : System.IO.Path.Combine(RestoreDirectory, System.IO.Path.GetFileName(f.Model.LocalPath))))
                         .ToList();
 
-                var restoreProgress = new Progress<(int current, int total, string file)>(p =>
+                Progress<(int current, int total, string file)> restoreProgress = new(p =>
                 {
                     Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                     {
@@ -644,7 +644,7 @@ public partial class MainWindowViewModel
             _operationStartTime = DateTime.Now;
             _lastSpeedUpdate = DateTime.Now;
 
-            var progress = new Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>(p =>
+            Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)> progress = new(p =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {

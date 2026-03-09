@@ -354,7 +354,7 @@ public partial class MainWindowViewModel
             // This prevents showing "Backed up" for files that were deleted from Azure
             if (azureFilePaths != null)
             {
-                var validatedBackups = new Dictionary<string, AzureBackup.Core.Models.BackedUpFile>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, AzureBackup.Core.Models.BackedUpFile> validatedBackups = new(StringComparer.OrdinalIgnoreCase);
                 foreach (var kvp in backedUpFiles)
                 {
                     if (azureFilePaths.Contains(kvp.Key))

@@ -62,9 +62,9 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task FileHash_ComputedCorrectly_MatchesAfterRestore()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(500 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "hash_test.bin");
@@ -188,7 +188,7 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task EncryptedChunk_DecryptsToOriginal()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
 
         var originalData = CreateRandomContent(64 * 1024);
@@ -248,9 +248,9 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task RestoreService_VerifiesFileHash_AfterRestore()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(500 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "verify_hash.bin");
@@ -275,9 +275,9 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task RestoreService_CorruptedChunk_ThrowsDataIntegrityException()
     {
         // Arrange
-        var corruptingService = new CorruptingBlobService(_encryptionService);
+        CorruptingBlobService corruptingService = new(_encryptionService);
         await corruptingService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, corruptingService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, corruptingService, _encryptionService);
 
         var content = CreateRandomContent(100 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "corrupt_test.bin");
@@ -299,9 +299,9 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task RestoreService_ChunkSizeMismatch_ThrowsDataIntegrityException()
     {
         // Arrange
-        var truncatingService = new TruncatingBlobService(_encryptionService);
+        TruncatingBlobService truncatingService = new(_encryptionService);
         await truncatingService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, truncatingService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, truncatingService, _encryptionService);
 
         var content = CreateRandomContent(100 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "truncate_test.bin");
@@ -327,7 +327,7 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task BlobService_InvalidChunkHash_ThrowsSecurityPolicyException()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
         
         var data = CreateRandomContent(1024);
@@ -347,7 +347,7 @@ public class DataIntegrityTests : IAsyncLifetime
     public async Task BlobService_InvalidBlobNameFormat_ThrowsSecurityPolicyException()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         await blobService.ConnectAsync("fake", "container");
 
         // Act & Assert - Blob name must start with "chunks/"
@@ -364,7 +364,7 @@ public class DataIntegrityTests : IAsyncLifetime
 
     private async Task<BackedUpFile> BackupFileAsync(IBlobStorageService blobService, string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
 
@@ -374,7 +374,7 @@ public class DataIntegrityTests : IAsyncLifetime
             chunk.BlobName = await blobService.UploadChunkAsync(chunkData, chunk.Hash);
         }
 
-        var backedUp = new BackedUpFile
+        BackedUpFile backedUp = new()
         {
             LocalPath = filePath,
             BlobName = $"files/{Guid.NewGuid()}",
@@ -394,14 +394,14 @@ public class DataIntegrityTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private static string ComputeHash(byte[] data)
     {
-        var hash = SHA256.HashData(data);
+        byte[] hash = SHA256.HashData(data);
         return Convert.ToHexString(hash);
     }
 

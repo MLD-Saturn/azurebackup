@@ -48,7 +48,7 @@ public class EncryptionService : IDisposable
     /// </summary>
     public static byte[] GenerateSalt()
     {
-        var salt = new byte[SaltSize];
+        byte[] salt = new byte[SaltSize];
         RandomNumberGenerator.Fill(salt);
         return salt;
     }
@@ -72,7 +72,7 @@ public class EncryptionService : IDisposable
         var passwordBytes = Encoding.UTF8.GetBytes(password);
         try
         {
-            using var argon2 = new Argon2id(passwordBytes)
+            using Argon2id argon2 = new(passwordBytes)
             {
                 Salt = salt,
                 DegreeOfParallelism = Argon2DegreeOfParallelism,
@@ -116,11 +116,11 @@ public class EncryptionService : IDisposable
     public async Task<byte[]> CreatePasswordVerificationHashAsync(string password, byte[] salt)
     {
         // Use a different context to derive a verification hash
-        var verificationSalt = new byte[SaltSize];
+        byte[] verificationSalt = new byte[SaltSize];
         Array.Copy(salt, verificationSalt, SaltSize);
         verificationSalt[0] ^= 0xFF; // Modify salt to get different derivation
 
-        using var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password))
+        using Argon2id argon2 = new(Encoding.UTF8.GetBytes(password))
         {
             Salt = verificationSalt,
             DegreeOfParallelism = Argon2DegreeOfParallelism,
@@ -156,17 +156,17 @@ public class EncryptionService : IDisposable
 
         try
         {
-            var nonce = new byte[NonceSize];
+            byte[] nonce = new byte[NonceSize];
             RandomNumberGenerator.Fill(nonce);
 
-            var ciphertext = new byte[plaintext.Length];
-            var tag = new byte[TagSize];
+            byte[] ciphertext = new byte[plaintext.Length];
+            byte[] tag = new byte[TagSize];
 
-            using var aes = new AesGcm(keyCopy, TagSize);
+            using AesGcm aes = new(keyCopy, TagSize);
             aes.Encrypt(nonce, plaintext, ciphertext, tag);
 
             // Combine: magic + version + nonce + ciphertext + tag
-            var resultWithoutChecksum = new byte[MagicHeader.Length + 1 + NonceSize + ciphertext.Length + TagSize];
+            byte[] resultWithoutChecksum = new byte[MagicHeader.Length + 1 + NonceSize + ciphertext.Length + TagSize];
             var offset = 0;
 
             MagicHeader.CopyTo(resultWithoutChecksum, offset);
@@ -185,7 +185,7 @@ public class EncryptionService : IDisposable
 
             // Add CRC32 checksum for corruption detection
             var checksum = ComputeChecksum(resultWithoutChecksum);
-            var result = new byte[resultWithoutChecksum.Length + ChecksumSize];
+            byte[] result = new byte[resultWithoutChecksum.Length + ChecksumSize];
             resultWithoutChecksum.CopyTo(result, 0);
             checksum.CopyTo(result, resultWithoutChecksum.Length);
 
@@ -206,17 +206,17 @@ public class EncryptionService : IDisposable
     {
         EnsureInitialized();
 
-        var buffer = new byte[bufferSize];
+        byte[] buffer = new byte[bufferSize];
         int bytesRead;
 
         while ((bytesRead = await input.ReadAsync(buffer)) > 0)
         {
-            var chunkData = new byte[bytesRead];
+            byte[] chunkData = new byte[bytesRead];
             Array.Copy(buffer, chunkData, bytesRead);
             var encrypted = Encrypt(chunkData);
 
             // Write chunk atomically: combine length + data into single write
-            var chunkPacket = new byte[4 + encrypted.Length];
+            byte[] chunkPacket = new byte[4 + encrypted.Length];
             BitConverter.GetBytes(encrypted.Length).CopyTo(chunkPacket, 0);
             encrypted.CopyTo(chunkPacket, 4);
             
@@ -278,9 +278,9 @@ public class EncryptionService : IDisposable
 
             var tag = dataWithoutChecksum.Slice(offset, TagSize);
 
-            var plaintext = new byte[ciphertextLength];
+            byte[] plaintext = new byte[ciphertextLength];
 
-            using var aes = new AesGcm(keyCopy, TagSize);
+            using AesGcm aes = new(keyCopy, TagSize);
             aes.Decrypt(nonce, ciphertext, tag, plaintext);
 
             return plaintext;
@@ -302,7 +302,7 @@ public class EncryptionService : IDisposable
     {
         EnsureInitialized();
 
-        var lengthBuffer = new byte[4];
+        byte[] lengthBuffer = new byte[4];
 
         while (true)
         {
@@ -316,7 +316,7 @@ public class EncryptionService : IDisposable
             if (chunkLength < 0 || chunkLength > 100_000_000) // Sanity check: max 100MB chunk
                 throw new DataIntegrityException("Invalid chunk length - file may be corrupted");
 
-            var encryptedChunk = new byte[chunkLength];
+            byte[] encryptedChunk = new byte[chunkLength];
             await input.ReadExactlyAsync(encryptedChunk);
 
             var decrypted = Decrypt(encryptedChunk);

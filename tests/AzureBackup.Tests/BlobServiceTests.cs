@@ -40,7 +40,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task ConnectAsync_ValidParameters_SetsIsConnected()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
         Assert.False(blobService.IsConnected);
 
         // Act
@@ -54,7 +54,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task ConnectAsync_EmptyConnectionString_Throws()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -65,7 +65,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task ConnectAsync_EmptyContainerName_Throws()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -76,7 +76,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task TestConnectionAsync_ValidParameters_ReturnsSuccess()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
 
         // Act
         var (success, message) = await blobService.TestConnectionAsync("connection", "container");
@@ -90,7 +90,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task TestConnectionAsync_EmptyConnectionString_ReturnsFailure()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService blobService = new(_encryptionService);
 
         // Act
         var (success, _) = await blobService.TestConnectionAsync("", "container");
@@ -184,7 +184,7 @@ public class BlobServiceTests : IAsyncLifetime
             var data = CreateRandomContent(10 * 1024);
             var hash = ComputeHash(data);
             long reportedBytes = 0;
-            var progress = new Progress<long>(bytes => reportedBytes = bytes);
+            Progress<long> progress = new(bytes => reportedBytes = bytes);
 
             // Act
             await _blobService.UploadChunkAsync(data, hash, progress);
@@ -333,7 +333,7 @@ public class BlobServiceTests : IAsyncLifetime
             var data = CreateRandomContent(1024);
             var hash = ComputeHash(data);
             long reportedBytes = 0;
-            var progress = new Progress<long>(b => reportedBytes = b);
+            Progress<long> progress = new(b => reportedBytes = b);
 
             // Act
             await _blobService.UploadChunkDirectAsync(data, hash, progress);
@@ -573,7 +573,7 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task BlobService_WithLatency_StillCompletes()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 50);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 50);
         await blobService.ConnectAsync("conn", "container");
         
         var data = CreateRandomContent(1024);
@@ -595,12 +595,12 @@ public class BlobServiceTests : IAsyncLifetime
     public async Task UploadChunkAsync_CancellationDuringDelay_ThrowsOperationCancelled()
     {
         // Arrange - Use long latency so cancellation triggers during delay
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 5000);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 5000);
         await blobService.ConnectAsync("conn", "container");
         
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
 
         // Act - Start upload and cancel during the delay
         var uploadTask = blobService.UploadChunkAsync(data, hash, null, cts.Token);
@@ -616,14 +616,14 @@ public class BlobServiceTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private static string ComputeHash(byte[] data)
     {
-        var hash = SHA256.HashData(data);
+        byte[] hash = SHA256.HashData(data);
         return Convert.ToHexString(hash);
     }
 

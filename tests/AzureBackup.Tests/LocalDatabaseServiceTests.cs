@@ -50,7 +50,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public void Initialize_WithNullPath_ThrowsArgumentNullException()
     {
         // Arrange
-        using var service = new LocalDatabaseService();
+        using LocalDatabaseService service = new();
 
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => service.Initialize(null!));
@@ -60,7 +60,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public void Initialize_CreatesDirectoryIfNeeded()
     {
         // Arrange
-        using var service = new LocalDatabaseService();
+        using LocalDatabaseService service = new();
         var nestedPath = Path.Combine(_testDirectory, "nested", "deep", "db.db");
 
         // Act
@@ -281,7 +281,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public void QueueFileChange_AddsChange()
     {
         // Arrange
-        var change = new FileChangeEvent
+        FileChangeEvent change = new()
         {
             FilePath = "C:\\changed.txt",
             ChangeType = FileChangeType.Modified,
@@ -301,13 +301,13 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public void QueueFileChange_ReplacesExistingChange()
     {
         // Arrange
-        var change1 = new FileChangeEvent
+        FileChangeEvent change1 = new()
         {
             FilePath = "C:\\file.txt",
             ChangeType = FileChangeType.Created,
             DetectedAt = DateTime.UtcNow
         };
-        var change2 = new FileChangeEvent
+        FileChangeEvent change2 = new()
         {
             FilePath = "C:\\file.txt",
             ChangeType = FileChangeType.Modified,
@@ -328,9 +328,9 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public void GetPendingChanges_ReturnsOrderedByTime()
     {
         // Arrange
-        var change1 = new FileChangeEvent { FilePath = "C:\\first.txt", DetectedAt = DateTime.UtcNow };
-        var change2 = new FileChangeEvent { FilePath = "C:\\second.txt", DetectedAt = DateTime.UtcNow.AddMinutes(1) };
-        var change3 = new FileChangeEvent { FilePath = "C:\\third.txt", DetectedAt = DateTime.UtcNow.AddMinutes(-1) };
+        FileChangeEvent change1 = new() { FilePath = "C:\\first.txt", DetectedAt = DateTime.UtcNow };
+        FileChangeEvent change2 = new() { FilePath = "C:\\second.txt", DetectedAt = DateTime.UtcNow.AddMinutes(1) };
+        FileChangeEvent change3 = new() { FilePath = "C:\\third.txt", DetectedAt = DateTime.UtcNow.AddMinutes(-1) };
         
         _databaseService.QueueFileChange(change1);
         _databaseService.QueueFileChange(change2);
@@ -449,7 +449,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public async Task ConcurrentWrites_DoNotCorruptData()
     {
         // Arrange
-        var tasks = new List<Task>();
+        List<Task> tasks = new();
         var fileCount = 100;
 
         // Act - Write files concurrently
@@ -472,8 +472,8 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     public async Task ConcurrentReadsAndWrites_DoNotDeadlock()
     {
         // Arrange
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var tasks = new List<Task>();
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+        List<Task> tasks = new();
 
         // Act - Mix of reads and writes
         for (int i = 0; i < 50; i++)

@@ -15,7 +15,7 @@ public class FileTreeNodeTests
     public void TotalSize_WithSingleFile_ReturnsFileSize()
     {
         // Arrange
-        var node = new FileTreeNode
+        FileTreeNode node = new()
         {
             Name = "test.txt",
             FullPath = @"C:\test.txt",
@@ -31,7 +31,7 @@ public class FileTreeNodeTests
     public void TotalSize_WithFolder_SumsChildSizes()
     {
         // Arrange
-        var folder = new FileTreeNode
+        FileTreeNode folder = new()
         {
             Name = "folder",
             FullPath = @"C:\folder",
@@ -63,7 +63,7 @@ public class FileTreeNodeTests
     public void FileCount_WithSingleFile_ReturnsOne()
     {
         // Arrange
-        var node = new FileTreeNode
+        FileTreeNode node = new()
         {
             Name = "test.txt",
             IsFolder = false,
@@ -78,7 +78,7 @@ public class FileTreeNodeTests
     public void FileCount_WithFolder_CountsAllFiles()
     {
         // Arrange
-        var folder = new FileTreeNode
+        FileTreeNode folder = new()
         {
             Name = "folder",
             IsFolder = true,
@@ -106,7 +106,7 @@ public class FileTreeNodeTests
     public void FolderCount_CountsAllSubfolders()
     {
         // Arrange
-        var folder = new FileTreeNode
+        FileTreeNode folder = new()
         {
             Name = "root",
             IsFolder = true,
@@ -135,7 +135,7 @@ public class FileTreeNodeTests
         // Arrange
         var file1 = CreateBackedUpFile("f1", 100);
         var file2 = CreateBackedUpFile("f2", 200);
-        var folder = new FileTreeNode
+        FileTreeNode folder = new()
         {
             Name = "root",
             IsFolder = true,
@@ -165,7 +165,7 @@ public class FileTreeNodeTests
     public void GetAllDescendants_IncludesFoldersAndFiles()
     {
         // Arrange
-        var folder = new FileTreeNode
+        FileTreeNode folder = new()
         {
             Name = "root",
             IsFolder = true,
@@ -191,7 +191,7 @@ public class FileTreeNodeTests
     public void MirrorSyncResult_DefaultValues_AreZero()
     {
         // Arrange & Act
-        var result = new MirrorSyncResult();
+        MirrorSyncResult result = new();
 
         // Assert
         Assert.Equal(0, result.FilesTransferred);
@@ -210,7 +210,7 @@ public class FileTreeNodeTests
     public void InitialSyncResult_TotalToBackup_SumsCorrectly()
     {
         // Arrange
-        var result = new InitialSyncResult
+        InitialSyncResult result = new()
         {
             NewFilesQueued = 5,
             ModifiedFilesQueued = 3,

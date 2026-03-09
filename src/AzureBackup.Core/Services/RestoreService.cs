@@ -48,7 +48,7 @@ public class RestoreService
     public async Task<List<BackedUpFile>> ListRestorableFilesAsync(CancellationToken cancellationToken = default)
     {
         Log("ListRestorableFilesAsync: Starting to list restorable files");
-        var files = new List<BackedUpFile>();
+        List<BackedUpFile> files = new();
         
         StatusChanged?.Invoke(this, "Retrieving file list from Azure...");
 
@@ -134,14 +134,14 @@ public class RestoreService
 
             // Download chunks - use parallel downloads for files with multiple chunks
             // Store downloaded chunks in a dictionary for sequential writing
-            var downloadedChunks = new Dictionary<int, byte[]>();
+            Dictionary<int, byte[]> downloadedChunks = new();
             long currentBytes = 0;
-            var downloadLock = new object();
+            object downloadLock = new();
             
             if (sortedChunks.Count > 1)
             {
                 // Parallel download with semaphore to limit concurrency
-                using var semaphore = new SemaphoreSlim(MaxParallelChunkDownloads);
+                using SemaphoreSlim semaphore = new(MaxParallelChunkDownloads);
                 var downloadTasks = sortedChunks.Select(async chunk =>
                 {
                     await semaphore.WaitAsync(cancellationToken);
@@ -175,7 +175,7 @@ public class RestoreService
                 await Task.WhenAll(downloadTasks);
                 
                 // Write chunks sequentially to preserve file order
-                await using var outputStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, 
+                await using FileStream outputStream = new(tempPath, FileMode.Create, FileAccess.Write, 
                     FileShare.None, bufferSize: 81920, useAsync: true);
                     
                 for (int i = 0; i < sortedChunks.Count; i++)
@@ -188,7 +188,7 @@ public class RestoreService
             else
             {
                 // Single chunk - download and write directly
-                await using var outputStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, 
+                await using FileStream outputStream = new(tempPath, FileMode.Create, FileAccess.Write, 
                     FileShare.None, bufferSize: 81920, useAsync: true);
 
                 foreach (var chunk in sortedChunks)
@@ -269,7 +269,7 @@ public class RestoreService
     /// </summary>
     private static async Task<string> ComputeFileHashAsync(string filePath, CancellationToken cancellationToken)
     {
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, 
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, 
             FileShare.Read, bufferSize: 81920, useAsync: true);
         
         var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken);
@@ -290,7 +290,7 @@ public class RestoreService
         ArgumentNullException.ThrowIfNull(files);
         ArgumentException.ThrowIfNullOrWhiteSpace(restoreDirectory);
         
-        var result = new RestoreResult();
+        RestoreResult result = new();
         var fileList = files.ToList();
 
         StatusChanged?.Invoke(this, $"Starting restore of {fileList.Count} files");
@@ -460,7 +460,7 @@ public class RestoreService
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceBasePath);
         
         Log($"MirrorSyncToLocalAsync: Starting mirror sync from '{sourceBasePath}' to '{targetDirectory}'");
-        var result = new MirrorSyncResult();
+        MirrorSyncResult result = new();
         var fileList = backupFiles.ToList();
         
         // Normalize paths
@@ -475,7 +475,7 @@ public class RestoreService
         StatusChanged?.Invoke(this, $"Mirror sync: {fileList.Count} files from backup");
 
         // Build a set of expected files in target directory
-        var expectedLocalFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> expectedLocalFiles = new(StringComparer.OrdinalIgnoreCase);
 
         // Phase 1: Restore/update files from backup
         var totalOperations = fileList.Count;
@@ -502,7 +502,7 @@ public class RestoreService
                 // Check if local file exists and is up to date
                 if (File.Exists(targetPath))
                 {
-                    var localInfo = new FileInfo(targetPath);
+                    FileInfo localInfo = new(targetPath);
                     
                     // Compare size and modification time
                     if (localInfo.Length == backupFile.FileSize && 
@@ -660,7 +660,7 @@ public class RestoreService
     {
         ArgumentNullException.ThrowIfNull(filesWithPaths);
         
-        var result = new RestoreResult();
+        RestoreResult result = new();
         var fileList = filesWithPaths.ToList();
 
         Log($"RestoreFilesWithRemappingAsync: Restoring {fileList.Count} files with path remapping");
@@ -731,7 +731,7 @@ public class RestoreService
         ArgumentException.ThrowIfNullOrWhiteSpace(targetDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceBasePath);
 
-        var preview = new OperationPreview
+        OperationPreview preview = new()
         {
             OperationType = OperationType.MirrorSync,
             OperationDescription = "Sync local folder to match Azure backup",
@@ -743,7 +743,7 @@ public class RestoreService
         sourceBasePath = Path.GetFullPath(sourceBasePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         targetDirectory = Path.GetFullPath(targetDirectory);
 
-        var expectedLocalFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> expectedLocalFiles = new(StringComparer.OrdinalIgnoreCase);
 
         // Check each backup file
         foreach (var backupFile in fileList)
@@ -756,7 +756,7 @@ public class RestoreService
 
             if (File.Exists(targetPath))
             {
-                var localInfo = new FileInfo(targetPath);
+                FileInfo localInfo = new(targetPath);
                 
                 // Compare to see if update needed
                 if (localInfo.Length == backupFile.FileSize && 
@@ -817,7 +817,7 @@ public class RestoreService
 
                 if (!expectedLocalFiles.Contains(localFile))
                 {
-                var fileInfo = new FileInfo(localFile);
+                FileInfo fileInfo = new(localFile);
                     preview.FilesToDelete.Add(new PreviewFileAction
                     {
                         FilePath = localFile,
@@ -841,7 +841,7 @@ public class RestoreService
         ArgumentNullException.ThrowIfNull(filesToDelete);
 
         var fileList = filesToDelete.ToList();
-        var preview = new OperationPreview
+        OperationPreview preview = new()
         {
             OperationType = OperationType.DeleteFromAzure,
             OperationDescription = $"Permanently delete {fileList.Count} file(s) from Azure storage",
@@ -873,7 +873,7 @@ public class RestoreService
         ArgumentNullException.ThrowIfNull(filesWithPaths);
 
         var fileList = filesWithPaths.ToList();
-        var preview = new OperationPreview
+        OperationPreview preview = new()
         {
             OperationType = OperationType.Restore,
             OperationDescription = $"Restore {fileList.Count} file(s) from Azure backup",
@@ -885,7 +885,7 @@ public class RestoreService
         {
             if (File.Exists(targetPath))
             {
-                var localInfo = new FileInfo(targetPath);
+                FileInfo localInfo = new(targetPath);
                 preview.FilesToOverwrite.Add(new PreviewFileAction
                 {
                     FilePath = file.LocalPath,

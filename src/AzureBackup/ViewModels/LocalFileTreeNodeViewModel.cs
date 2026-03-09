@@ -148,9 +148,10 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
 
     /// <summary>
     /// Whether this node is expanded in the tree view.
+    /// Default is collapsed (false) to match Azure panel behavior.
     /// </summary>
     [ObservableProperty]
-    private bool _isExpanded = true;
+    private bool _isExpanded;
 
     /// <summary>
     /// Whether this node is selected (checked) for backup.
@@ -286,8 +287,8 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
     {
         get
         {
-            if (!IsFolder) return string.Empty;
-            var parts = new List<string>();
+        if (!IsFolder) return string.Empty;
+            List<string> parts = new();
             if (NewCount > 0) parts.Add($"{NewCount} new");
             if (ModifiedCount > 0) parts.Add($"{ModifiedCount} modified");
             if (BackedUpCount > 0) parts.Add($"{BackedUpCount} backed up");
@@ -402,13 +403,13 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
         IEnumerable<AzureBackup.Core.Models.WatchedFolder> watchedFolders,
         IDictionary<string, AzureBackup.Core.Models.BackedUpFile> backedUpFiles)
     {
-        var roots = new List<LocalFileTreeNodeViewModel>();
+        List<LocalFileTreeNodeViewModel> roots = new();
 
         foreach (var folder in watchedFolders.Where(f => f.IsEnabled))
         {
             if (!Directory.Exists(folder.Path)) continue;
 
-            var rootNode = new LocalFileTreeNodeViewModel(
+            LocalFileTreeNodeViewModel rootNode = new(
                 Path.GetFileName(folder.Path.TrimEnd(Path.DirectorySeparatorChar)) ?? folder.Path,
                 folder.Path,
                 isFolder: true);
@@ -437,7 +438,7 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
                 // Check exclusion patterns
                 if (ShouldExclude(dirName, excludePatterns)) continue;
 
-                var dirNode = new LocalFileTreeNodeViewModel(dirName, subDir, isFolder: true)
+                LocalFileTreeNodeViewModel dirNode = new(dirName, subDir, isFolder: true)
                 {
                     Parent = parentNode
                 };
@@ -462,8 +463,8 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
 
                 try
                 {
-                    var fileInfo = new FileInfo(filePath);
-                    var fileNode = new LocalFileTreeNodeViewModel(
+                    FileInfo fileInfo = new(filePath);
+                    LocalFileTreeNodeViewModel fileNode = new(
                         fileName, 
                         filePath, 
                         isFolder: false,

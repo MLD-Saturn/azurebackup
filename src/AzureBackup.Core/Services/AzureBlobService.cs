@@ -121,7 +121,7 @@ public partial class AzureBlobService : IBlobStorageService
             ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
             ArgumentException.ThrowIfNullOrWhiteSpace(containerName);
             
-            var testClient = new BlobServiceClient(connectionString);
+            BlobServiceClient testClient = new(connectionString);
             var testContainer = testClient.GetBlobContainerClient(containerName);
             
             // Try to get container properties or create it
@@ -185,7 +185,7 @@ public partial class AzureBlobService : IBlobStorageService
             ArgumentException.ThrowIfNullOrWhiteSpace(containerName);
             ArgumentNullException.ThrowIfNull(credential);
             
-            var testClient = new BlobServiceClient(blobServiceUri, credential);
+            BlobServiceClient testClient = new(blobServiceUri, credential);
             var testContainer = testClient.GetBlobContainerClient(containerName);
             
             // Try to get container properties or create it
@@ -253,7 +253,7 @@ public partial class AzureBlobService : IBlobStorageService
         }
 
         // Upload with Cool tier and parallel transfer options for large chunks
-        var options = new BlobUploadOptions
+        BlobUploadOptions options = new()
         {
             AccessTier = AccessTier.Cool,
             HttpHeaders = new BlobHttpHeaders
@@ -263,7 +263,7 @@ public partial class AzureBlobService : IBlobStorageService
             TransferOptions = DefaultTransferOptions
         };
 
-        await using var stream = new MemoryStream(encryptedData);
+        await using MemoryStream stream = new(encryptedData);
         await blobClient.UploadAsync(stream, options, cancellationToken);
         
         TotalBytesUploaded += encryptedData.Length;
@@ -295,7 +295,7 @@ public partial class AzureBlobService : IBlobStorageService
         var blobClient = _containerClient!.GetBlobClient(blobName);
 
         // Upload directly without existence check - for new files this saves an API call per chunk
-        var options = new BlobUploadOptions
+        BlobUploadOptions options = new()
         {
             AccessTier = AccessTier.Cool,
             HttpHeaders = new BlobHttpHeaders
@@ -305,7 +305,7 @@ public partial class AzureBlobService : IBlobStorageService
             TransferOptions = DefaultTransferOptions
         };
 
-        await using var stream = new MemoryStream(encryptedData);
+        await using MemoryStream stream = new(encryptedData);
         await blobClient.UploadAsync(stream, options, cancellationToken);
         
         TotalBytesUploaded += encryptedData.Length;
@@ -345,12 +345,12 @@ public partial class AzureBlobService : IBlobStorageService
         
         var blobClient = _containerClient!.GetBlobClient(blobName);
         
-        var options = new BlobUploadOptions
+        BlobUploadOptions options = new()
         {
             AccessTier = AccessTier.Cool
         };
 
-        await using var stream = new MemoryStream(encryptedMetadata);
+        await using MemoryStream stream = new(encryptedMetadata);
         await blobClient.UploadAsync(stream, options, cancellationToken);
         
         TotalOperations++;
@@ -372,10 +372,10 @@ public partial class AzureBlobService : IBlobStorageService
         
         try
         {
-            await using var stream = new MemoryStream();
+            await using MemoryStream stream = new();
             
             // Use parallel transfer options for faster downloads
-            var downloadOptions = new BlobDownloadToOptions
+            BlobDownloadToOptions downloadOptions = new()
             {
                 TransferOptions = DefaultTransferOptions
             };
@@ -400,7 +400,7 @@ public partial class AzureBlobService : IBlobStorageService
     {
         EnsureConnected();
 
-        var blobs = new List<string>();
+        List<string> blobs = new();
         
         await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "metadata/", cancellationToken: cancellationToken))
         {
@@ -423,7 +423,7 @@ public partial class AzureBlobService : IBlobStorageService
         {
             var blobClient = _containerClient!.GetBlobClient(blobName);
             
-            await using var stream = new MemoryStream();
+            await using MemoryStream stream = new();
             await blobClient.DownloadToAsync(stream, cancellationToken);
             
             var encryptedData = stream.ToArray();

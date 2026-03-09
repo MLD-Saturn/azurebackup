@@ -58,7 +58,7 @@ public class FileWatcherServiceTests : IDisposable
         var filePath = Path.Combine(_testFolder, fileName);
         await File.WriteAllTextAsync(filePath, "test content");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -87,7 +87,7 @@ public class FileWatcherServiceTests : IDisposable
         // Also create a normal file
         await File.WriteAllTextAsync(Path.Combine(_testFolder, "normal.txt"), "test");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -110,7 +110,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_testFolder, "debug.txt"), "debug content");
         await File.WriteAllTextAsync(Path.Combine(_testFolder, "important.doc"), "doc content");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -138,7 +138,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(subFolder, "file_in_excluded.txt"), "content");
         await File.WriteAllTextAsync(Path.Combine(_testFolder, "root_file.txt"), "content");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -163,7 +163,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(nodeModules, "package.json"), "{}");
         await File.WriteAllTextAsync(Path.Combine(_testFolder, "index.js"), "content");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -191,7 +191,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(subFolder1, "level1.txt"), "content");
         await File.WriteAllTextAsync(Path.Combine(subFolder2, "level2.txt"), "content");
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true,
@@ -231,7 +231,7 @@ public class FileWatcherServiceTests : IDisposable
         File.WriteAllText(filePath, "content");
 
         // Lock the file with exclusive access
-        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        using FileStream stream = new(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         // Act
         var isLocked = FileWatcherService.IsFileLocked(filePath);
@@ -278,7 +278,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(filePath, "content");
 
         // Lock the file
-        var lockStream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        FileStream lockStream = new(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         // Start waiting in background
         var waitTask = FileWatcherService.WaitForFileAsync(filePath, TimeSpan.FromSeconds(5));
@@ -302,7 +302,7 @@ public class FileWatcherServiceTests : IDisposable
         await File.WriteAllTextAsync(filePath, "content");
 
         // Lock the file for the duration
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         // Act
         var result = await FileWatcherService.WaitForFileAsync(filePath, TimeSpan.FromSeconds(1));
@@ -318,8 +318,8 @@ public class FileWatcherServiceTests : IDisposable
         var filePath = Path.Combine(_testFolder, "cancelled.txt");
         await File.WriteAllTextAsync(filePath, "content");
 
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        using var cts = new CancellationTokenSource(500);
+        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        using CancellationTokenSource cts = new(500);
 
         // Act & Assert - TaskCanceledException is a subclass of OperationCanceledException
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -376,7 +376,7 @@ public class FileWatcherServiceTests : IDisposable
         var errorRaised = false;
         _fileWatcherService.Error += (s, e) => errorRaised = true;
 
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = @"C:\NonExistent\Path\That\Does\Not\Exist",
             IsEnabled = true
@@ -393,13 +393,13 @@ public class FileWatcherServiceTests : IDisposable
     public async Task ScanFolderAsync_Cancellation_ThrowsOperationCanceledException()
     {
         // Arrange
-        var folder = new WatchedFolder
+        WatchedFolder folder = new()
         {
             Path = _testFolder,
             IsEnabled = true
         };
 
-        using var cts = new CancellationTokenSource();
+        using CancellationTokenSource cts = new();
         cts.Cancel(); // Cancel immediately
 
         // Act & Assert - TaskCanceledException is a subclass of OperationCanceledException

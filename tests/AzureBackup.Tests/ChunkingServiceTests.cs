@@ -232,12 +232,12 @@ public class ChunkingServiceTests : IAsyncLifetime
     public async Task ComputeFileHashAsync_DifferentContent_DifferentHash()
     {
         // Arrange - Use different seeds for different content
-        var content1 = new byte[1024];
+        byte[] content1 = new byte[1024];
         new Random(1).NextBytes(content1);
         var file1 = Path.Combine(_testDirectory, "file1.bin");
         await File.WriteAllBytesAsync(file1, content1);
         
-        var content2 = new byte[1024];
+        byte[] content2 = new byte[1024];
         new Random(2).NextBytes(content2);
         var file2 = Path.Combine(_testDirectory, "file2.bin");
         await File.WriteAllBytesAsync(file2, content2);
@@ -274,7 +274,7 @@ public class ChunkingServiceTests : IAsyncLifetime
         // Arrange
         var filePath = CreateTestFile("new.bin", 256 * 1024);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
-        var existingChunks = new List<AzureBackup.Core.Models.ChunkInfo>();
+        List<AzureBackup.Core.Models.ChunkInfo> existingChunks = new();
 
         // Act
         var changed = _chunkingService.GetChangedChunks(existingChunks, chunks);
@@ -293,7 +293,7 @@ public class ChunkingServiceTests : IAsyncLifetime
         var chunks1 = await _chunkingService.ChunkFileAsync(file1);
 
         // Create completely different content for v2 to ensure new chunks
-        var content2 = new byte[512 * 1024];
+        byte[] content2 = new byte[512 * 1024];
         new Random(999).NextBytes(content2); // Different seed = different content
         var file2 = Path.Combine(_testDirectory, "v2.bin");
         await File.WriteAllBytesAsync(file2, content2);
@@ -337,7 +337,7 @@ public class ChunkingServiceTests : IAsyncLifetime
     {
         // Arrange
         var filePath = CreateTestFile("cancel.bin", 5 * 1024 * 1024); // 5 MB
-        using var cts = new CancellationTokenSource();
+        using CancellationTokenSource cts = new();
         cts.Cancel();
 
         // Act & Assert
@@ -359,7 +359,7 @@ public class ChunkingServiceTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         new Random(42).NextBytes(content); // Seeded for reproducibility
         return content;
     }

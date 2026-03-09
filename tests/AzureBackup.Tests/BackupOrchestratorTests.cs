@@ -256,7 +256,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
         var filePath = Path.Combine(_sourceDirectory, "large_cancel.bin");
         await File.WriteAllBytesAsync(filePath, content);
 
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         cts.CancelAfter(TimeSpan.FromMilliseconds(50));
 
         // Act & Assert - Should not throw unhandled exception
@@ -287,8 +287,8 @@ public class BackupOrchestratorTests : IAsyncLifetime
             var filePath = Path.Combine(_sourceDirectory, $"progress_test_{Guid.NewGuid():N}.txt");
             await File.WriteAllBytesAsync(filePath, content);
 
-            var progressReports = new ConcurrentBag<(long current, long total)>();
-            var progress = new Progress<(long current, long total)>(p => progressReports.Add(p));
+            ConcurrentBag<(long current, long total)> progressReports = new();
+            Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
 
             // Act
             await _orchestrator.BackupFileAsync(filePath, progress);
@@ -338,7 +338,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
         var filePath = Path.Combine(_sourceDirectory, "status_test.txt");
         await File.WriteAllBytesAsync(filePath, content);
 
-        var statusMessages = new ConcurrentBag<string>();
+        ConcurrentBag<string> statusMessages = new();
         _orchestrator.StatusChanged += (_, msg) => statusMessages.Add(msg);
 
         // Act
@@ -450,7 +450,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
         // Arrange
         await _orchestrator.InitializeAsync(TestPassword);
         
-        var files = new List<string>();
+        List<string> files = new();
         for (int i = 0; i < 5; i++)
         {
             var content = CreateRandomContent(50 * 1024);
@@ -482,10 +482,10 @@ public class BackupOrchestratorTests : IAsyncLifetime
     public async Task BackupFileAsync_NewFile_UsesDirectUpload()
     {
         // Arrange - Use tracking blob service to verify which method is called
-        var trackingBlobService = new TrackingBlobService(_encryptionService);
+        TrackingBlobService trackingBlobService = new(_encryptionService);
         await trackingBlobService.ConnectAsync("fake", "container");
         
-        var trackingOrchestrator = new BackupOrchestrator(
+        BackupOrchestrator trackingOrchestrator = new(
             _databaseService,
             _encryptionService,
             new ChunkingService(),
@@ -514,10 +514,10 @@ public class BackupOrchestratorTests : IAsyncLifetime
     public async Task BackupFileAsync_ModifiedFile_UsesRegularUpload()
     {
         // Arrange - Use tracking blob service
-        var trackingBlobService = new TrackingBlobService(_encryptionService);
+        TrackingBlobService trackingBlobService = new(_encryptionService);
         await trackingBlobService.ConnectAsync("fake", "container");
         
-        var trackingOrchestrator = new BackupOrchestrator(
+        BackupOrchestrator trackingOrchestrator = new(
             _databaseService,
             _encryptionService,
             new ChunkingService(),
@@ -556,10 +556,10 @@ public class BackupOrchestratorTests : IAsyncLifetime
     public async Task BackupFileAsync_NewFile_ReducesApiCalls()
     {
         // Arrange - Compare API calls between new and modified file scenarios
-        var trackingBlobService = new TrackingBlobService(_encryptionService);
+        TrackingBlobService trackingBlobService = new(_encryptionService);
         await trackingBlobService.ConnectAsync("fake", "container");
         
-        var trackingOrchestrator = new BackupOrchestrator(
+        BackupOrchestrator trackingOrchestrator = new(
             _databaseService,
             _encryptionService,
             new ChunkingService(),
@@ -603,7 +603,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }

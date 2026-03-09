@@ -61,12 +61,12 @@ public class CancellationTests : IAsyncLifetime
     public async Task UploadChunkAsync_CancelDuringLatency_ThrowsTaskCancelledException()
     {
         // Arrange - Use long latency so cancellation triggers during delay
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 5000);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 5000);
         await blobService.ConnectAsync("conn", "container");
         
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
 
         // Act - Start upload and cancel during the delay
         var uploadTask = blobService.UploadChunkAsync(data, hash, null, cts.Token);
@@ -83,12 +83,12 @@ public class CancellationTests : IAsyncLifetime
     public async Task UploadChunkAsync_PreCancelled_ThrowsImmediately()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 100);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 100);
         await blobService.ConnectAsync("conn", "container");
         
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         cts.Cancel(); // Pre-cancel
 
         // Act & Assert - Should throw immediately
@@ -104,11 +104,11 @@ public class CancellationTests : IAsyncLifetime
     public async Task DownloadChunkAsync_CancelDuringLatency_ThrowsTaskCancelledException()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 5000);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 5000);
         await blobService.ConnectAsync("conn", "container");
         
         // First upload a chunk (with no latency in a separate service)
-        var uploadService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService uploadService = new(_encryptionService);
         await uploadService.ConnectAsync("conn", "container");
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
@@ -116,7 +116,7 @@ public class CancellationTests : IAsyncLifetime
         // Upload through the slow service first
         var blobName = await blobService.UploadChunkAsync(data, hash);
         
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
 
         // Act - Start download and cancel during the delay
         var downloadTask = blobService.DownloadChunkAsync(blobName, cts.Token);
@@ -132,14 +132,14 @@ public class CancellationTests : IAsyncLifetime
     public async Task DownloadChunkAsync_PreCancelled_ThrowsImmediately()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 100);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 100);
         await blobService.ConnectAsync("conn", "container");
         
         var data = CreateRandomContent(1024);
         var hash = ComputeHash(data);
         var blobName = await blobService.UploadChunkAsync(data, hash);
         
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         cts.Cancel(); // Pre-cancel
 
         // Act & Assert
@@ -155,9 +155,9 @@ public class CancellationTests : IAsyncLifetime
     public async Task RestoreFileAsync_CancelDuringMultipleChunks_HandlesGracefully()
     {
         // Arrange - Use slow blob service
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 1000);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 1000);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create a file with multiple chunks
         var content = CreateRandomContent(2 * 1024 * 1024); // 2 MB - will have multiple chunks
@@ -165,7 +165,7 @@ public class CancellationTests : IAsyncLifetime
         await File.WriteAllBytesAsync(sourceFile, content);
         
         // Backup the file first (using fast service for setup)
-        var fastBlobService = new InMemoryBlobService(_encryptionService);
+        InMemoryBlobService fastBlobService = new(_encryptionService);
         await fastBlobService.ConnectAsync("fake", "container");
         var backedUp = await BackupFileAsync(fastBlobService, sourceFile);
         
@@ -179,7 +179,7 @@ public class CancellationTests : IAsyncLifetime
         
         var restorePath = Path.Combine(_restoreDirectory, "cancel_restore.bin");
 
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         
         // Act - Start restore and cancel during download
         var restoreTask = restoreService.RestoreFileAsync(backedUp, restorePath, true, null, cts.Token);
@@ -208,11 +208,11 @@ public class CancellationTests : IAsyncLifetime
     public async Task BackupOrchestrator_CancelDuringBackup_StopsGracefully()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 200);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 200);
         await blobService.ConnectAsync("fake", "container");
-        var fileWatcherService = new FileWatcherService(_databaseService);
+        FileWatcherService fileWatcherService = new(_databaseService);
         
-        var orchestrator = new BackupOrchestrator(
+        BackupOrchestrator orchestrator = new(
             _databaseService,
             _encryptionService,
             new ChunkingService(),
@@ -226,7 +226,7 @@ public class CancellationTests : IAsyncLifetime
         var filePath = Path.Combine(_sourceDirectory, "cancel_backup.bin");
         await File.WriteAllBytesAsync(filePath, content);
 
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         
         // Act
         var backupTask = orchestrator.BackupFileAsync(filePath, cts.Token);
@@ -257,9 +257,9 @@ public class CancellationTests : IAsyncLifetime
     public async Task RestoreFileAsync_CancelledMidway_ReportsPartialProgress()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 300);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 300);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create and backup a multi-chunk file
         var content = CreateRandomContent(1024 * 1024); // 1 MB
@@ -269,10 +269,10 @@ public class CancellationTests : IAsyncLifetime
         var backedUp = await BackupFileAsync(blobService, sourceFile);
         var restorePath = Path.Combine(_restoreDirectory, "progress_cancel.bin");
 
-        var progressReports = new List<(long current, long total)>();
-        var progress = new Progress<(long current, long total)>(p => progressReports.Add(p));
+        List<(long current, long total)> progressReports = new();
+        Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
         
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = new();
         
         // Act
         var restoreTask = restoreService.RestoreFileAsync(backedUp, restorePath, true, progress, cts.Token);
@@ -302,7 +302,7 @@ public class CancellationTests : IAsyncLifetime
 
     private async Task<BackedUpFile> BackupFileAsync(IBlobStorageService blobService, string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
 
@@ -312,7 +312,7 @@ public class CancellationTests : IAsyncLifetime
             chunk.BlobName = await blobService.UploadChunkAsync(chunkData, chunk.Hash);
         }
 
-        var backedUp = new BackedUpFile
+        BackedUpFile backedUp = new()
         {
             LocalPath = filePath,
             BlobName = $"files/{Guid.NewGuid()}",
@@ -332,14 +332,14 @@ public class CancellationTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }
 
     private static string ComputeHash(byte[] data)
     {
-        var hash = SHA256.HashData(data);
+        byte[] hash = SHA256.HashData(data);
         return Convert.ToHexString(hash);
     }
 

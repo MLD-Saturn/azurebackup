@@ -35,7 +35,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void EncryptDecrypt_VariousSizes_RoundTripSucceeds(int size)
     {
         // Arrange
-        var data = new byte[size];
+        byte[] data = new byte[size];
         RandomNumberGenerator.Fill(data);
 
         // Act
@@ -75,8 +75,8 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void Initialize_WrongKeySize_ThrowsArgumentException(int keySize)
     {
         // Arrange
-        using var service = new EncryptionService();
-        var wrongKey = new byte[keySize];
+        using EncryptionService service = new();
+        byte[] wrongKey = new byte[keySize];
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() => service.Initialize(wrongKey));
@@ -90,7 +90,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void EncryptDecrypt_AllZeroBytes_RoundTripSucceeds()
     {
         // Arrange
-        var data = new byte[1000]; // All zeros
+        byte[] data = new byte[1000]; // All zeros
 
         // Act
         var encrypted = _encryptionService.Encrypt(data);
@@ -104,7 +104,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void EncryptDecrypt_AllOneBytes_RoundTripSucceeds()
     {
         // Arrange
-        var data = new byte[1000];
+        byte[] data = new byte[1000];
         Array.Fill(data, (byte)0xFF);
 
         // Act
@@ -119,8 +119,8 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void EncryptDecrypt_RepeatingPattern_RoundTripSucceeds()
     {
         // Arrange - Repeating pattern that could expose ECB-like vulnerabilities
-        var pattern = new byte[] { 0x01, 0x02, 0x03, 0x04 };
-        var data = new byte[4000];
+        byte[] pattern = [0x01, 0x02, 0x03, 0x04];
+        byte[] data = new byte[4000];
         for (int i = 0; i < data.Length; i++)
         {
             data[i] = pattern[i % pattern.Length];
@@ -219,7 +219,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public async Task EncryptDecrypt_ConcurrentOperations_AllSucceed()
     {
         // Arrange
-        var tasks = new List<Task<bool>>();
+        List<Task<bool>> tasks = new();
         var testData = Enumerable.Range(0, 100)
             .Select(i => Encoding.UTF8.GetBytes($"Test message {i}"))
             .ToList();
@@ -246,7 +246,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     {
         // Arrange
         var data = "Same data for all"u8.ToArray();
-        var encryptedResults = new System.Collections.Concurrent.ConcurrentBag<byte[]>();
+        System.Collections.Concurrent.ConcurrentBag<byte[]> encryptedResults = new();
 
         // Act - Encrypt same data 100 times concurrently
         var tasks = Enumerable.Range(0, 100).Select(_ => Task.Run(() =>
@@ -276,7 +276,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public async Task DeriveKey_VariousPasswordLengths_Succeeds(string password)
     {
         // Arrange
-        using var service = new EncryptionService();
+        using EncryptionService service = new();
         var salt = EncryptionService.GenerateSalt();
 
         // Act
@@ -291,7 +291,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public async Task DeriveKey_EmptyPassword_ThrowsArgumentException()
     {
         // Arrange
-        using var service = new EncryptionService();
+        using EncryptionService service = new();
         var salt = EncryptionService.GenerateSalt();
 
         // Act & Assert - Argon2 requires non-empty password
@@ -303,7 +303,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public async Task DeriveKey_WhitespacePassword_ProducesUniqueKey()
     {
         // Arrange
-        using var service = new EncryptionService();
+        using EncryptionService service = new();
         var salt = EncryptionService.GenerateSalt();
 
         // Act
@@ -322,8 +322,8 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void Encrypt_AfterDispose_ThrowsObjectDisposedException()
     {
         // Arrange
-        using var service = new EncryptionService();
-        var key = new byte[32];
+        using EncryptionService service = new();
+        byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
         service.Initialize(key);
         service.Dispose();
@@ -336,8 +336,8 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
     public void Dispose_MultipleTimes_DoesNotThrow()
     {
         // Arrange
-        var service = new EncryptionService();
-        var key = new byte[32];
+        EncryptionService service = new();
+        byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
         service.Initialize(key);
 
@@ -351,7 +351,7 @@ public class EncryptionServiceEdgeCaseTests : IDisposable
 
     private void InitializeWithTestKey()
     {
-        var key = new byte[32];
+        byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
         _encryptionService.Initialize(key);
     }

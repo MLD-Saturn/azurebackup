@@ -62,9 +62,9 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_MultipleChunks_DownloadsInParallel()
     {
         // Arrange
-        var trackingBlobService = new DownloadTrackingBlobService(_encryptionService, simulatedLatencyMs: 50);
+        DownloadTrackingBlobService trackingBlobService = new(_encryptionService, simulatedLatencyMs: 50);
         await trackingBlobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, trackingBlobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, trackingBlobService, _encryptionService);
 
         // Create a multi-chunk file
         var content = CreateRandomContent(3 * 1024 * 1024); // 3 MB - multiple chunks
@@ -97,12 +97,12 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_ParallelDownloads_ChunksAssembledInCorrectOrder()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 10);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 10);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create a deterministic content pattern to verify ordering
-        var content = new byte[2 * 1024 * 1024]; // 2 MB
+        byte[] content = new byte[2 * 1024 * 1024]; // 2 MB
         for (int i = 0; i < content.Length; i++)
         {
             content[i] = (byte)(i % 256);
@@ -134,9 +134,9 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_SingleChunk_SkipsParallelOverhead()
     {
         // Arrange
-        var trackingBlobService = new DownloadTrackingBlobService(_encryptionService);
+        DownloadTrackingBlobService trackingBlobService = new(_encryptionService);
         await trackingBlobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, trackingBlobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, trackingBlobService, _encryptionService);
 
         // Create a small single-chunk file
         var content = CreateRandomContent(32 * 1024); // 32 KB - single chunk
@@ -169,9 +169,9 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_ParallelDownloads_MaintainsDataIntegrity()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 20);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 20);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Run multiple restores to verify consistency
         for (int run = 0; run < 3; run++)
@@ -197,12 +197,12 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_ConcurrentRestores_AllSucceed()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 10);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 10);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         // Create multiple files and backup
-        var testData = new List<(string sourcePath, byte[] content, BackedUpFile backup)>();
+        List<(string sourcePath, byte[] content, BackedUpFile backup)> testData = new();
         for (int i = 0; i < 5; i++)
         {
             var content = CreateRandomContent(500 * 1024); // 500 KB each
@@ -241,9 +241,9 @@ public class RestoreServiceParallelTests : IAsyncLifetime
     public async Task RestoreFileAsync_ParallelDownloads_ProgressReportedCorrectly()
     {
         // Arrange
-        var blobService = new InMemoryBlobService(_encryptionService, simulatedLatencyMs: 20);
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 20);
         await blobService.ConnectAsync("fake", "container");
-        var restoreService = new RestoreService(_databaseService, blobService, _encryptionService);
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
 
         var content = CreateRandomContent(2 * 1024 * 1024);
         var sourceFile = Path.Combine(_sourceDirectory, "progress_test.bin");
@@ -252,8 +252,8 @@ public class RestoreServiceParallelTests : IAsyncLifetime
         var backedUp = await BackupFileAsync(blobService, sourceFile);
         var restorePath = Path.Combine(_restoreDirectory, "progress_test.bin");
 
-        var progressReports = new ConcurrentBag<(long current, long total)>();
-        var progress = new Progress<(long current, long total)>(p => progressReports.Add(p));
+        ConcurrentBag<(long current, long total)> progressReports = new();
+        Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
 
         // Act
         var result = await restoreService.RestoreFileAsync(backedUp, restorePath, true, progress);
@@ -276,7 +276,7 @@ public class RestoreServiceParallelTests : IAsyncLifetime
 
     private async Task<BackedUpFile> BackupFileAsync(IBlobStorageService blobService, string filePath)
     {
-        var fileInfo = new FileInfo(filePath);
+        FileInfo fileInfo = new(filePath);
         var chunks = await _chunkingService.ChunkFileAsync(filePath);
         var fileHash = await _chunkingService.ComputeFileHashAsync(filePath);
 
@@ -286,7 +286,7 @@ public class RestoreServiceParallelTests : IAsyncLifetime
             chunk.BlobName = await blobService.UploadChunkAsync(chunkData, chunk.Hash);
         }
 
-        var backedUp = new BackedUpFile
+        BackedUpFile backedUp = new()
         {
             LocalPath = filePath,
             BlobName = $"files/{Guid.NewGuid()}",
@@ -306,7 +306,7 @@ public class RestoreServiceParallelTests : IAsyncLifetime
 
     private static byte[] CreateRandomContent(int size)
     {
-        var content = new byte[size];
+        byte[] content = new byte[size];
         RandomNumberGenerator.Fill(content);
         return content;
     }

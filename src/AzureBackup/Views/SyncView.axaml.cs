@@ -340,7 +340,7 @@ public partial class SyncView : UserControl
             vm.DeselectAllLocalFiles();
             draggedItem.IsSelected = true;
             
-            var filesToDrag = new List<string> { draggedItem.FullPath };
+            List<string> filesToDrag = new() { draggedItem.FullPath };
             await PerformLocalFileDrag(e, vm, filesToDrag);
         }
     }
@@ -351,11 +351,11 @@ public partial class SyncView : UserControl
         // async-only API doesn't work well with synchronous drag operations in Avalonia 11.x.
         // Using DataObject with pragma suppression until Avalonia provides a better solution.
 #pragma warning disable CS0618 // DataObject is obsolete
-        var dataObject = new DataObject();
+        DataObject dataObject = new();
         dataObject.Set(LocalFileDragFormat, selectedFiles);
         
         // Also set as file paths for external drop targets
-        var storageItems = new List<IStorageItem>();
+        List<IStorageItem> storageItems = new();
         foreach (var path in selectedFiles)
         {
             if (System.IO.File.Exists(path))
@@ -423,7 +423,7 @@ public partial class SyncView : UserControl
             vm.DeselectAllAzureFiles();
             draggedItem.IsSelected = true;
             
-            var filesToDrag = new List<string> { draggedItem.File!.LocalPath };
+            List<string> filesToDrag = new() { draggedItem.File!.LocalPath };
             await PerformAzureFileDrag(e, vm, filesToDrag);
         }
     }
@@ -433,7 +433,7 @@ public partial class SyncView : UserControl
         // Note: DataObject is marked obsolete in favor of DataTransfer, but DataTransfer's
         // async-only API doesn't work well with synchronous drag operations in Avalonia 11.x.
 #pragma warning disable CS0618 // DataObject is obsolete
-        var dataObject = new DataObject();
+        DataObject dataObject = new();
         dataObject.Set(AzureFileDragFormat, selectedFiles);
 #pragma warning restore CS0618
         
@@ -634,7 +634,7 @@ public partial class SyncView : UserControl
         var files = e.Data.GetFiles();
         if (files == null) return;
         
-        var externalFilePaths = new List<string>();
+        List<string> externalFilePaths = new();
         foreach (var item in files)
         {
             var path = item.TryGetLocalPath();

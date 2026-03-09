@@ -272,7 +272,7 @@ public class BackupOrchestrator : IAsyncDisposable
         Log($"AuthenticateWithEntraIdAsync: Starting browser authentication (timeout={timeoutSeconds}s)");
         try
         {
-            var options = new InteractiveBrowserCredentialOptions
+            InteractiveBrowserCredentialOptions options = new()
             {
                 // Use the system's default browser
                 TokenCachePersistenceOptions = new TokenCachePersistenceOptions
@@ -293,11 +293,11 @@ public class BackupOrchestrator : IAsyncDisposable
             Log("AuthenticateWithEntraIdAsync: Opening browser for authentication");
             
             // Create a timeout cancellation token
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            using CancellationTokenSource timeoutCts = new(TimeSpan.FromSeconds(timeoutSeconds));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             
             // Force a token request to trigger the browser login
-            var tokenRequest = new TokenRequestContext(
+            TokenRequestContext tokenRequest = new(
                 ["https://storage.azure.com/.default"]);
             
             var token = await _credential.GetTokenAsync(tokenRequest, linkedCts.Token);
@@ -375,7 +375,7 @@ public class BackupOrchestrator : IAsyncDisposable
             return (false, "Not authenticated with Entra ID. Please sign in first.");
         }
         
-        var blobServiceUri = new Uri($"https://{storageAccountName}.blob.core.windows.net");
+        Uri blobServiceUri = new($"https://{storageAccountName}.blob.core.windows.net");
         var result = await _blobService.TestConnectionWithEntraIdAsync(blobServiceUri, containerName, _credential);
         Log($"TestAzureConnectionAsync: Result success={result.success}");
         return result;
@@ -592,7 +592,7 @@ public class BackupOrchestrator : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var config = _databaseService.GetConfiguration();
-        var allFiles = new List<string>();
+        List<string> allFiles = new();
 
         StatusChanged?.Invoke(this, "Scanning folders...");
         Log("PerformFullScanAsync: Starting full scan of all watched folders");
@@ -641,8 +641,8 @@ public class BackupOrchestrator : IAsyncDisposable
     {
         Log("PerformInitialSyncAsync: Starting initial sync");
         var config = _databaseService.GetConfiguration();
-        var result = new InitialSyncResult();
-        var allFiles = new List<string>();
+        InitialSyncResult result = new();
+        List<string> allFiles = new();
 
         StatusChanged?.Invoke(this, "Scanning watched folders for sync...");
 
@@ -695,7 +695,7 @@ public class BackupOrchestrator : IAsyncDisposable
                 else if (existingBackup.Status == BackupStatus.Completed)
                 {
                     // File was previously backed up - check if it changed
-                    var fileInfo = new FileInfo(filePath);
+                    FileInfo fileInfo = new(filePath);
                     
                     // Quick check: compare last modified time and size
                     if (fileInfo.LastWriteTimeUtc > existingBackup.LastModified || 
@@ -803,7 +803,7 @@ public class BackupOrchestrator : IAsyncDisposable
 
 
             // Get file info
-            var fileInfo = new FileInfo(filePath);
+            FileInfo fileInfo = new(filePath);
             var fileHash = await _chunkingService.ComputeFileHashAsync(filePath, cancellationToken);
 
             // Check if file has changed
@@ -832,13 +832,13 @@ public class BackupOrchestrator : IAsyncDisposable
             // Upload changed chunks with parallel processing for better bandwidth utilization
             long bytesUploaded = 0;
             var totalFileSize = fileInfo.Length;
-            var uploadLock = new object();
+            object uploadLock = new();
             
             // Use parallel uploads for files with multiple chunks
             if (chunksToUpload.Count > 1)
             {
                 // Parallel upload with semaphore to limit concurrency
-                using var semaphore = new SemaphoreSlim(MaxParallelChunkUploads);
+                using SemaphoreSlim semaphore = new(MaxParallelChunkUploads);
                 var uploadTasks = chunksToUpload.Select(async chunk =>
                 {
                     await semaphore.WaitAsync(cancellationToken);
@@ -915,7 +915,7 @@ public class BackupOrchestrator : IAsyncDisposable
             }
 
             // Save file metadata
-            var backedUpFile = new BackedUpFile
+            BackedUpFile backedUpFile = new()
             {
                 LocalPath = filePath,
                 BlobName = $"files/{Guid.NewGuid()}",
@@ -1080,13 +1080,13 @@ public class BackupOrchestrator : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(localFolder);
         
         Log($"MirrorSyncToAzureAsync: Starting mirror sync from '{localFolder.Path}' to Azure");
-        var result = new MirrorSyncResult();
+        MirrorSyncResult result = new();
 
         StatusChanged?.Invoke(this, $"Mirror sync: scanning {localFolder.Path}");
 
         // Phase 1: Scan local folder for files
         var localFiles = await _fileWatcherService.ScanFolderAsync(localFolder, cancellationToken);
-        var localFilePaths = new HashSet<string>(localFiles, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> localFilePaths = new(localFiles, StringComparer.OrdinalIgnoreCase);
 
         Log($"MirrorSyncToAzureAsync: Found {localFiles.Count} local files");
 
@@ -1111,7 +1111,7 @@ public class BackupOrchestrator : IAsyncDisposable
                 if (existingBackups.TryGetValue(localFilePath, out var existingBackup))
                 {
                     // File exists in backup - check if modified
-                    var fileInfo = new FileInfo(localFilePath);
+                    FileInfo fileInfo = new(localFilePath);
                     
                     if (fileInfo.Length == existingBackup.FileSize &&
                         Math.Abs((fileInfo.LastWriteTimeUtc - existingBackup.LastModified).TotalSeconds) < 2)
@@ -1130,7 +1130,7 @@ public class BackupOrchestrator : IAsyncDisposable
                 if (success)
                 {
                     result.FilesTransferred++;
-                    var fileInfo = new FileInfo(localFilePath);
+                    FileInfo fileInfo = new(localFilePath);
                     result.BytesTransferred += fileInfo.Length;
                 }
                 else
@@ -1194,7 +1194,7 @@ public class BackupOrchestrator : IAsyncDisposable
         Log("PreviewBackupSyncAsync: Generating backup preview");
         var config = _databaseService.GetConfiguration();
         
-        var preview = new OperationPreview
+        OperationPreview preview = new()
         {
             OperationType = OperationType.Backup,
             OperationDescription = "Sync local files to Azure backup",
@@ -1203,7 +1203,7 @@ public class BackupOrchestrator : IAsyncDisposable
         };
 
         // Scan all watched folders
-        var allFiles = new List<string>();
+        List<string> allFiles = new();
         foreach (var folder in config.WatchedFolders.Where(f => f.IsEnabled))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1220,7 +1220,7 @@ public class BackupOrchestrator : IAsyncDisposable
 
             try
             {
-                var fileInfo = new FileInfo(filePath);
+                FileInfo fileInfo = new(filePath);
                 if (!fileInfo.Exists) continue;
 
                 var existingBackup = _databaseService.GetBackedUpFile(filePath);
@@ -1317,7 +1317,7 @@ public class BackupOrchestrator : IAsyncDisposable
 
         var config = _databaseService.GetConfiguration();
         
-        var preview = new OperationPreview
+        OperationPreview preview = new()
         {
             OperationType = OperationType.Backup,
             OperationDescription = $"Backup {filePaths.Count} selected file(s)",
@@ -1331,7 +1331,7 @@ public class BackupOrchestrator : IAsyncDisposable
 
             try
             {
-                var fileInfo = new FileInfo(filePath);
+                FileInfo fileInfo = new(filePath);
                 if (!fileInfo.Exists)
                 {
                     Log($"PreviewBackupFilesAsync: File not found: {filePath}");
@@ -1437,7 +1437,7 @@ public class BackupOrchestrator : IAsyncDisposable
         {
             try
             {
-                var fileInfo = new FileInfo(filePath);
+                FileInfo fileInfo = new(filePath);
                 if (fileInfo.Exists)
                     totalBytes += fileInfo.Length;
             }
@@ -1456,7 +1456,7 @@ public class BackupOrchestrator : IAsyncDisposable
 
             try
             {
-                var fileInfo = new FileInfo(filePath);
+                FileInfo fileInfo = new(filePath);
                 if (!fileInfo.Exists)
                 {
                     Log($"BackupFilesAsync: File not found, skipping: {filePath}");
@@ -1473,7 +1473,7 @@ public class BackupOrchestrator : IAsyncDisposable
                 StatusChanged?.Invoke(this, $"Backing up: {fileName}");
                 
                 // Create per-file progress reporter that updates both file and overall progress
-                var fileProgress = new Progress<(long current, long total)>(p =>
+                Progress<(long current, long total)> fileProgress = new(p =>
                 {
                     progress?.Report((fileIndex, totalFiles, fileName, baseProcessedBytes + p.current, totalBytes, p.current, currentFileSize));
                 });

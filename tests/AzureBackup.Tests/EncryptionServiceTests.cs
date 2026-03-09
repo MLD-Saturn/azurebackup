@@ -109,7 +109,7 @@ public class EncryptionServiceTests : IDisposable
     public void Initialize_WithValidKey_SetsIsInitializedTrue()
     {
         // Arrange
-        var key = new byte[32];
+        byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
 
         // Act
@@ -123,7 +123,7 @@ public class EncryptionServiceTests : IDisposable
     public void Initialize_WithInvalidKeyLength_ThrowsArgumentException()
     {
         // Arrange
-        var shortKey = new byte[16]; // Should be 32
+        byte[] shortKey = new byte[16]; // Should be 32
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() => _encryptionService.Initialize(shortKey));
@@ -175,7 +175,7 @@ public class EncryptionServiceTests : IDisposable
     {
         // Arrange
         InitializeWithTestKey();
-        var data = new byte[100];
+        byte[] data = new byte[100];
 
         // Act
         var encrypted = _encryptionService.Encrypt(data);
@@ -248,8 +248,8 @@ public class EncryptionServiceTests : IDisposable
         var encrypted = _encryptionService.Encrypt(data);
         
         // Create new service with different key
-        using var otherService = new EncryptionService();
-        var otherKey = new byte[32];
+        using EncryptionService otherService = new();
+        byte[] otherKey = new byte[32];
         RandomNumberGenerator.Fill(otherKey);
         otherService.Initialize(otherKey);
 
@@ -347,7 +347,7 @@ public class EncryptionServiceTests : IDisposable
     {
         // Arrange
         InitializeWithTestKey();
-        var largeData = new byte[1024 * 1024]; // 1 MB
+        byte[] largeData = new byte[1024 * 1024]; // 1 MB
         RandomNumberGenerator.Fill(largeData);
 
         // Act
@@ -406,7 +406,7 @@ public class EncryptionServiceTests : IDisposable
     {
         // Arrange
         InitializeWithTestKey();
-        var testData = new byte[] { 1, 2, 3, 4, 5 };
+        byte[] testData = [1, 2, 3, 4, 5];
         var encrypted1 = _encryptionService.Encrypt(testData);
         
         // Act - Clear and reinitialize
@@ -438,7 +438,7 @@ public class EncryptionServiceTests : IDisposable
 
     private void InitializeWithTestKey()
     {
-        var key = new byte[32];
+        byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
         _encryptionService.Initialize(key);
     }
