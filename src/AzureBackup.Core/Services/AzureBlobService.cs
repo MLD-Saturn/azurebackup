@@ -241,7 +241,7 @@ public partial class AzureBlobService : IBlobStorageService
     /// Uses parallel block transfers for large chunks.
     /// </summary>
     public async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -259,6 +259,22 @@ public partial class AzureBlobService : IBlobStorageService
         // Check if chunk already exists (deduplication)
         if (await blobClient.ExistsAsync(cancellationToken))
         {
+            // Check if existing chunk is in a different tier than intended
+            try
+            {
+                var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+                var existingTier = properties.Value.AccessTier?.ToString();
+                if (existingTier != null && existingTier != storageTier.ToString())
+                {
+                    Log($"WARNING: Chunk {chunkHash[..8]}... already exists in {existingTier} tier, " +
+                        $"but file is configured for {storageTier} tier. Chunk will remain in {existingTier}.");
+                }
+            }
+            catch
+            {
+                // Ignore errors checking tier - the chunk exists which is what matters
+            }
+            
             Log($"UploadChunkAsync: Chunk already exists (dedup), skipping upload");
             progress?.Report(encryptedData.Length);
             return blobName;
@@ -292,7 +308,7 @@ public partial class AzureBlobService : IBlobStorageService
     /// This reduces API calls by 50% for new file uploads.
     /// </summary>
     public async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -333,7 +349,7 @@ public partial class AzureBlobService : IBlobStorageService
     /// <summary>
     /// Uploads file metadata (encrypted).
     /// </summary>
-    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Hot, 
         CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -522,6 +538,51 @@ public partial class AzureBlobService : IBlobStorageService
     }
 
     /// <summary>
+    /// Uploads a generic blob (not encrypted, for system data like index backups).
+    /// </summary>
+    public async Task UploadBlobAsync(string blobName, byte[] data, StorageTier storageTier = StorageTier.Hot,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
+        ArgumentNullException.ThrowIfNull(data);
+        
+        var blobClient = _containerClient!.GetBlobClient(blobName);
+        
+        BlobUploadOptions options = new()
+        {
+            AccessTier = ToAccessTier(storageTier),
+            HttpHeaders = new BlobHttpHeaders
+            {
+                ContentType = "application/json"
+            }
+        };
+        
+        await using MemoryStream stream = new(data);
+        await blobClient.UploadAsync(stream, options, cancellationToken);
+        
+        TotalOperations++;
+        Log($"UploadBlobAsync: Uploaded {blobName} ({data.Length} bytes)");
+    }
+
+    /// <summary>
+    /// Downloads a generic blob (not encrypted).
+    /// </summary>
+    public async Task<byte[]> DownloadBlobAsync(string blobName, CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
+        
+        var blobClient = _containerClient!.GetBlobClient(blobName);
+        
+        await using MemoryStream stream = new();
+        await blobClient.DownloadToAsync(stream, cancellationToken);
+        
+        TotalOperations++;
+        return stream.ToArray();
+    }
+
+    /// <summary>
     /// Estimates monthly storage cost based on current usage.
     /// </summary>
     public async Task<(long totalBytes, decimal estimatedMonthlyCost)> GetStorageStatsAsync(
@@ -569,7 +630,7 @@ public partial class AzureBlobService : IBlobStorageService
             "Hot" => StorageTier.Hot,
             "Cool" => StorageTier.Cool,
             "Cold" => StorageTier.Cold,
-            _ => StorageTier.Cool
+            _ => StorageTier.Hot
         };
 
         return (properties.Value.ContentLength, tier);

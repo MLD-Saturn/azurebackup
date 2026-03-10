@@ -398,7 +398,7 @@ public partial class MainWindowViewModel
 
         // Determine default storage tier from watched folder (use first file's folder)
         var firstFolder = GetWatchedFolderForFile(fileList[0]);
-        preview.DefaultStorageTier = firstFolder?.StorageTier ?? Core.Models.StorageTier.Cool;
+        preview.DefaultStorageTier = firstFolder?.StorageTier ?? Core.Models.StorageTier.Hot;
 
         // Show preview dialog
         var confirmed = await ShowPreviewDialogAsync(preview);

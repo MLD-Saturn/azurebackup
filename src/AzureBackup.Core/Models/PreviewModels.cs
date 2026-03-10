@@ -122,7 +122,7 @@ public class OperationPreview
     public List<PreviewFileAction> FilesToSkip { get; set; } = [];
     
     /// <summary>Default storage tier based on watched folder settings.</summary>
-    public StorageTier DefaultStorageTier { get; set; } = StorageTier.Cool;
+    public StorageTier DefaultStorageTier { get; set; } = StorageTier.Hot;
     
     /// <summary>User-selected storage tier override (null means use default).</summary>
     public StorageTier? SelectedStorageTier { get; set; }

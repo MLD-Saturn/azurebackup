@@ -1,0 +1,245 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:AzureBackup.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="700"
+             x:Class="AzureBackup.Views.StorageHealthView"
+             x:DataType="vm:StorageHealthViewModel">
+
+    <Grid RowDefinitions="Auto,*,Auto">
+        
+        <!-- Header with Actions -->
+        <Border Grid.Row="0" Classes="card" Margin="0,0,0,8">
+            <Grid RowDefinitions="Auto,Auto">
+                <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="Storage Health" FontSize="20" FontWeight="Bold" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Opacity="0.7" Margin="16,0,0,0"/>
+                    </StackPanel>
+                    
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <Button Content="Refresh" Command="{Binding RefreshSummaryCommand}"
+                                ToolTip.Tip="Refresh index statistics"/>
+                        <Button Content="Rebuild Index" Command="{Binding RebuildIndexCommand}"
+                                IsEnabled="{Binding CanRunOperations}"
+                                ToolTip.Tip="Rebuild chunk index from Azure metadata"/>
+                        <Button Content="Cancel" Command="{Binding CancelOperationCommand}"
+                                IsVisible="{Binding IsOperationInProgress}"/>
+                    </StackPanel>
+                </Grid>
+                
+                <!-- Progress Bar -->
+                <StackPanel Grid.Row="1" Margin="0,8,0,0" IsVisible="{Binding IsOperationInProgress}">
+                    <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="8"/>
+                    <TextBlock Text="{Binding ProgressText}" FontSize="11" Opacity="0.7" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main Content -->
+        <ScrollViewer Grid.Row="1">
+            <StackPanel Spacing="16" Margin="0,0,16,0">
+                
+                <!-- Index Summary -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Chunk Index Summary" FontSize="18" FontWeight="SemiBold"/>
+                        
+                        <Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto">
+                            <!-- Total Chunks -->
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding TotalChunks}" FontSize="28" FontWeight="Bold" 
+                                           HorizontalAlignment="Center" Foreground="{DynamicResource SystemAccentColor}"/>
+                                <TextBlock Text="Total Chunks" Opacity="0.7" HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalSize}" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            
+                            <!-- Orphans -->
+                            <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding OrphanCount}" FontSize="28" FontWeight="Bold" 
+                                           HorizontalAlignment="Center" 
+                                           Foreground="{Binding HasOrphans, Converter={StaticResource BoolToColorConverter}}"/>
+                                <TextBlock Text="Orphaned" Opacity="0.7" HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding OrphanSize}" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            
+                            <!-- Shared (Dedup) -->
+                            <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding SharedChunks}" FontSize="28" FontWeight="Bold" 
+                                           HorizontalAlignment="Center" Foreground="LimeGreen"/>
+                                <TextBlock Text="Deduplicated" Opacity="0.7" HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding DeduplicationSavings}" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            
+                            <!-- Orphan Cost -->
+                            <StackPanel Grid.Column="3" HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding OrphanCost}" FontSize="28" FontWeight="Bold" 
+                                           HorizontalAlignment="Center" Foreground="Orange"/>
+                                <TextBlock Text="Orphan Cost" Opacity="0.7" HorizontalAlignment="Center"/>
+                                <TextBlock Text="per month" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Grid>
+                        
+                        <!-- Last Operations -->
+                        <Grid ColumnDefinitions="*,*" Margin="0,8,0,0">
+                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                <TextBlock Text="Last Rebuild:" Opacity="0.6"/>
+                                <TextBlock Text="{Binding LastRebuildTime}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                                <TextBlock Text="Last Azure Sync:" Opacity="0.6"/>
+                                <TextBlock Text="{Binding LastAzureSyncTime}"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Tier Breakdown -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Storage Tier Breakdown" FontSize="18" FontWeight="SemiBold"/>
+                        
+                        <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto">
+                            <!-- Hot Tier -->
+                            <Border Background="#4CFF6B6B" CornerRadius="8" Padding="16" Margin="0,0,8,0">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="Hot" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding HotTierChunks}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                                    <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding HotTierSize}" FontSize="20" FontWeight="Bold" 
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding HotTierCost}" FontSize="12" Opacity="0.7" 
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                            
+                            <!-- Cool Tier -->
+                            <Border Grid.Column="1" Background="#4C4ECDC4" CornerRadius="8" Padding="16" Margin="4,0">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="Cool" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding CoolTierChunks}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                                    <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding CoolTierSize}" FontSize="20" FontWeight="Bold" 
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding CoolTierCost}" FontSize="12" Opacity="0.7" 
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                            
+                            <!-- Cold Tier -->
+                            <Border Grid.Column="2" Background="#4C45B7D1" CornerRadius="8" Padding="16" Margin="8,0,0,0">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="Cold" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding ColdTierChunks}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                                    <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding ColdTierSize}" FontSize="20" FontWeight="Bold" 
+                                               HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding ColdTierCost}" FontSize="12" Opacity="0.7" 
+                                               HorizontalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Orphan Detection and Cleanup -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="Orphan Detection and Cleanup" FontSize="18" FontWeight="SemiBold"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <Button Content="Scan for Orphans" Command="{Binding ScanForOrphansCommand}"
+                                        IsEnabled="{Binding CanRunOperations}" Classes="primary"/>
+                                <Button Content="Delete Selected" Command="{Binding CleanupOrphansCommand}"
+                                        IsEnabled="{Binding CanRunOperations}"
+                                        Foreground="IndianRed"/>
+                            </StackPanel>
+                        </Grid>
+                        
+                        <TextBlock Text="Orphaned chunks are blobs in Azure that are no longer referenced by any file. They waste storage space and cost money."
+                                   TextWrapping="Wrap" Opacity="0.7" FontSize="12"/>
+                        
+                        <!-- Scan Results Info -->
+                        <StackPanel Orientation="Horizontal" Spacing="16" IsVisible="{Binding HasOrphanScanResults}">
+                            <TextBlock Text="{Binding LastScanTime}" Opacity="0.6"/>
+                            <TextBlock Text="{Binding ScanDuration}" Opacity="0.6"/>
+                            <TextBlock Text="{Binding SelectedOrphanCount}" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding SelectedOrphanSize}" Opacity="0.7"/>
+                        </StackPanel>
+                        
+                        <!-- Select All Checkbox -->
+                        <CheckBox Content="Select All" IsChecked="{Binding SelectAllOrphans}"
+                                  IsVisible="{Binding HasOrphanScanResults}"/>
+                        
+                        <!-- Orphan List -->
+                        <Border BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}" 
+                                CornerRadius="4" IsVisible="{Binding HasOrphanScanResults}">
+                            <ListBox ItemsSource="{Binding OrphanedChunks}" MaxHeight="300"
+                                     Background="Transparent">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:OrphanChunkViewModel">
+                                        <Grid ColumnDefinitions="Auto,2*,Auto,Auto,Auto,*" Margin="4">
+                                            <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ShortHash}" 
+                                                       VerticalAlignment="Center" FontFamily="Consolas"
+                                                       ToolTip.Tip="{Binding ChunkHash}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Size}" 
+                                                       VerticalAlignment="Center" Margin="8,0" Opacity="0.8"/>
+                                            <Border Grid.Column="3" Background="{DynamicResource SystemAccentColorLight3}" 
+                                                    CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0">
+                                                <TextBlock Text="{Binding Tier}" FontSize="10"/>
+                                            </Border>
+                                            <TextBlock Grid.Column="4" Text="{Binding FirstUploaded}" 
+                                                       VerticalAlignment="Center" Margin="8,0" Opacity="0.6" FontSize="11"/>
+                                            <TextBlock Grid.Column="5" Text="{Binding OriginalFile}" 
+                                                       VerticalAlignment="Center" Opacity="0.5" FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+                        
+                        <!-- Empty State -->
+                        <TextBlock Text="Click 'Scan for Orphans' to detect orphaned chunks in Azure storage."
+                                   IsVisible="{Binding !HasOrphanScanResults}"
+                                   HorizontalAlignment="Center" Opacity="0.5" FontStyle="Italic" Margin="0,16"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Index Management -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Index Management" FontSize="18" FontWeight="SemiBold"/>
+                        
+                        <TextBlock Text="The chunk index tracks which files reference which chunks. This enables orphan detection and deduplication tracking."
+                                   TextWrapping="Wrap" Opacity="0.7" FontSize="12"/>
+                        
+                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Azure Backup" FontWeight="SemiBold"/>
+                                <TextBlock Text="Back up the index to Azure for recovery if local data is lost."
+                                           TextWrapping="Wrap" Opacity="0.6" FontSize="11"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="Backup to Azure" Command="{Binding BackupIndexCommand}"
+                                            IsEnabled="{Binding CanRunOperations}"/>
+                                    <Button Content="Restore from Azure" Command="{Binding RestoreIndexCommand}"
+                                            IsEnabled="{Binding CanRunOperations}"/>
+                                </StackPanel>
+                            </StackPanel>
+                            
+                            <StackPanel Grid.Column="1" Spacing="8" Margin="16,0,0,0">
+                                <TextBlock Text="Rebuild Index" FontWeight="SemiBold"/>
+                                <TextBlock Text="Rebuild the index by scanning all metadata blobs in Azure. Use this if the index is corrupted or out of sync."
+                                           TextWrapping="Wrap" Opacity="0.6" FontSize="11"/>
+                                <Button Content="Rebuild from Azure" Command="{Binding RebuildIndexCommand}"
+                                        IsEnabled="{Binding CanRunOperations}"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

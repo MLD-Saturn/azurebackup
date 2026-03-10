@@ -125,7 +125,7 @@ public partial class InMemoryBlobService : IBlobStorageService
     #region Blob Operations
 
     public virtual async Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -161,7 +161,7 @@ public partial class InMemoryBlobService : IBlobStorageService
     /// For InMemoryBlobService, this behaves the same as UploadChunkAsync but skips the dedup check.
     /// </summary>
     public virtual async Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -185,7 +185,7 @@ public partial class InMemoryBlobService : IBlobStorageService
         return blobName;
     }
 
-    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+    public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Hot, 
         CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -285,8 +285,8 @@ public partial class InMemoryBlobService : IBlobStorageService
                     BlobName = $"chunks/{c.Hash}"
                 }).ToList(),
                 Status = BackupStatus.Completed,
-                // For in-memory service, simulate Cool tier as default
-                CurrentStorageTier = StorageTier.Cool
+                // For in-memory service, simulate Hot tier as default
+                CurrentStorageTier = StorageTier.Hot
             };
         }
         catch (Exception ex) when (ex is not DataIntegrityException)
@@ -301,9 +301,39 @@ public partial class InMemoryBlobService : IBlobStorageService
         ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
         
         _blobs.TryRemove(blobName, out _);
+        _blobTiers.TryRemove(blobName, out _);
         TotalOperations++;
         
         return Task.CompletedTask;
+    }
+
+    public Task UploadBlobAsync(string blobName, byte[] data, StorageTier storageTier = StorageTier.Hot,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
+        ArgumentNullException.ThrowIfNull(data);
+        
+        // Store raw data (not encrypted) for generic blobs
+        _blobs[blobName] = data;
+        _blobTiers[blobName] = storageTier;
+        TotalOperations++;
+        
+        return Task.CompletedTask;
+    }
+
+    public Task<byte[]> DownloadBlobAsync(string blobName, CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
+        
+        if (!_blobs.TryGetValue(blobName, out var data))
+        {
+            throw new InvalidOperationException($"Blob not found: {blobName}");
+        }
+        
+        TotalOperations++;
+        return Task.FromResult(data);
     }
 
     public Task<(long totalBytes, decimal estimatedMonthlyCost)> GetStorageStatsAsync(CancellationToken cancellationToken = default)
@@ -334,7 +364,7 @@ public partial class InMemoryBlobService : IBlobStorageService
         }
 
         // Get tier from our tracking dictionary, default to Cool
-        var tier = _blobTiers.GetValueOrDefault(blobName, StorageTier.Cool);
+        var tier = _blobTiers.GetValueOrDefault(blobName, StorageTier.Hot);
         
         TotalOperations++;
         return Task.FromResult(((long)data.Length, tier));

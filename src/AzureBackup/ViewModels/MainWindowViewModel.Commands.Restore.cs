@@ -422,6 +422,13 @@ public partial class MainWindowViewModel
 
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
+                // Clear selection state after deletion
+                SelectedTreeNode = null;
+                foreach (var file in RestorableFiles)
+                {
+                    file.IsSelected = false;
+                }
+                
                 OnPropertyChanged(nameof(RestorableFilesEmpty));
                 OnPropertyChanged(nameof(RestorableFilesCount));
                 NotifySelectionChanged();
@@ -432,6 +439,9 @@ public partial class MainWindowViewModel
                     BuildFileTree();
                 }
             });
+
+            // Refresh local files to update backup status indicators
+            await RefreshLocalFilesAsync();
 
             AddLog($"Delete complete: {successCount} succeeded, {failCount} failed");
         }

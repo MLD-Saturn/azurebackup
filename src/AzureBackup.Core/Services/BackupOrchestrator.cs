@@ -18,6 +18,7 @@ public class BackupOrchestrator : IAsyncDisposable
     private readonly ChunkingService _chunkingService;
     private readonly IBlobStorageService _blobService;
     private readonly FileWatcherService _fileWatcherService;
+    private ChunkIndexService? _chunkIndexService;
 
     private CancellationTokenSource? _backupCts;
     private Task? _backupTask;
@@ -75,6 +76,16 @@ public class BackupOrchestrator : IAsyncDisposable
         
         Log("BackupOrchestrator initialized");
     }
+
+    /// <summary>
+    /// Sets the ChunkIndexService for tracking chunk references.
+    /// This enables orphan detection and storage health features.
+    /// </summary>
+    public void SetChunkIndexService(ChunkIndexService chunkIndexService)
+    {
+        _chunkIndexService = chunkIndexService;
+        Log("ChunkIndexService configured");
+    }
     
     /// <summary>
     /// Logs a diagnostic message.
@@ -102,12 +113,12 @@ public class BackupOrchestrator : IAsyncDisposable
     
     /// <summary>
     /// Gets the storage tier for a file based on its WatchedFolder configuration.
-    /// Defaults to Cool if file is not in a watched folder.
+    /// Defaults to Hot if file is not in a watched folder.
     /// </summary>
     private StorageTier GetStorageTierForFile(string filePath)
     {
         var folder = GetWatchedFolderForFile(filePath);
-        return folder?.StorageTier ?? StorageTier.Cool;
+        return folder?.StorageTier ?? StorageTier.Hot;
     }
 
     /// <summary>
@@ -958,6 +969,51 @@ public class BackupOrchestrator : IAsyncDisposable
             await _blobService.UploadFileMetadataAsync(backedUpFile, storageTier, cancellationToken);
             _databaseService.SaveBackedUpFile(backedUpFile);
 
+            // Track chunk references in the chunk index
+            if (_chunkIndexService != null)
+            {
+                // Get old chunk hashes if this is a modified file
+                var oldChunkHashes = existingFile?.Chunks?.Select(c => c.Hash).ToList() ?? [];
+                
+                if (isNewFile || oldChunkHashes.Count == 0)
+                {
+                    // New file - add references for all chunks
+                    foreach (var chunk in chunks)
+                    {
+                        var wasNewUpload = chunksToUpload.Contains(chunk);
+                        _chunkIndexService.AddReference(
+                            chunk.Hash, 
+                            filePath, 
+                            chunk.Index, 
+                            chunk.Length, 
+                            storageTier, 
+                            wasNewUpload);
+                    }
+                    Log($"BackupFileAsync: Added {chunks.Count} chunk references for new file");
+                }
+                else
+                {
+                    // Modified file - update chunk references
+                    var newChunkInfo = chunks.Select(c => (
+                        hash: c.Hash, 
+                        index: c.Index, 
+                        size: (long)c.Length, 
+                        isNew: chunksToUpload.Contains(c)
+                    )).ToList();
+                    
+                    await _chunkIndexService.UpdateFileChunksAsync(
+                        filePath, 
+                        oldChunkHashes, 
+                        newChunkInfo, 
+                        storageTier, 
+                        cancellationToken);
+                    Log($"BackupFileAsync: Updated chunk references for modified file");
+                }
+                
+                // Verify consistency after backup
+                _chunkIndexService.VerifyBackupConsistency(filePath, chunks.Select(c => c.Hash).ToList());
+            }
+
             // Update config stats
             var config = _databaseService.GetConfiguration();
             config.TotalBytesUploaded += bytesUploaded;
@@ -1018,6 +1074,7 @@ public class BackupOrchestrator : IAsyncDisposable
                     continue;
                 }
 
+
                 foreach (var change in pendingChanges)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -1028,6 +1085,18 @@ public class BackupOrchestrator : IAsyncDisposable
                         var existingFile = _databaseService.GetBackedUpFile(change.FilePath);
                         if (existingFile != null)
                         {
+                            // Remove chunk references (this will delete orphaned chunks immediately)
+                            if (_chunkIndexService != null)
+                            {
+                                var deletedChunks = await _chunkIndexService.RemoveFileReferencesAsync(
+                                    change.FilePath, cancellationToken);
+                                if (deletedChunks > 0)
+                                {
+                                    Log($"RunBackupLoopAsync: Deleted {deletedChunks} orphaned chunks " +
+                                        $"after file deletion: {change.FilePath}");
+                                }
+                            }
+                            
                             existingFile.Status = BackupStatus.Excluded;
                             _databaseService.SaveBackedUpFile(existingFile);
                         }
@@ -1186,6 +1255,18 @@ public class BackupOrchestrator : IAsyncDisposable
                 try
                 {
                     progress?.Report((currentOp, totalOperations, Path.GetFileName(backupPath), "Marking deleted"));
+                    
+                    // Remove chunk references (this will delete orphaned chunks immediately)
+                    if (_chunkIndexService != null)
+                    {
+                        var deletedChunks = await _chunkIndexService.RemoveFileReferencesAsync(
+                            backupPath, cancellationToken);
+                        if (deletedChunks > 0)
+                        {
+                            Log($"MirrorSyncToAzureAsync: Deleted {deletedChunks} orphaned chunks " +
+                                $"for deleted file: {backupPath}");
+                        }
+                    }
                     
                     // Mark as excluded (deleted) but keep in Azure for potential restore
                     backupFile.Status = BackupStatus.Excluded;

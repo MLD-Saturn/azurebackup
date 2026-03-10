@@ -8,7 +8,9 @@ public class ChunkIndexEntry
 {
     /// <summary>
     /// The SHA-256 hash of the chunk content (also used as blob name).
+    /// This is the unique identifier for the chunk in the database.
     /// </summary>
+    [LiteDB.BsonId]
     public string ChunkHash { get; set; } = string.Empty;
 
     /// <summary>
@@ -34,7 +36,7 @@ public class ChunkIndexEntry
     /// <summary>
     /// Current storage tier of this chunk in Azure.
     /// </summary>
-    public StorageTier CurrentTier { get; set; } = StorageTier.Cool;
+    public StorageTier CurrentTier { get; set; } = StorageTier.Hot;
 
     /// <summary>
     /// Size of the chunk in bytes (encrypted size).

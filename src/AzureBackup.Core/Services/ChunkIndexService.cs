@@ -257,7 +257,7 @@ public class ChunkIndexService
             {
                 // This chunk is not in our index or has no references - it's an orphan
                 long sizeBytes = 0;
-                StorageTier tier = StorageTier.Cool;
+                StorageTier tier = StorageTier.Hot;
 
                 // Try to get size and tier from Azure
                 try
@@ -439,10 +439,10 @@ public class ChunkIndexService
         var json = JsonSerializer.Serialize(backup, new JsonSerializerOptions { WriteIndented = false });
         var data = System.Text.Encoding.UTF8.GetBytes(json);
 
-        await _blobService.UploadChunkDirectAsync(data, "index-backup", StorageTier.Cool, null, cancellationToken);
+        await _blobService.UploadBlobAsync(IndexBackupBlobName, data, StorageTier.Cool, cancellationToken);
         
         _databaseService.SetIndexMetadata("LastAzureSyncAt", DateTime.UtcNow);
-        Log($"Index backup complete: {backup.Entries.Count} entries, {FormatBytes(data.Length)} compressed");
+        Log($"Index backup complete: {backup.Entries.Count} entries, {FormatBytes(data.Length)} stored");
     }
 
     /// <summary>
@@ -456,7 +456,7 @@ public class ChunkIndexService
 
         try
         {
-            var data = await _blobService.DownloadChunkAsync("index/index-backup", cancellationToken);
+            var data = await _blobService.DownloadBlobAsync(IndexBackupBlobName, cancellationToken);
             var json = System.Text.Encoding.UTF8.GetString(data);
             var backup = JsonSerializer.Deserialize<ChunkIndexBackup>(json);
 
@@ -519,7 +519,7 @@ public class ChunkIndexService
                 foreach (var chunk in metadata.Chunks)
                 {
                     // Get chunk tier from Azure
-                    StorageTier tier = StorageTier.Cool;
+                    StorageTier tier = StorageTier.Hot;
                     long size = 0;
                     try
                     {
@@ -601,19 +601,15 @@ public class ChunkIndexService
 
     private async Task<List<string>> ListAzureChunksAsync(CancellationToken cancellationToken)
     {
-        // This would need to be added to IBlobStorageService
-        // For now, we'll use the chunk index as the source
-        var entries = _databaseService.GetAllChunkIndexEntries();
-        return entries.Select(e => e.ChunkHash).ToList();
+        // Use the blob service to list all chunks from Azure
+        return await _blobService.ListChunkBlobsAsync(cancellationToken);
     }
 
     private async Task<(long size, StorageTier tier)> GetChunkInfoFromAzureAsync(
         string chunkHash, CancellationToken cancellationToken)
     {
-        // This would need a new method on IBlobStorageService to get blob properties
-        // For now, return defaults - will be implemented when we update the interface
-        await Task.CompletedTask;
-        return (0, StorageTier.Cool);
+        var blobName = $"chunks/{chunkHash}";
+        return await _blobService.GetBlobPropertiesAsync(blobName, cancellationToken);
     }
 
     private decimal CalculateMonthlyCost(IList<ChunkIndexEntry> chunks)

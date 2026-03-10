@@ -40,6 +40,12 @@ public partial class MainWindowViewModel
             
             await RefreshSyncViewAsync(refreshAzure: false);
         }
+        
+        // Auto-refresh when switching to Storage Health view
+        if (view == "StorageHealth" && IsInitialized && previousView != "StorageHealth")
+        {
+            StorageHealthViewModel?.RefreshSummaryCommand.Execute(null);
+        }
     }
 
     /// <summary>

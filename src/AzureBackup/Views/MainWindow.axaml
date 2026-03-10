@@ -24,6 +24,8 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
                     <Button Content="Sync" Command="{Binding NavigateToCommand}" CommandParameter="Sync" Classes="nav"
                             ToolTip.Tip="View and sync local and Azure files"/>
+                    <Button Content="Storage Health" Command="{Binding NavigateToCommand}" CommandParameter="StorageHealth" Classes="nav"
+                            ToolTip.Tip="View chunk index and manage orphaned storage"/>
                     <Button Content="Settings" Command="{Binding NavigateToCommand}" CommandParameter="Settings" Classes="nav"
                             ToolTip.Tip="Configure Azure connection and watched folders"/>
                     <Button Content="Logs" Command="{Binding NavigateToCommand}" CommandParameter="Logs" Classes="nav"
@@ -70,6 +72,22 @@
                     </Binding>
                 </views:LogsView.IsVisible>
             </views:LogsView>
+
+            <!-- Storage Health View -->
+            <ContentControl Content="{Binding StorageHealthViewModel}">
+                <ContentControl.IsVisible>
+                    <Binding Path="CurrentView">
+                        <Binding.Converter>
+                            <vm:EqualityConverter CompareValue="StorageHealth"/>
+                        </Binding.Converter>
+                    </Binding>
+                </ContentControl.IsVisible>
+                <ContentControl.ContentTemplate>
+                    <DataTemplate x:DataType="vm:StorageHealthViewModel">
+                        <views:StorageHealthView/>
+                    </DataTemplate>
+                </ContentControl.ContentTemplate>
+            </ContentControl>
         </Grid>
 
         <!-- Status Bar -->

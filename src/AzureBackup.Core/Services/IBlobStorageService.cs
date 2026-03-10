@@ -67,7 +67,7 @@ public interface IBlobStorageService : IAsyncDisposable
     /// <param name="progress">Optional progress reporter</param>
     /// <param name="cancellationToken">Cancellation token</param>
     Task<string> UploadChunkAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -81,7 +81,7 @@ public interface IBlobStorageService : IAsyncDisposable
     /// <param name="progress">Optional progress reporter</param>
     /// <param name="cancellationToken">Cancellation token</param>
     Task<string> UploadChunkDirectAsync(byte[] chunkData, string chunkHash, 
-        StorageTier storageTier = StorageTier.Cool,
+        StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -90,8 +90,25 @@ public interface IBlobStorageService : IAsyncDisposable
     /// <param name="fileInfo">The file metadata to upload</param>
     /// <param name="storageTier">The Azure storage tier to use for metadata</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Cool, 
+    Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Hot, 
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Uploads a generic blob (not encrypted, for system data like index backups).
+    /// </summary>
+    /// <param name="blobName">The full blob name/path</param>
+    /// <param name="data">The data to upload</param>
+    /// <param name="storageTier">The storage tier</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task UploadBlobAsync(string blobName, byte[] data, StorageTier storageTier = StorageTier.Hot,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Downloads a generic blob (not encrypted).
+    /// </summary>
+    /// <param name="blobName">The full blob name/path</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task<byte[]> DownloadBlobAsync(string blobName, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Downloads and decrypts a chunk.

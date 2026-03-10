@@ -146,7 +146,7 @@ public class WatchedFolder
     
     /// <summary>
     /// The Azure storage tier to use when uploading files from this folder.
-    /// Defaults to Cool for cost-effective backup storage.
+    /// Defaults to Hot for standard backup storage.
     /// </summary>
-    public StorageTier StorageTier { get; set; } = StorageTier.Cool;
+    public StorageTier StorageTier { get; set; } = StorageTier.Hot;
 }

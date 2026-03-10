@@ -22,8 +22,14 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private readonly FileWatcherService _fileWatcherService;
     private readonly BackupOrchestrator _orchestrator;
     private readonly RestoreService _restoreService;
+    private ChunkIndexService? _chunkIndexService;
 
     private CancellationTokenSource? _operationCts;
+
+    /// <summary>
+    /// ViewModel for the Storage Health tab.
+    /// </summary>
+    public StorageHealthViewModel? StorageHealthViewModel { get; private set; }
 
     /// <summary>
     /// Window title including mode indicator (Portable or Installed).
@@ -542,6 +548,12 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _blobService, _fileWatcherService);
         _restoreService = new RestoreService(_databaseService, _blobService, _encryptionService);
 
+        // Initialize chunk index service (requires blob service to be connected later)
+        _chunkIndexService = new ChunkIndexService(_databaseService, _blobService);
+        _orchestrator.SetChunkIndexService(_chunkIndexService);
+        
+        // Initialize Storage Health ViewModel
+        StorageHealthViewModel = new StorageHealthViewModel(_chunkIndexService, _databaseService);
 
         // Initialize database - location depends on portable vs installed mode
         _databaseService.Initialize(AppMode.DatabasePath);

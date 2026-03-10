@@ -644,7 +644,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task BackupFileAsync_DefaultsToCoolTierForUnwatchedFiles()
+    public async Task BackupFileAsync_DefaultsToHotTierForUnwatchedFiles()
     {
         // Arrange
         StorageTierTrackingBlobService tierTrackingBlobService = new(_encryptionService);
@@ -678,9 +678,9 @@ public class BackupOrchestratorTests : IAsyncLifetime
         // Act
         await tierOrchestrator.BackupFileAsync(filePath);
         
-        // Assert - Should default to Cool tier since file is not in any watched folder
+        // Assert - Should default to Hot tier since file is not in any watched folder
         Assert.True(tierTrackingBlobService.UploadCount > 0, "Should have uploaded at least one chunk");
-        Assert.All(tierTrackingBlobService.UsedTiers, tier => Assert.Equal(StorageTier.Cool, tier));
+        Assert.All(tierTrackingBlobService.UsedTiers, tier => Assert.Equal(StorageTier.Hot, tier));
         
         await tierOrchestrator.DisposeAsync();
     }

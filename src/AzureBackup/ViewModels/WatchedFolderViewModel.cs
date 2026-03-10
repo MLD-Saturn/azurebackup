@@ -32,7 +32,7 @@ public partial class WatchedFolderViewModel : ObservableObject
     /// The Azure storage tier to use when uploading files from this folder.
     /// </summary>
     [ObservableProperty]
-    private StorageTier _storageTier = StorageTier.Cool;
+    private StorageTier _storageTier = StorageTier.Hot;
 
     /// <summary>
     /// Available storage tier options for UI binding.

@@ -342,6 +342,9 @@ public partial class MainWindowViewModel
                 FileTreeRoots.Add(root);
             }
             OnPropertyChanged(nameof(ShowAzureEmptyState));
+            
+            // Ensure selection state is updated after tree rebuild
+            NotifySelectionChanged();
         });
     }
 
