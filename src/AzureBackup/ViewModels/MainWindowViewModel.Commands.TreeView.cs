@@ -370,7 +370,7 @@ public partial class MainWindowViewModel
     /// <summary>
     /// Called by the View after a folder is selected from the picker.
     /// </summary>
-    public void AddWatchedFolderPath(string folderPath)
+    public async void AddWatchedFolderPath(string folderPath)
     {
         try
         {
@@ -392,6 +392,9 @@ public partial class MainWindowViewModel
             
             AddLog($"Added watch folder: {folderPath}");
             SaveSettings();
+            
+            // Refresh the local files tree to show the new folder
+            await RefreshLocalFilesAsync();
         }
         catch (Exception ex)
         {
@@ -401,12 +404,17 @@ public partial class MainWindowViewModel
     }
 
     [RelayCommand]
-    private void RemoveWatchedFolder()
+    private async Task RemoveWatchedFolderAsync()
     {
         if (SelectedWatchedFolder != null)
         {
+            var folderPath = SelectedWatchedFolder.Path;
             WatchedFolders.Remove(SelectedWatchedFolder);
             SaveSettings();
+            AddLog($"Removed watched folder: {folderPath}");
+            
+            // Refresh the local files tree to remove the folder
+            await RefreshLocalFilesAsync();
         }
     }
 

@@ -168,7 +168,7 @@
                     <!-- Local file tree (tree view mode) -->
                     <TreeView Grid.Row="3" x:Name="LocalFilesTreeView"
                               ItemsSource="{Binding LocalFileTreeRoots}"
-                              SelectedItem="{Binding SelectedLocalTreeNode}"
+                              SelectedItem="{Binding SelectedLocalTreeNode, Mode=TwoWay}"
                               IsVisible="{Binding UseTreeView}">
                         <TreeView.ItemContainerTheme>
                             <ControlTheme TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}" x:DataType="vm:LocalFileTreeNodeViewModel">
@@ -311,7 +311,7 @@
                     <!-- Azure file tree -->
                     <TreeView Grid.Row="3" x:Name="AzureFilesTreeView"
                               ItemsSource="{Binding FileTreeRoots}"
-                              SelectedItem="{Binding SelectedTreeNode}"
+                              SelectedItem="{Binding SelectedTreeNode, Mode=TwoWay}"
                               IsVisible="{Binding UseTreeView}">
                         <TreeView.ItemContainerTheme>
                             <ControlTheme TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}" x:DataType="vm:FileTreeNodeViewModel">
