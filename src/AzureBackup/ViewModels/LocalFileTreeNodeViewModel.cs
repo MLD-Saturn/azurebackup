@@ -37,6 +37,12 @@ public enum LocalFileBackupStatus
 /// </summary>
 public partial class LocalFileTreeNodeViewModel : ObservableObject
 {
+    /// <summary>
+    /// Static event raised when any local file's selection state changes.
+    /// Used to notify the main view model to update UI state.
+    /// </summary>
+    public static event EventHandler? SelectionChanged;
+
     private LocalFileTreeNodeViewModel? _parent;
     private LocalFileBackupStatus _backupStatusValue = LocalFileBackupStatus.Unknown;
     private bool _isUpdatingSelection;
@@ -204,6 +210,9 @@ public partial class LocalFileTreeNodeViewModel : ObservableObject
         {
             _isUpdatingSelection = false;
         }
+
+        // Notify that selection has changed
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>

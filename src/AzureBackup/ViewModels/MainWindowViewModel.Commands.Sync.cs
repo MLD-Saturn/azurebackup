@@ -400,6 +400,7 @@ public partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasSelectedLocalFiles));
         OnPropertyChanged(nameof(SelectedLocalFilesCount));
         OnPropertyChanged(nameof(SelectedLocalFilesText));
+        OnPropertyChanged(nameof(CanRemoveSelectedLocalFolder));
     }
 
     /// <summary>

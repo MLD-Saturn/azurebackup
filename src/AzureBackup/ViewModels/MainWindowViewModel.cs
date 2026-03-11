@@ -571,6 +571,9 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         // Wire up file system change events for auto-refresh
         _fileWatcherService.FileChanged += (s, e) => OnFileSystemChanged();
         
+        // Wire up local file selection change events
+        LocalFileTreeNodeViewModel.SelectionChanged += OnLocalFileSelectionChanged;
+        
         // Wire up diagnostic logging events (detailed service logs)
         _orchestrator.DiagnosticLog += OnDiagnosticLog;
         _blobService.DiagnosticLog += OnDiagnosticLog;
@@ -604,6 +607,14 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
                 }
             });
         }
+    }
+
+    /// <summary>
+    /// Handles local file selection changes (checkbox state changes).
+    /// </summary>
+    private void OnLocalFileSelectionChanged(object? sender, EventArgs e)
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(NotifyLocalSelectionChanged);
     }
 
     private void LoadConfiguration()
@@ -982,6 +993,9 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Unsubscribe from static events to prevent memory leaks
+        LocalFileTreeNodeViewModel.SelectionChanged -= OnLocalFileSelectionChanged;
+        
         // Cancel any ongoing operations
         _operationCts?.Cancel();
         _operationCts?.Dispose();

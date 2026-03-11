@@ -419,31 +419,57 @@ public partial class MainWindowViewModel
     }
 
     /// <summary>
-    /// Gets whether a local folder can be removed (a root watched folder is selected).
+    /// Gets whether a local folder can be removed (a root watched folder is selected or checked).
     /// </summary>
     public bool CanRemoveSelectedLocalFolder => 
-        SelectedLocalTreeNode != null && 
-        SelectedLocalTreeNode.Parent == null && 
-        SelectedLocalTreeNode.IsFolder;
+        (SelectedLocalTreeNode != null && 
+         SelectedLocalTreeNode.Parent == null && 
+         SelectedLocalTreeNode.IsFolder) ||
+        LocalFileTreeRoots.Any(r => r.IsSelected);
 
     [RelayCommand]
     private async Task RemoveSelectedLocalFolderAsync()
     {
+        // First check for checked (checkbox) root folders
+        var checkedRoots = LocalFileTreeRoots.Where(r => r.IsSelected).ToList();
+        
+        if (checkedRoots.Count > 0)
+        {
+            // Remove all checked root folders
+            foreach (var root in checkedRoots)
+            {
+                var folderPath = root.FullPath;
+                var folderToRemove = WatchedFolders.FirstOrDefault(f => 
+                    f.Path.Equals(folderPath, StringComparison.OrdinalIgnoreCase));
+                
+                if (folderToRemove != null)
+                {
+                    WatchedFolders.Remove(folderToRemove);
+                    AddLog($"Removed watched folder: {folderPath}");
+                }
+            }
+            
+            SaveSettings();
+            await RefreshLocalFilesAsync();
+            return;
+        }
+        
+        // Fall back to selected (clicked) tree node
         if (SelectedLocalTreeNode == null || SelectedLocalTreeNode.Parent != null)
         {
-            AddLog("Please select a root watched folder to remove");
+            AddLog("Please select or check a root watched folder to remove");
             return;
         }
 
-        var folderPath = SelectedLocalTreeNode.FullPath;
-        var folderToRemove = WatchedFolders.FirstOrDefault(f => 
-            f.Path.Equals(folderPath, StringComparison.OrdinalIgnoreCase));
+        var selectedFolderPath = SelectedLocalTreeNode.FullPath;
+        var selectedFolderToRemove = WatchedFolders.FirstOrDefault(f => 
+            f.Path.Equals(selectedFolderPath, StringComparison.OrdinalIgnoreCase));
         
-        if (folderToRemove != null)
+        if (selectedFolderToRemove != null)
         {
-            WatchedFolders.Remove(folderToRemove);
+            WatchedFolders.Remove(selectedFolderToRemove);
             SaveSettings();
-            AddLog($"Removed watched folder: {folderPath}");
+            AddLog($"Removed watched folder: {selectedFolderPath}");
             
             // Refresh the local files tree
             await RefreshLocalFilesAsync();
