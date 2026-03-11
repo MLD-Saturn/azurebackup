@@ -190,7 +190,7 @@ public partial class MainWindowViewModel
                 overwriteExisting: true,
                 fileProgress,
                 byteProgress,
-                _operationCts.Token);
+                _operationCts!.Token);
 
             AddLog($"Restore complete: {result.SuccessfulFiles.Count} succeeded, {result.FailedFiles.Count} failed");
         }
@@ -296,7 +296,7 @@ public partial class MainWindowViewModel
                 targetFolder,
                 sourceFolder,
                 progress,
-                _operationCts.Token);
+                _operationCts!.Token);
 
             AddLog($"Mirror sync complete: {result.FilesTransferred} restored, {result.FilesDeleted} deleted, " +
                    $"{result.FilesUnchanged} unchanged, {result.FilesErrored} errors");

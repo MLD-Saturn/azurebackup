@@ -67,7 +67,7 @@ public class OrphanDetectionIntegrationTests : IAsyncLifetime
         var result = await _indexService.ScanForOrphansAsync();
         
         // Assert
-        Assert.Equal(1, result.OrphanedChunks.Count);
+        Assert.Single(result.OrphanedChunks);
         Assert.Contains(result.OrphanedChunks, o => o.ChunkHash == orphanHash);
     }
 

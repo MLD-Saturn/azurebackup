@@ -431,7 +431,7 @@ public partial class InMemoryBlobService : IBlobStorageService
     /// Verifies that a chunk's content matches the expected data by downloading and comparing.
     /// Used for defense-in-depth verification when deduplication detects a hash match.
     /// </summary>
-    public async Task<bool> VerifyChunkIntegrityAsync(string chunkHash, byte[] expectedData,
+    public Task<bool> VerifyChunkIntegrityAsync(string chunkHash, byte[] expectedData,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected();
@@ -464,7 +464,7 @@ public partial class InMemoryBlobService : IBlobStorageService
             }
 
             TotalOperations++;
-            return true;
+            return Task.FromResult(true);
         }
         catch (HashCollisionException)
         {

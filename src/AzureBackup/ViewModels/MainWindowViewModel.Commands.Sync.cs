@@ -459,7 +459,7 @@ public partial class MainWindowViewModel
 
                 var backupPreview = await _orchestrator.PreviewBackupFilesAsync(
                     localFilesToBackup.Select(f => f.FullPath).ToList(),
-                    _operationCts.Token);
+                    _operationCts!.Token);
 
                 if (backupPreview.HasChanges)
                 {
@@ -534,7 +534,7 @@ public partial class MainWindowViewModel
                     overwriteExisting: true,
                     restoreProgress,
                     fileByteProgress: null, // Not using byte-level progress for sync view
-                    _operationCts.Token);
+                    _operationCts!.Token);
 
                 AddLog($"Restore phase complete: {result.SuccessfulFiles.Count} succeeded, {result.FailedFiles.Count} failed");
             }

@@ -261,7 +261,7 @@ public partial class MainWindowViewModel
 
             for (var i = 0; i < filesToRestore.Count; i++)
             {
-                _operationCts.Token.ThrowIfCancellationRequested();
+                _operationCts!.Token.ThrowIfCancellationRequested();
 
                 var file = filesToRestore[i];
                 var fileName = Path.GetFileName(file.LocalPath);
@@ -387,7 +387,7 @@ public partial class MainWindowViewModel
 
             for (var i = 0; i < filesToDelete.Count; i++)
             {
-                _operationCts.Token.ThrowIfCancellationRequested();
+                _operationCts!.Token.ThrowIfCancellationRequested();
 
                 var file = filesToDelete[i];
                 var fileName = Path.GetFileName(file.LocalPath);
