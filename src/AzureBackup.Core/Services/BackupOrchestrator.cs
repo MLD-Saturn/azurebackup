@@ -65,11 +65,17 @@ public class BackupOrchestrator : IAsyncDisposable
         IBlobStorageService blobService,
         FileWatcherService fileWatcherService)
     {
-        _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
-        _encryptionService = encryptionService ?? throw new ArgumentNullException(nameof(encryptionService));
-        _chunkingService = chunkingService ?? throw new ArgumentNullException(nameof(chunkingService));
-        _blobService = blobService ?? throw new ArgumentNullException(nameof(blobService));
-        _fileWatcherService = fileWatcherService ?? throw new ArgumentNullException(nameof(fileWatcherService));
+        ArgumentNullException.ThrowIfNull(databaseService);
+        ArgumentNullException.ThrowIfNull(encryptionService);
+        ArgumentNullException.ThrowIfNull(chunkingService);
+        ArgumentNullException.ThrowIfNull(blobService);
+        ArgumentNullException.ThrowIfNull(fileWatcherService);
+
+        _databaseService = databaseService;
+        _encryptionService = encryptionService;
+        _chunkingService = chunkingService;
+        _blobService = blobService;
+        _fileWatcherService = fileWatcherService;
 
         _fileWatcherService.FileChanged += OnFileChanged;
         _fileWatcherService.Error += (s, e) => ErrorOccurred?.Invoke(this, e);

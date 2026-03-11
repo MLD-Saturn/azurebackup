@@ -27,6 +27,19 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private CancellationTokenSource? _operationCts;
 
     /// <summary>
+    /// Creates a new CancellationTokenSource for an operation, disposing the previous one if it exists.
+    /// </summary>
+    private CancellationTokenSource CreateOperationCts()
+    {
+        // Dispose previous CTS if it exists
+        _operationCts?.Cancel();
+        _operationCts?.Dispose();
+        
+        _operationCts = new CancellationTokenSource();
+        return _operationCts;
+    }
+
+    /// <summary>
     /// ViewModel for the Storage Health tab.
     /// </summary>
     public StorageHealthViewModel? StorageHealthViewModel { get; private set; }
@@ -113,8 +126,14 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>
     /// True if the application is configured but locked (needs password).
+    /// Includes migration case - migration is handled automatically during unlock.
     /// </summary>
     public bool NeedsUnlock => HasExistingConfig && !IsInitialized;
+
+    /// <summary>
+    /// True if migration from unencrypted database is required.
+    /// </summary>
+    public bool NeedsMigration => _needsMigration;
 
     [ObservableProperty]
     private bool _isOperationInProgress;
@@ -537,7 +556,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     public MainWindowViewModel()
     {
-        // Initialize services
+        // Initialize services (database is NOT initialized yet - needs password)
         _databaseService = new LocalDatabaseService();
         _encryptionService = new EncryptionService();
         _chunkingService = new ChunkingService();
@@ -554,10 +573,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         
         // Initialize Storage Health ViewModel
         StorageHealthViewModel = new StorageHealthViewModel(_chunkIndexService, _databaseService);
-
-        // Initialize database - location depends on portable vs installed mode
-        _databaseService.Initialize(AppMode.DatabasePath);
-
 
         // Wire up status events
         _orchestrator.StatusChanged += (s, msg) => AddLog(msg);
@@ -584,9 +599,29 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         
         AddLog("Application started - diagnostic logging enabled");
 
-        // Load configuration
-        LoadConfiguration();
+        // Check database state for returning vs new user
+        var dbPath = AppMode.DatabasePath;
+        HasExistingConfig = LocalDatabaseService.DatabaseExists(dbPath);
+        
+        // Check if migration from unencrypted database is needed
+        _needsMigration = HasExistingConfig && LocalDatabaseService.IsUnencryptedDatabase(dbPath);
+        
+        if (_needsMigration)
+        {
+            AddLog("Legacy unencrypted database detected - will migrate to encrypted format");
+        }
+        else if (HasExistingConfig)
+        {
+            AddLog("Encrypted database found - enter password to unlock");
+        }
+        else
+        {
+            AddLog("No existing configuration - set up a new password to get started");
+        }
     }
+    
+    // Flag to track if migration from unencrypted database is needed
+    private bool _needsMigration;
     
     /// <summary>
     /// Handles diagnostic log messages from services.
@@ -619,11 +654,15 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     private void LoadConfiguration()
     {
+        // Database must be initialized before loading configuration
+        if (!_databaseService.IsInitialized)
+        {
+            AddLog("Database not yet initialized - waiting for password");
+            return;
+        }
+        
         AddLog("Loading configuration...");
         var config = _databaseService.GetConfiguration();
-        
-        // Check if this is a returning user
-        HasExistingConfig = config.PasswordSalt != null;
         
         // Load authentication method
         UseEntraIdAuth = config.AuthMethod == AzureBackup.Core.Models.AzureAuthMethod.EntraId;
@@ -648,17 +687,26 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         
         ContainerName = config.ContainerName ?? "backup";
         
-        WatchedFolders.Clear();
-        foreach (var folder in config.WatchedFolders)
+        // Update WatchedFolders collection on UI thread
+        var folders = config.WatchedFolders;
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
-            WatchedFolders.Add(new WatchedFolderViewModel(folder));
-        }
+            WatchedFolders.Clear();
+            foreach (var folder in folders)
+            {
+                WatchedFolders.Add(new WatchedFolderViewModel(folder));
+            }
+        });
 
         RefreshStatistics();
     }
 
     private void RefreshStatistics()
     {
+        // Skip if database not initialized
+        if (!_databaseService.IsInitialized)
+            return;
+            
         // Clean up any stale pending changes before getting stats
         _databaseService.CleanupStalePendingChanges();
         

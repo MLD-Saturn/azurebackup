@@ -24,9 +24,10 @@ public class BoolToColorConverter : IValueConverter
 {
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is bool isRunning)
+        if (value is bool hasOrphans)
         {
-            return isRunning ? Brushes.LimeGreen : Brushes.Gray;
+            // Orange/red for warning conditions (e.g., orphans exist), gray when clean
+            return hasOrphans ? Brushes.Orange : Brushes.Gray;
         }
         return Brushes.Gray;
     }
@@ -125,3 +126,4 @@ public class PendingToColorConverter : IValueConverter
         throw new NotImplementedException();
     }
 }
+

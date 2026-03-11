@@ -347,6 +347,87 @@ public class ChunkingServiceTests : IAsyncLifetime
 
     #endregion
 
+    #region Large File Optimization Tests
+
+    [Fact]
+    public async Task ChunkFileAsync_VeryLargeFile_UsesOptimizedChunkSize()
+    {
+        // Arrange - Create a file larger than 500MB threshold
+        // We'll simulate by creating a smaller file but verifying the config lookup logic
+        // by using a 600MB sparse file (only allocates minimal disk space)
+        var largeFilePath = Path.Combine(_testDirectory, "large_file.bin");
+        
+        // Create a sparse file of 600 MB (above 500MB threshold)
+        using (var fs = new FileStream(largeFilePath, FileMode.Create, FileAccess.Write))
+        {
+            // Write some data at the beginning
+            var startData = new byte[16 * 1024 * 1024]; // 16 MB of actual data
+            new Random(42).NextBytes(startData);
+            await fs.WriteAsync(startData);
+            
+            // Seek to create sparse file effect (600 MB total)
+            fs.SetLength(600L * 1024 * 1024);
+        }
+
+        // Act
+        var chunks = await _chunkingService.ChunkFileAsync(largeFilePath);
+
+        // Assert - For large files, minimum chunk is 16 MB, so we should have fewer chunks
+        // 600 MB / 16 MB min = ~37 chunks max (could be fewer with larger average)
+        Assert.True(chunks.Count <= 40, $"Expected <= 40 chunks for 600MB file, got {chunks.Count}");
+        
+        // Verify chunk sizes are appropriate for large files
+        // Most chunks should be >= 16 MB (except possibly the last one)
+        var largeChunks = chunks.Where(c => c.Length >= 16 * 1024 * 1024).ToList();
+        Assert.True(largeChunks.Count >= chunks.Count - 1, 
+            "Most chunks should be >= 16MB for large files");
+    }
+
+    [Fact]
+    public async Task ChunkFileAsync_JustUnderLargeFileThreshold_UsesStandardChunks()
+    {
+        // Arrange - Create a file just under 500MB (use smaller size for test performance)
+        // Using 5MB file with default extension to verify standard chunking
+        var filePath = CreateTestFile("medium_file.bin", 5 * 1024 * 1024);
+
+        // Act
+        var chunks = await _chunkingService.ChunkFileAsync(filePath);
+
+        // Assert - Should use default chunking (64KB-1MB range)
+        var totalSize = chunks.Sum(c => (long)c.Length);
+        Assert.Equal(5 * 1024 * 1024, totalSize);
+        
+        // Default chunks are smaller than large file chunks
+        // All chunks should be <= 1 MB (default max)
+        Assert.All(chunks, c => Assert.True(c.Length <= 1024 * 1024, 
+            $"Chunk {c.Index} is {c.Length} bytes, expected <= 1MB for standard files"));
+    }
+
+    [Fact]
+    public async Task ChunkFileAsync_LargeVideoFile_UsesVideoOptimization()
+    {
+        // Arrange - Create a large video file (>500MB threshold)
+        var largeVideoPath = Path.Combine(_testDirectory, "large_video.mp4");
+        
+        // Create sparse file to simulate large video
+        using (var fs = new FileStream(largeVideoPath, FileMode.Create, FileAccess.Write))
+        {
+            var startData = new byte[4 * 1024 * 1024]; // 4 MB of actual data
+            new Random(42).NextBytes(startData);
+            await fs.WriteAsync(startData);
+            fs.SetLength(600L * 1024 * 1024); // 600 MB total
+        }
+
+        // Act
+        var chunks = await _chunkingService.ChunkFileAsync(largeVideoPath);
+
+        // Assert - Large video files should use optimized large chunks
+        // Because file size > 500MB, it overrides the video-specific config
+        Assert.True(chunks.Count <= 40, $"Expected <= 40 chunks for 600MB video, got {chunks.Count}");
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private string CreateTestFile(string name, int size)

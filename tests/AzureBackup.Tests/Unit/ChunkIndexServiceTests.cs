@@ -10,6 +10,7 @@ namespace AzureBackup.Tests;
 /// </summary>
 public class ChunkIndexServiceTests : IAsyncLifetime
 {
+    private const string TestPassword = "TestPassword123!";
     private string _testDbPath = null!;
     private LocalDatabaseService _databaseService = null!;
     private EncryptionService _encryptionService = null!;
@@ -22,11 +23,11 @@ public class ChunkIndexServiceTests : IAsyncLifetime
         _testDbPath = Path.Combine(Path.GetTempPath(), $"ChunkIndexTest_{Guid.NewGuid()}.db");
         
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_testDbPath);
+        _databaseService.Initialize(_testDbPath, TestPassword);
         
         _encryptionService = new EncryptionService();
         var salt = EncryptionService.GenerateSalt();
-        var key = await _encryptionService.DeriveKeyAsync("TestPassword123!", salt);
+        var key = await _encryptionService.DeriveKeyAsync(TestPassword, salt);
         _encryptionService.Initialize(key);
         CryptographicOperations.ZeroMemory(key);
         
@@ -275,3 +276,4 @@ public class ChunkIndexServiceTests : IAsyncLifetime
 
     #endregion
 }
+

@@ -12,6 +12,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     private LocalDatabaseService _databaseService = null!;
     private string _testDirectory = null!;
     private string _dbPath = null!;
+    private const string TestPassword = "TestPassword123!";
 
     public Task InitializeAsync()
     {
@@ -20,7 +21,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         _dbPath = Path.Combine(_testDirectory, "test.db");
         
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_dbPath);
+        _databaseService.Initialize(_dbPath, TestPassword);
         
         return Task.CompletedTask;
     }
@@ -47,13 +48,24 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Initialize_WithNullPath_ThrowsArgumentNullException()
+    public void Initialize_WithNullPath_ThrowsArgumentException()
     {
         // Arrange
         using LocalDatabaseService service = new();
 
-        // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => service.Initialize(null!));
+        // Act & Assert - ThrowIfNullOrWhiteSpace throws ArgumentNullException for null
+        Assert.ThrowsAny<ArgumentException>(() => service.Initialize(null!, TestPassword));
+    }
+
+    [Fact]
+    public void Initialize_WithNullPassword_ThrowsArgumentException()
+    {
+        // Arrange
+        using LocalDatabaseService service = new();
+        var testPath = Path.Combine(_testDirectory, "nullpwd.db");
+
+        // Act & Assert - ThrowIfNullOrWhiteSpace throws ArgumentNullException for null
+        Assert.ThrowsAny<ArgumentException>(() => service.Initialize(testPath, null!));
     }
 
     [Fact]
@@ -64,10 +76,141 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         var nestedPath = Path.Combine(_testDirectory, "nested", "deep", "db.db");
 
         // Act
-        service.Initialize(nestedPath);
+        service.Initialize(nestedPath, TestPassword);
 
         // Assert
         Assert.True(File.Exists(nestedPath));
+    }
+
+    [Fact]
+    public void Initialize_WithWrongPassword_ThrowsInvalidPasswordException()
+    {
+        // Arrange - first create a database with a password
+        var encryptedDbPath = Path.Combine(_testDirectory, "encrypted.db");
+        using (var service1 = new LocalDatabaseService())
+        {
+            service1.Initialize(encryptedDbPath, "CorrectPassword");
+        }
+
+        // Act & Assert - try to open with wrong password
+        using var service2 = new LocalDatabaseService();
+        Assert.Throws<AzureBackup.Core.InvalidPasswordException>(() => 
+            service2.Initialize(encryptedDbPath, "WrongPassword"));
+    }
+
+    #endregion
+
+    #region Migration Tests
+
+    [Fact]
+    public void DatabaseExists_WhenFileExists_ReturnsTrue()
+    {
+        // Assert - database was created in InitializeAsync
+        Assert.True(LocalDatabaseService.DatabaseExists(_dbPath));
+    }
+
+    [Fact]
+    public void DatabaseExists_WhenFileDoesNotExist_ReturnsFalse()
+    {
+        // Arrange
+        var nonExistentPath = Path.Combine(_testDirectory, "nonexistent.db");
+
+        // Act & Assert
+        Assert.False(LocalDatabaseService.DatabaseExists(nonExistentPath));
+    }
+
+    [Fact]
+    public void IsUnencryptedDatabase_WithEncryptedDatabase_ReturnsFalse()
+    {
+        // Assert - our test database is encrypted
+        Assert.False(LocalDatabaseService.IsUnencryptedDatabase(_dbPath));
+    }
+
+    [Fact]
+    public void IsUnencryptedDatabase_WithNonExistentFile_ReturnsFalse()
+    {
+        // Arrange
+        var nonExistentPath = Path.Combine(_testDirectory, "nonexistent.db");
+
+        // Act & Assert
+        Assert.False(LocalDatabaseService.IsUnencryptedDatabase(nonExistentPath));
+    }
+
+    [Fact]
+    public void MigrateToEncrypted_MigratesDataSuccessfully()
+    {
+        // Arrange - create an unencrypted database using the obsolete method
+        var unencryptedPath = Path.Combine(_testDirectory, "unencrypted.db");
+        var encryptedPath = Path.Combine(_testDirectory, "migrated.db");
+        
+        // Create unencrypted database with test data
+        using (var unencryptedService = new LocalDatabaseService())
+        {
+#pragma warning disable CS0618 // Type or member is obsolete
+            unencryptedService.InitializeUnencrypted(unencryptedPath);
+#pragma warning restore CS0618
+            
+            var config = unencryptedService.GetConfiguration();
+            config.ContainerName = "migration-test-container";
+            config.StorageAccountName = "migrationteststorage";
+            unencryptedService.SaveConfiguration(config);
+            
+            // Add a test file record
+            unencryptedService.SaveBackedUpFile(new AzureBackup.Core.Models.BackedUpFile
+            {
+                LocalPath = "/test/migration/file.txt",
+                FileSize = 12345,
+                FileHash = "TESTHASH123"
+            });
+        }
+
+        // Verify it's unencrypted
+        Assert.True(LocalDatabaseService.IsUnencryptedDatabase(unencryptedPath));
+
+        // Act - migrate to encrypted
+        LocalDatabaseService.MigrateToEncrypted(unencryptedPath, encryptedPath, "MigrationPassword123!");
+
+        // Assert - verify encrypted database has the data
+        using var encryptedService = new LocalDatabaseService();
+        encryptedService.Initialize(encryptedPath, "MigrationPassword123!");
+        
+        var migratedConfig = encryptedService.GetConfiguration();
+        Assert.Equal("migration-test-container", migratedConfig.ContainerName);
+        Assert.Equal("migrationteststorage", migratedConfig.StorageAccountName);
+        
+        var migratedFile = encryptedService.GetBackedUpFile("/test/migration/file.txt");
+        Assert.NotNull(migratedFile);
+        Assert.Equal(12345, migratedFile.FileSize);
+        Assert.Equal("TESTHASH123", migratedFile.FileHash);
+        
+        // Verify the new database is encrypted (can't open without password)
+        Assert.False(LocalDatabaseService.IsUnencryptedDatabase(encryptedPath));
+    }
+
+    [Fact]
+    public void MigrateToEncrypted_WithNonExistentSource_ThrowsFileNotFoundException()
+    {
+        // Arrange
+        var nonExistentPath = Path.Combine(_testDirectory, "nonexistent.db");
+        var targetPath = Path.Combine(_testDirectory, "target.db");
+
+        // Act & Assert
+        Assert.Throws<FileNotFoundException>(() => 
+            LocalDatabaseService.MigrateToEncrypted(nonExistentPath, targetPath, "Password123!"));
+    }
+
+    [Fact]
+    public void MigrateToEncrypted_WithNullArguments_ThrowsArgumentException()
+    {
+        // Act & Assert - ThrowIfNullOrWhiteSpace throws ArgumentNullException for null
+        Assert.ThrowsAny<ArgumentException>(() => 
+            LocalDatabaseService.MigrateToEncrypted(null!, "target.db", "password"));
+        
+        Assert.ThrowsAny<ArgumentException>(() => 
+            LocalDatabaseService.MigrateToEncrypted("source.db", null!, "password"));
+        
+        Assert.ThrowsAny<ArgumentException>(() => 
+            LocalDatabaseService.MigrateToEncrypted("source.db", "target.db", null!));
     }
 
     #endregion
@@ -524,7 +667,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
     [Fact]
     public void SecureReset_ClearsAllData()
     {
-        // Arrange - Add some data
+        // Arrange
         var config = _databaseService.GetConfiguration();
         config.ContainerName = "test-container";
         config.PasswordSalt = new byte[] { 1, 2, 3, 4 };
@@ -538,7 +681,13 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         // Act
         _databaseService.SecureReset();
         
-        // Assert
+        // Assert - Database is closed after SecureReset, re-initialize to verify data is cleared
+        Assert.False(_databaseService.IsInitialized);
+        Assert.False(File.Exists(_dbPath));
+        
+        // Re-initialize with new password to verify clean state
+        _databaseService.Initialize(_dbPath, TestPassword);
+        
         var newConfig = _databaseService.GetConfiguration();
         Assert.Null(newConfig.PasswordSalt);
         Assert.Null(newConfig.StorageAccountName);
@@ -556,7 +705,11 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         // Act
         _databaseService.SecureReset();
         
-        // Can still use the database after reset
+        // Assert - Database must be re-initialized after SecureReset
+        Assert.False(_databaseService.IsInitialized);
+        
+        // Re-initialize and verify we can use it
+        _databaseService.Initialize(_dbPath, TestPassword);
         _databaseService.SaveBackedUpFile(CreateTestBackedUpFile("C:\\new.txt"));
         
         // Assert

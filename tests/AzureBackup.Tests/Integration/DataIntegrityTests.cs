@@ -35,7 +35,7 @@ public class DataIntegrityTests : IAsyncLifetime
         _encryptionService = new EncryptionService();
         _chunkingService = new ChunkingService();
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_dbPath);
+        _databaseService.Initialize(_dbPath, TestPassword);
         
         var salt = EncryptionService.GenerateSalt();
         var key = await _encryptionService.DeriveKeyAsync(TestPassword, salt);

@@ -37,7 +37,7 @@ public class RestoreServiceTests : IAsyncLifetime
         _chunkingService = new ChunkingService();
         _blobService = new InMemoryBlobService(_encryptionService);
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_dbPath);
+        _databaseService.Initialize(_dbPath, TestPassword);
         _restoreService = new RestoreService(_databaseService, _blobService, _encryptionService);
         
         // Initialize encryption

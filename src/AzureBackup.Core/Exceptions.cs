@@ -58,6 +58,20 @@ public enum SecurityPolicyType
 }
 
 /// <summary>
+/// Exception thrown when an invalid password is provided for the encrypted database.
+/// </summary>
+public class InvalidPasswordException : Exception
+{
+    public InvalidPasswordException(string message) : base(message)
+    {
+    }
+
+    public InvalidPasswordException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
 /// Exception thrown when backup/restore operations fail.
 /// </summary>
 public class BackupOperationException : Exception

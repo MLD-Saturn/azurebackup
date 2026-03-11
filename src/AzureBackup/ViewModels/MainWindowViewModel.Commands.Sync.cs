@@ -281,14 +281,14 @@ public partial class MainWindowViewModel
 
         AddLog($"Preparing to backup {selectedFiles.Count} selected file(s)...");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
             // Create preview for selected files
             var preview = await _orchestrator.PreviewBackupFilesAsync(
                 selectedFiles.Select(f => f.FullPath).ToList(),
-                _operationCts.Token);
+                _operationCts!.Token);
 
             IsOperationInProgress = false;
 
@@ -446,7 +446,7 @@ public partial class MainWindowViewModel
 
         AddLog($"Sync operation: {localFilesToBackup.Count} file(s) to backup, {azureFilesCount} file(s) to restore");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
@@ -615,11 +615,11 @@ public partial class MainWindowViewModel
 
         AddLog($"Preparing to backup {filePaths.Count} file(s)...");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
-            var preview = await _orchestrator.PreviewBackupFilesAsync(filePaths, _operationCts.Token);
+            var preview = await _orchestrator.PreviewBackupFilesAsync(filePaths, _operationCts!.Token);
 
             IsOperationInProgress = false;
 

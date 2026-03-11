@@ -192,7 +192,7 @@ public partial class MainWindowViewModel
         {
             AddLog("Securely deleting all application data...");
             
-            // Perform the secure reset
+            // Perform the secure reset (this closes and deletes the database)
             await _orchestrator.ResetApplicationAsync();
 
             // Clear UI state
@@ -202,6 +202,7 @@ public partial class MainWindowViewModel
                 WatchedFolders.Clear();
                 BackedUpFiles.Clear();
                 RestorableFiles.Clear();
+                LogMessages.Clear();
                 
                 // Reset properties
                 IsInitialized = false;
@@ -209,8 +210,10 @@ public partial class MainWindowViewModel
                 HasExistingConfig = false;
                 IsEntraIdAuthenticated = false;
                 EntraIdStatus = "Not signed in";
+                EntraIdUserName = string.Empty;
                 StorageAccountName = string.Empty;
                 ConnectionString = string.Empty;
+                ContainerName = "backup";
                 UseEntraIdAuth = false;
                 Password = string.Empty;
                 PasswordConfirm = string.Empty;
@@ -220,9 +223,13 @@ public partial class MainWindowViewModel
                 LastBackupTime = "Never";
                 EstimatedCost = "$0.00";
                 
-                // Clear tree view
+                // Clear tree views
                 FileTreeRoots.Clear();
                 LocalFileTreeRoots.Clear();
+                LocalFilesFlatList.Clear();
+                
+                // Reset migration flag (fresh database won't need migration)
+                _needsMigration = false;
                 
                 // Notify property changes
                 OnPropertyChanged(nameof(RestorableFilesEmpty));
@@ -231,9 +238,21 @@ public partial class MainWindowViewModel
                 OnPropertyChanged(nameof(HasSelectedFiles));
                 OnPropertyChanged(nameof(SelectedFilesCount));
                 OnPropertyChanged(nameof(SelectedFilesText));
+                OnPropertyChanged(nameof(NeedsConfiguration));
+                OnPropertyChanged(nameof(NeedsUnlock));
+                OnPropertyChanged(nameof(NeedsMigration));
+                OnPropertyChanged(nameof(IsNewUser));
+                OnPropertyChanged(nameof(PasswordSectionTitle));
+                OnPropertyChanged(nameof(InitializeButtonText));
+                OnPropertyChanged(nameof(UnlockAndConnectButtonText));
+                OnPropertyChanged(nameof(BackupStatusText));
             });
 
             AddLog("? Application reset complete. You can now set up a new password and configure Azure connection.");
+            AddLog("Enter a new password and your Azure connection details to get started.");
+            
+            // Switch to Settings view so user can set up fresh
+            CurrentView = "Settings";
         }
         catch (Exception ex)
         {

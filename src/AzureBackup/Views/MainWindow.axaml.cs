@@ -46,7 +46,7 @@ public partial class MainWindow : Window
             return;
         }
         
-        // If configured but locked, show password dialog
+        // If configured but locked (including migration case), show password dialog
         if (vm.NeedsUnlock)
         {
             var unlocked = await ShowPasswordDialogAsync(vm);

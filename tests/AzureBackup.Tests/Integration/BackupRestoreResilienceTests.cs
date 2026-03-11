@@ -34,7 +34,7 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
         _encryptionService = new EncryptionService();
         _chunkingService = new ChunkingService();
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_dbPath);
+        _databaseService.Initialize(_dbPath, TestPassword);
         
         var salt = EncryptionService.GenerateSalt();
         var key = await _encryptionService.DeriveKeyAsync(TestPassword, salt);
@@ -333,6 +333,123 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
 
     #endregion
 
+    #region Transient Failure Tests
+
+    [Fact]
+    public async Task BlobService_WithLowFailureRate_EventuallySucceeds()
+    {
+        // Arrange - Create blob service with 20% failure rate
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 0, failureRate: 0.2);
+        await blobService.ConnectAsync("fake-connection", "container");
+        
+        var data = CreateRandomContent(1024);
+        var hash = ComputeHash(data);
+        
+        // Act - Try multiple times, expecting some failures but eventual success
+        string? blobName = null;
+        int attempts = 0;
+        const int maxAttempts = 10;
+        
+        while (attempts < maxAttempts && blobName == null)
+        {
+            attempts++;
+            try
+            {
+                blobName = await blobService.UploadChunkAsync(data, hash);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected failure, retry
+            }
+        }
+
+        // Assert - Should eventually succeed within 10 attempts
+        Assert.NotNull(blobName);
+        Assert.True(attempts <= maxAttempts);
+    }
+
+    [Fact]
+    public async Task BlobService_WithHighFailureRate_FailsConsistently()
+    {
+        // Arrange - Create blob service with 100% failure rate
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 0, failureRate: 1.0);
+        await blobService.ConnectAsync("fake-connection", "container");
+        
+        var data = CreateRandomContent(1024);
+        var hash = ComputeHash(data);
+
+        // Act & Assert - Should always fail
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            blobService.UploadChunkAsync(data, hash));
+    }
+
+    [Fact]
+    public async Task BlobService_DownloadWithTransientFailure_CanRetry()
+    {
+        // Arrange - First upload successfully with no failures
+        InMemoryBlobService reliableService = new(_encryptionService);
+        await reliableService.ConnectAsync("fake-connection", "container");
+        
+        var data = CreateRandomContent(1024);
+        var hash = ComputeHash(data);
+        var blobName = await reliableService.UploadChunkAsync(data, hash);
+        
+        // Create a flaky service that shares the same internal state
+        // For testing, we'll verify download behavior with failures
+        var flakyService = new FlakyBlobServiceWrapper(reliableService, failureRate: 0.3);
+
+        // Act - Retry downloads until successful
+        byte[]? downloaded = null;
+        int attempts = 0;
+        const int maxAttempts = 10;
+        
+        while (attempts < maxAttempts && downloaded == null)
+        {
+            attempts++;
+            try
+            {
+                downloaded = await flakyService.DownloadChunkAsync(blobName);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected transient failure, retry
+            }
+        }
+
+        // Assert - Should eventually succeed
+        Assert.NotNull(downloaded);
+        Assert.Equal(data, downloaded);
+    }
+
+    [Fact]
+    public async Task RestoreService_HandlesChunkDownloadError_GracefulFailure()
+    {
+        // Arrange
+        InMemoryBlobService blobService = new(_encryptionService);
+        await blobService.ConnectAsync("fake", "container");
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
+
+        var content = CreateRandomContent(10 * 1024);
+        var sourceFile = Path.Combine(_sourceDirectory, "graceful_fail.txt");
+        await File.WriteAllBytesAsync(sourceFile, content);
+        
+        var backedUp = await BackupFileAsync(blobService, sourceFile);
+        var restorePath = Path.Combine(_restoreDirectory, "graceful_fail.txt");
+
+        // Corrupt the chunk data by removing it
+        var chunkBlobName = backedUp.Chunks[0].BlobName;
+        blobService.Clear();
+
+        // Act & Assert - Should throw DataIntegrityException for missing chunks
+        await Assert.ThrowsAsync<AzureBackup.Core.DataIntegrityException>(() =>
+            restoreService.RestoreFileAsync(backedUp, restorePath, overwriteExisting: true));
+        
+        // File should not exist after failed restore
+        Assert.False(File.Exists(restorePath));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private async Task<BackedUpFile> BackupFileAsync(IBlobStorageService blobService, string filePath)
@@ -379,4 +496,41 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
     }
 
     #endregion
+}
+
+/// <summary>
+/// Wrapper around InMemoryBlobService that adds random failures for testing retry logic.
+/// </summary>
+internal class FlakyBlobServiceWrapper
+{
+    private readonly InMemoryBlobService _inner;
+    private readonly double _failureRate;
+    private readonly Random _random = new();
+    private readonly object _randomLock = new();
+
+    public FlakyBlobServiceWrapper(InMemoryBlobService inner, double failureRate)
+    {
+        _inner = inner;
+        _failureRate = Math.Clamp(failureRate, 0.0, 1.0);
+    }
+
+    public async Task<byte[]> DownloadChunkAsync(string blobName, CancellationToken cancellationToken = default)
+    {
+        MaybeThrowFailure();
+        return await _inner.DownloadChunkAsync(blobName, cancellationToken);
+    }
+
+    private void MaybeThrowFailure()
+    {
+        double randomValue;
+        lock (_randomLock)
+        {
+            randomValue = _random.NextDouble();
+        }
+        
+        if (randomValue < _failureRate)
+        {
+            throw new InvalidOperationException("Simulated transient failure");
+        }
+    }
 }

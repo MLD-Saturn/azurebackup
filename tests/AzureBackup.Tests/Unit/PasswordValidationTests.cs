@@ -8,6 +8,7 @@ namespace AzureBackup.Tests;
 /// </summary>
 public class PasswordValidationTests : IAsyncLifetime
 {
+    private const string TestDbPassword = "DatabasePassword1!";
     private string _testDirectory = null!;
     private string _dbPath = null!;
     
@@ -29,7 +30,7 @@ public class PasswordValidationTests : IAsyncLifetime
         _chunkingService = new ChunkingService();
         _blobService = new AzureBlobService(_encryptionService);
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_dbPath);
+        _databaseService.Initialize(_dbPath, TestDbPassword);
         _fileWatcherService = new FileWatcherService(_databaseService);
         
         _orchestrator = new BackupOrchestrator(

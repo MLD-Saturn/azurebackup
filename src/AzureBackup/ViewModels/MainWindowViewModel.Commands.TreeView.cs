@@ -163,7 +163,7 @@ public partial class MainWindowViewModel
         }
 
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
@@ -278,7 +278,7 @@ public partial class MainWindowViewModel
 
             // Proceed with sync
             IsOperationInProgress = true;
-            _operationCts = new CancellationTokenSource();
+            CreateOperationCts();
 
             AddLog($"Mirror sync: {sourceFolder} ? {targetFolder}");
 

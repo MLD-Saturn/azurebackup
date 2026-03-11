@@ -1,6 +1,8 @@
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using AzureBackup.Core.Services;
 using CommunityToolkit.Mvvm.Input;
 
 namespace AzureBackup.ViewModels;
@@ -236,11 +238,9 @@ public partial class MainWindowViewModel
             return;
         }
 
-        // Check if this is a new setup (need password confirmation)
-        var config = _databaseService.GetConfiguration();
-        if (config.PasswordSalt == null)
+        // For new setup or migration, require password confirmation
+        if (!HasExistingConfig || _needsMigration)
         {
-            // New setup - require password confirmation
             if (string.IsNullOrWhiteSpace(PasswordConfirm))
             {
                 AddLog("Please confirm your password");
@@ -257,6 +257,57 @@ public partial class MainWindowViewModel
         IsOperationInProgress = true;
         try
         {
+            // Step 1: Handle migration from unencrypted database if needed
+            if (_needsMigration)
+            {
+                AddLog("Migrating database to encrypted format...");
+                var tempPath = AppMode.DatabasePath + ".encrypted";
+                
+                try
+                {
+                    // Migrate to encrypted format
+                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, Password);
+                    
+                    // Close any existing connections and swap files
+                    _databaseService.Close();
+                    
+                    // Backup old database and replace with encrypted one
+                    var backupPath = AppMode.DatabasePath + ".unencrypted.bak";
+                    File.Move(AppMode.DatabasePath, backupPath);
+                    File.Move(tempPath, AppMode.DatabasePath);
+                    
+                    // Delete backup after successful migration
+                    File.Delete(backupPath);
+                    
+                    AddLog("Database migration completed successfully");
+                    _needsMigration = false;
+                }
+                catch (System.Exception ex)
+                {
+                    AddLog($"Migration failed: {ex.Message}");
+                    // Clean up temp file if it exists
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                    return;
+                }
+            }
+
+            // Step 2: Initialize the encrypted database with password
+            try
+            {
+                _databaseService.Initialize(AppMode.DatabasePath, Password);
+                AddLog("Database unlocked successfully");
+            }
+            catch (AzureBackup.Core.InvalidPasswordException)
+            {
+                AddLog("Invalid password - please try again");
+                return;
+            }
+            
+            // Step 3: Load configuration from the now-unlocked database
+            LoadConfiguration();
+            
+            // Step 4: Initialize encryption service for backup operations
             var success = await _orchestrator.InitializeAsync(Password);
             if (success)
             {
@@ -271,6 +322,7 @@ public partial class MainWindowViewModel
                 IsEntraIdAuthenticated = _orchestrator.IsEntraIdAuthenticated;
                 
                 // Check if Azure storage is configured (either Entra ID or connection string)
+                var config = _databaseService.GetConfiguration();
                 var hasEntraIdConfig = IsEntraIdAuthenticated && !string.IsNullOrEmpty(config.StorageAccountName);
                 var hasConnectionStringConfig = !UseEntraIdAuth && config.EncryptedConnectionString != null;
                 
@@ -293,7 +345,7 @@ public partial class MainWindowViewModel
             }
             else
             {
-                AddLog("Invalid password");
+                AddLog("Failed to initialize encryption");
             }
         }
         catch (AzureBackup.Core.SecurityPolicyException ex)
@@ -325,12 +377,11 @@ public partial class MainWindowViewModel
             return;
         }
 
-        var config = _databaseService.GetConfiguration();
-        var isNewSetup = config.PasswordSalt == null;
+        var isNewSetup = !HasExistingConfig;
 
-        if (isNewSetup)
+        // For new setup or migration, require password confirmation
+        if (isNewSetup || _needsMigration)
         {
-            // New setup - require password confirmation
             if (string.IsNullOrWhiteSpace(PasswordConfirm))
             {
                 AddLog("Please confirm your password");
@@ -343,26 +394,29 @@ public partial class MainWindowViewModel
                 return;
             }
 
-            // Step 2: Validate storage configuration for new users
-            if (UseEntraIdAuth)
+            // Step 2: Validate storage configuration for new users (not for migration)
+            if (isNewSetup && !_needsMigration)
             {
-                if (string.IsNullOrWhiteSpace(StorageAccountName))
+                if (UseEntraIdAuth)
                 {
-                    AddLog("Please enter a storage account name");
-                    return;
+                    if (string.IsNullOrWhiteSpace(StorageAccountName))
+                    {
+                        AddLog("Please enter a storage account name");
+                        return;
+                    }
+                    if (!_orchestrator.IsEntraIdAuthenticated)
+                    {
+                        AddLog("Please sign in with Microsoft Entra ID first");
+                        return;
+                    }
                 }
-                if (!_orchestrator.IsEntraIdAuthenticated)
+                else
                 {
-                    AddLog("Please sign in with Microsoft Entra ID first");
-                    return;
-                }
-            }
-            else
-            {
-                if (string.IsNullOrWhiteSpace(ConnectionString) || ConnectionString.StartsWith("[Encrypted"))
-                {
-                    AddLog("Please enter a connection string");
-                    return;
+                    if (string.IsNullOrWhiteSpace(ConnectionString) || ConnectionString.StartsWith("[Encrypted"))
+                    {
+                        AddLog("Please enter a connection string");
+                        return;
+                    }
                 }
             }
         }
@@ -370,11 +424,54 @@ public partial class MainWindowViewModel
         IsOperationInProgress = true;
         try
         {
-            // Step 3: Initialize encryption
+            // Step 3: Handle migration from unencrypted database if needed
+            if (_needsMigration)
+            {
+                AddLog("Migrating database to encrypted format...");
+                var tempPath = AppMode.DatabasePath + ".encrypted";
+                
+                try
+                {
+                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, Password);
+                    _databaseService.Close();
+                    
+                    var backupPath = AppMode.DatabasePath + ".unencrypted.bak";
+                    File.Move(AppMode.DatabasePath, backupPath);
+                    File.Move(tempPath, AppMode.DatabasePath);
+                    File.Delete(backupPath);
+                    
+                    AddLog("Database migration completed successfully");
+                    _needsMigration = false;
+                }
+                catch (System.Exception ex)
+                {
+                    AddLog($"Migration failed: {ex.Message}");
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                    return;
+                }
+            }
+
+            // Step 4: Initialize the encrypted database with password
+            try
+            {
+                _databaseService.Initialize(AppMode.DatabasePath, Password);
+                AddLog("Database unlocked successfully");
+            }
+            catch (AzureBackup.Core.InvalidPasswordException)
+            {
+                AddLog("Invalid password - please try again");
+                return;
+            }
+            
+            // Step 5: Load configuration from the now-unlocked database
+            LoadConfiguration();
+            
+            // Step 6: Initialize encryption service for backup operations
             var success = await _orchestrator.InitializeAsync(Password);
             if (!success)
             {
-                AddLog("Invalid password");
+                AddLog("Failed to initialize encryption");
                 return;
             }
 
@@ -385,11 +482,11 @@ public partial class MainWindowViewModel
             Password = string.Empty;
             PasswordConfirm = string.Empty;
 
-            // Step 4: Save and connect to storage (for new users with storage config)
-            if (isNewSetup)
+            // Step 7: Save and connect to storage (for new users with storage config)
+            if (isNewSetup && !_needsMigration)
             {
                 // Save watched folders
-                config = _databaseService.GetConfiguration();
+                var config = _databaseService.GetConfiguration();
                 config.WatchedFolders = WatchedFolders.Select(f => f.ToModel()).ToList();
                 _databaseService.SaveConfiguration(config);
                 
@@ -409,13 +506,13 @@ public partial class MainWindowViewModel
                 }
             }
 
-            // Step 5: Update status and load files
+            // Step 8: Update status and load files
             IsEntraIdAuthenticated = _orchestrator.IsEntraIdAuthenticated;
             
             // Reload config to check for stored connection
-            config = _databaseService.GetConfiguration();
-            var hasEntraIdConfig = IsEntraIdAuthenticated && !string.IsNullOrEmpty(config.StorageAccountName);
-            var hasConnectionStringConfig = !UseEntraIdAuth && config.EncryptedConnectionString != null;
+            var finalConfig = _databaseService.GetConfiguration();
+            var hasEntraIdConfig = IsEntraIdAuthenticated && !string.IsNullOrEmpty(finalConfig.StorageAccountName);
+            var hasConnectionStringConfig = !UseEntraIdAuth && finalConfig.EncryptedConnectionString != null;
             
             if (hasEntraIdConfig || hasConnectionStringConfig)
             {
@@ -452,6 +549,7 @@ public partial class MainWindowViewModel
     /// <summary>
     /// Attempts to unlock the application with the given password.
     /// Used by the startup password dialog.
+    /// Handles migration from unencrypted database automatically.
     /// </summary>
     /// <param name="password">The password to try</param>
     /// <returns>Tuple of (success, errorMessage). If success is true, errorMessage is null.</returns>
@@ -464,10 +562,52 @@ public partial class MainWindowViewModel
 
         try
         {
+            // Step 1: Handle migration from unencrypted database if needed
+            if (_needsMigration)
+            {
+                AddLog("Migrating database to encrypted format...");
+                var tempPath = AppMode.DatabasePath + ".encrypted";
+                
+                try
+                {
+                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, password);
+                    _databaseService.Close();
+                    
+                    var backupPath = AppMode.DatabasePath + ".unencrypted.bak";
+                    System.IO.File.Move(AppMode.DatabasePath, backupPath);
+                    System.IO.File.Move(tempPath, AppMode.DatabasePath);
+                    System.IO.File.Delete(backupPath);
+                    
+                    AddLog("Database migration completed successfully");
+                    _needsMigration = false;
+                }
+                catch (System.Exception ex)
+                {
+                    AddLog($"Migration failed: {ex.Message}");
+                    if (System.IO.File.Exists(tempPath))
+                        System.IO.File.Delete(tempPath);
+                    return (false, $"Migration failed: {ex.Message}");
+                }
+            }
+
+            // Step 2: Initialize the encrypted database with password
+            try
+            {
+                _databaseService.Initialize(AppMode.DatabasePath, password);
+            }
+            catch (AzureBackup.Core.InvalidPasswordException)
+            {
+                return (false, "Invalid password");
+            }
+            
+            // Step 3: Load configuration from the now-unlocked database
+            LoadConfiguration();
+            
+            // Step 4: Initialize encryption service for backup operations
             var success = await _orchestrator.InitializeAsync(password);
             if (!success)
             {
-                return (false, "Invalid password");
+                return (false, "Failed to initialize encryption");
             }
 
             IsInitialized = true;

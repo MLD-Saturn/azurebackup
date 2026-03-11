@@ -145,7 +145,6 @@ public partial class AzureBlobService : IBlobStorageService
         catch (RequestFailedException ex)
         {
             Log($"TestConnectionAsync: RequestFailedException - {ex.Status} {ex.Message}");
-            Log($"TestConnectionAsync: RequestFailedException - {ex.Status} {ex.Message}");
             return (false, $"Azure error: {ex.Message}");
         }
         catch (FormatException ex)

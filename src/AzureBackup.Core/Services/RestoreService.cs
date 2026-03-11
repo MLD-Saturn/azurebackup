@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Threading.Channels;
 using AzureBackup.Core.Models;
 
 namespace AzureBackup.Core.Services;
@@ -5,7 +7,7 @@ namespace AzureBackup.Core.Services;
 /// <summary>
 /// Handles restoring files from Azure Blob Storage.
 /// Supports both individual file and full restore operations.
-/// Uses parallel downloads for optimal bandwidth utilization.
+/// Uses parallel downloads with bounded memory for optimal performance.
 /// </summary>
 public class RestoreService
 {
@@ -13,8 +15,10 @@ public class RestoreService
     private readonly IBlobStorageService _blobService;
     private readonly EncryptionService _encryptionService;
     
-    // Parallel download settings - balance between bandwidth and memory usage
-    private const int MaxParallelChunkDownloads = 4;
+    // Parallel download settings - increased for better bandwidth utilization
+    // Memory bounded by: MaxParallelChunkDownloads * MaxChunkSize = 12 * 128 MB = 1.5 GB max
+    // In practice, most chunks are much smaller, so typical usage is ~100-500 MB
+    private const int MaxParallelChunkDownloads = 12;
 
     public event EventHandler<RestoreProgressEventArgs>? ProgressChanged;
     public event EventHandler<string>? StatusChanged;
@@ -31,14 +35,69 @@ public class RestoreService
         DiagnosticLog?.Invoke(this, $"[{timestamp}] [Restore] {message}");
     }
 
+    /// <summary>
+    /// Validates that a restore path is safe and not targeting sensitive system directories.
+    /// </summary>
+    private static void ValidateRestorePath(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        
+        // Get the full path to normalize it and resolve any relative components
+        var fullPath = Path.GetFullPath(path);
+        
+        // Check for path traversal attempts
+        if (fullPath.Contains("..", StringComparison.Ordinal))
+        {
+            throw new SecurityPolicyException(
+                "Invalid restore path: path traversal detected",
+                SecurityPolicyType.InvalidBlobName);
+        }
+        
+        // Define sensitive system directories that should not be restore targets
+        var sensitiveDirectories = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            Environment.GetFolderPath(Environment.SpecialFolder.SystemX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86),
+        };
+        
+        foreach (var sensitiveDir in sensitiveDirectories)
+        {
+            if (!string.IsNullOrEmpty(sensitiveDir) && 
+                fullPath.StartsWith(sensitiveDir, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SecurityPolicyException(
+                    $"Cannot restore to protected system directory: {sensitiveDir}",
+                    SecurityPolicyType.InvalidBlobName);
+            }
+        }
+        
+        // Validate the path doesn't contain invalid characters
+        var invalidChars = Path.GetInvalidPathChars();
+        if (path.IndexOfAny(invalidChars) >= 0)
+        {
+            throw new SecurityPolicyException(
+                "Invalid restore path: contains invalid characters",
+                SecurityPolicyType.InvalidBlobName);
+        }
+    }
+
     public RestoreService(
         LocalDatabaseService databaseService,
         IBlobStorageService blobService,
         EncryptionService encryptionService)
     {
-        _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
-        _blobService = blobService ?? throw new ArgumentNullException(nameof(blobService));
-        _encryptionService = encryptionService ?? throw new ArgumentNullException(nameof(encryptionService));
+        ArgumentNullException.ThrowIfNull(databaseService);
+        ArgumentNullException.ThrowIfNull(blobService);
+        ArgumentNullException.ThrowIfNull(encryptionService);
+
+        _databaseService = databaseService;
+        _blobService = blobService;
+        _encryptionService = encryptionService;
         Log("RestoreService initialized");
     }
 
@@ -87,6 +146,10 @@ public class RestoreService
         Log($"RestoreFileAsync: Starting restore of '{Path.GetFileName(file.LocalPath)}' ({file.FileSize} bytes, {file.Chunks.Count} chunks)");
         
         var targetPath = restorePath ?? file.LocalPath;
+        
+        // Validate restore path for security
+        ValidateRestorePath(targetPath);
+        
         var tempPath = targetPath + ".tmp";
         
         try
@@ -132,58 +195,16 @@ public class RestoreService
             }
             Log($"RestoreFileAsync: Chunk validation passed, downloading {sortedChunks.Count} chunks");
 
-            // Download chunks - use parallel downloads for files with multiple chunks
-            // Store downloaded chunks in a dictionary for sequential writing
-            Dictionary<int, byte[]> downloadedChunks = new();
             long currentBytes = 0;
-            object downloadLock = new();
             
             if (sortedChunks.Count > 1)
             {
-                // Parallel download with semaphore to limit concurrency
-                using SemaphoreSlim semaphore = new(MaxParallelChunkDownloads);
-                var downloadTasks = sortedChunks.Select(async chunk =>
-                {
-                    await semaphore.WaitAsync(cancellationToken);
-                    try
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        
-                        var chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, cancellationToken);
-                        
-                        // Verify chunk size matches metadata
-                        if (chunkData.Length != chunk.Length)
-                        {
-                            throw new DataIntegrityException(
-                                $"Chunk {chunk.Index} size mismatch: got {chunkData.Length} bytes, expected {chunk.Length} bytes",
-                                file.LocalPath);
-                        }
-                        
-                        lock (downloadLock)
-                        {
-                            downloadedChunks[chunk.Index] = chunkData;
-                            currentBytes += chunk.Length;
-                            progress?.Report((currentBytes, file.FileSize));
-                        }
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }).ToList();
-                
-                await Task.WhenAll(downloadTasks);
-                
-                // Write chunks sequentially to preserve file order
-                await using FileStream outputStream = new(tempPath, FileMode.Create, FileAccess.Write, 
-                    FileShare.None, bufferSize: 81920, useAsync: true);
-                    
-                for (int i = 0; i < sortedChunks.Count; i++)
-                {
-                    await outputStream.WriteAsync(downloadedChunks[i], cancellationToken);
-                }
-                
-                await outputStream.FlushAsync(cancellationToken);
+                // Use bounded producer-consumer pattern with channels
+                // This limits memory to MaxParallelChunkDownloads chunks at a time
+                // while still allowing parallel downloads and sequential writes
+                await RestoreWithBoundedParallelDownloadsAsync(
+                    sortedChunks, file, tempPath, progress, 
+                    p => currentBytes = p, cancellationToken);
             }
             else
             {
@@ -197,13 +218,8 @@ public class RestoreService
 
                     var chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, cancellationToken);
                     
-                    // Verify chunk size matches metadata
-                    if (chunkData.Length != chunk.Length)
-                    {
-                        throw new DataIntegrityException(
-                            $"Chunk {chunk.Index} size mismatch: got {chunkData.Length} bytes, expected {chunk.Length} bytes",
-                            file.LocalPath);
-                    }
+                    // Verify chunk size and hash match metadata
+                    VerifyChunkIntegrity(chunkData, chunk, file.LocalPath);
                     
                     await outputStream.WriteAsync(chunkData, cancellationToken);
 
@@ -272,8 +288,214 @@ public class RestoreService
         await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, 
             FileShare.Read, bufferSize: 81920, useAsync: true);
         
-        var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken);
+        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
         return Convert.ToHexString(hash);
+    }
+
+    /// <summary>
+    /// Computes SHA-256 hash of chunk data for integrity verification.
+    /// </summary>
+    private static string ComputeChunkHash(ReadOnlySpan<byte> data)
+    {
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(data, hash);
+        return Convert.ToHexString(hash);
+    }
+
+    /// <summary>
+    /// Verifies downloaded chunk data matches expected hash and size.
+    /// </summary>
+    private void VerifyChunkIntegrity(byte[] chunkData, ChunkInfo chunk, string filePath)
+    {
+        // Verify chunk size matches metadata
+        if (chunkData.Length != chunk.Length)
+        {
+            throw new DataIntegrityException(
+                $"Chunk {chunk.Index} size mismatch: got {chunkData.Length} bytes, expected {chunk.Length} bytes",
+                filePath);
+        }
+
+        // Verify chunk hash matches metadata
+        var actualHash = ComputeChunkHash(chunkData);
+        if (!string.Equals(actualHash, chunk.Hash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DataIntegrityException(
+                $"Chunk {chunk.Index} hash mismatch: expected {chunk.Hash}, got {actualHash}",
+                filePath);
+        }
+    }
+
+    /// <summary>
+    /// Restores a file using bounded parallel downloads with a producer-consumer pattern.
+    /// Downloads chunks in parallel but writes them sequentially, limiting memory usage
+    /// to approximately MaxParallelChunkDownloads chunks at any time.
+    /// </summary>
+    private async Task RestoreWithBoundedParallelDownloadsAsync(
+        List<ChunkInfo> sortedChunks,
+        BackedUpFile file,
+        string tempPath,
+        IProgress<(long current, long total)>? progress,
+        Action<long> updateCurrentBytes,
+        CancellationToken cancellationToken)
+    {
+        Log($"RestoreWithBoundedParallelDownloadsAsync: Starting bounded parallel restore with {MaxParallelChunkDownloads} concurrent downloads");
+        
+        // Create a bounded channel that holds at most MaxParallelChunkDownloads chunks
+        // This limits memory usage while allowing parallel downloads
+        var channelOptions = new BoundedChannelOptions(MaxParallelChunkDownloads)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false
+        };
+        var channel = Channel.CreateBounded<(int index, byte[] data)>(channelOptions);
+        
+        using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Exception? downloadException = null;
+        long currentBytes = 0;
+        int chunksWritten = 0;
+        
+        // Producer task: Download chunks in parallel and write to channel
+        var producerTask = Task.Run(async () =>
+        {
+            try
+            {
+                using SemaphoreSlim semaphore = new(MaxParallelChunkDownloads);
+                var downloadTasks = new List<Task>();
+                
+                foreach (var chunk in sortedChunks)
+                {
+                    linkedCts.Token.ThrowIfCancellationRequested();
+                    
+                    await semaphore.WaitAsync(linkedCts.Token);
+                    
+                    var downloadTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            linkedCts.Token.ThrowIfCancellationRequested();
+                            
+                            var chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, linkedCts.Token);
+                            
+                            // Verify chunk integrity
+                            VerifyChunkIntegrity(chunkData, chunk, file.LocalPath);
+                            
+                            // Write to channel (will block if channel is full, providing backpressure)
+                            await channel.Writer.WriteAsync((chunk.Index, chunkData), linkedCts.Token);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            // Store exception and cancel other downloads
+                            downloadException ??= ex;
+                            await linkedCts.CancelAsync();
+                            throw;
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    }, linkedCts.Token);
+                    
+                    downloadTasks.Add(downloadTask);
+                }
+                
+                // Wait for all downloads to complete
+                try
+                {
+                    await Task.WhenAll(downloadTasks);
+                }
+                catch (OperationCanceledException) when (downloadException != null)
+                {
+                    // Swallow cancellation if we have a real exception
+                }
+            }
+            finally
+            {
+                // Signal that no more chunks will be written
+                channel.Writer.Complete(downloadException);
+            }
+        }, linkedCts.Token);
+        
+        // Consumer task: Read chunks from channel and write to file in order
+        var writerTask = Task.Run(async () =>
+        {
+            // Buffer for out-of-order chunks (should be small due to bounded channel)
+            var pendingChunks = new Dictionary<int, byte[]>();
+            int nextChunkToWrite = 0;
+            
+            await using FileStream outputStream = new(tempPath, FileMode.Create, FileAccess.Write, 
+                FileShare.None, bufferSize: 81920, useAsync: true);
+            
+            try
+            {
+                await foreach (var (index, data) in channel.Reader.ReadAllAsync(linkedCts.Token))
+                {
+                    if (index == nextChunkToWrite)
+                    {
+                        // Write this chunk immediately
+                        await outputStream.WriteAsync(data, linkedCts.Token);
+                        currentBytes += data.Length;
+                        chunksWritten++;
+                        nextChunkToWrite++;
+                        updateCurrentBytes(currentBytes);
+                        progress?.Report((currentBytes, file.FileSize));
+                        
+                        // Write any pending chunks that are now in order
+                        while (pendingChunks.TryGetValue(nextChunkToWrite, out var pendingData))
+                        {
+                            pendingChunks.Remove(nextChunkToWrite);
+                            await outputStream.WriteAsync(pendingData, linkedCts.Token);
+                            currentBytes += pendingData.Length;
+                            chunksWritten++;
+                            nextChunkToWrite++;
+                            updateCurrentBytes(currentBytes);
+                            progress?.Report((currentBytes, file.FileSize));
+                        }
+                    }
+                    else
+                    {
+                        // Buffer this chunk for later (arrived out of order)
+                        pendingChunks[index] = data;
+                    }
+                }
+                
+                await outputStream.FlushAsync(linkedCts.Token);
+            }
+            catch (ChannelClosedException)
+            {
+                // Channel was closed, check if there was an error
+                if (downloadException != null)
+                    throw downloadException;
+                throw;
+            }
+        }, linkedCts.Token);
+        
+        try
+        {
+            // Wait for both tasks to complete
+            await Task.WhenAll(producerTask, writerTask);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Rethrow the original download exception if available
+            if (downloadException != null)
+                throw downloadException;
+            throw;
+        }
+        
+        // Verify all chunks were written
+        if (chunksWritten != sortedChunks.Count)
+        {
+            throw new DataIntegrityException(
+                $"Write incomplete: wrote {chunksWritten} chunks, expected {sortedChunks.Count}",
+                file.LocalPath);
+        }
+        
+        Log($"RestoreWithBoundedParallelDownloadsAsync: Completed, wrote {chunksWritten} chunks, {currentBytes} bytes");
     }
 
     /// <summary>

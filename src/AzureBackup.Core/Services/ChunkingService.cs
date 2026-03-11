@@ -13,10 +13,33 @@ namespace AzureBackup.Core.Services;
 /// </summary>
 public class ChunkingService
 {
+    #region Chunk Size Constants
+
+    // Size constants for readability
+    private const int KB = 1024;
+    private const int MB = 1024 * KB;
+
     // Default chunking parameters
-    private const int DefaultMinChunkSize = 64 * 1024;       // 64 KB minimum chunk
-    private const int DefaultMaxChunkSize = 1024 * 1024;     // 1 MB maximum chunk
-    private const uint DefaultChunkMask = 0x0003FFFF;        // 18 bits = ~256KB average
+    private const int DefaultMinChunkSize = 64 * KB;       // 64 KB minimum chunk
+    private const int DefaultMaxChunkSize = 1 * MB;        // 1 MB maximum chunk
+
+    // Chunk mask bits explanation:
+    // The mask determines average chunk size: average = 2^(mask bits) bytes
+    // When (rollingHash & mask) == 0, a chunk boundary is found
+    // More bits = larger average chunks, fewer bits = smaller average chunks
+    private const int DefaultMaskBits = 18;                           // 2^18 = 256 KB average
+    private const uint DefaultChunkMask = (1u << DefaultMaskBits) - 1; // 0x0003FFFF
+
+    // Mask bit constants for different file types
+    private const int SmallChunkMaskBits = 16;   // 2^16 = 64 KB average (text/code)
+    private const int MediumChunkMaskBits = 17;  // 2^17 = 128 KB average (documents)
+    private const int LargeChunkMaskBits = 20;   // 2^20 = 1 MB average (images)
+    private const int XLargeChunkMaskBits = 21;  // 2^21 = 2 MB average (audio)
+    private const int XXLargeChunkMaskBits = 22; // 2^22 = 4 MB average (video)
+    private const int HugeChunkMaskBits = 23;    // 2^23 = 8 MB average (large video/ISO)
+    private const int GiantChunkMaskBits = 26;   // 2^26 = 64 MB average (very large files)
+
+    #endregion
 
     // Rolling hash parameters (Rabin-like)
     private const uint HashPrime = 31;
@@ -31,104 +54,108 @@ public class ChunkingService
     private record ChunkSizeConfig(int MinChunkSize, int MaxChunkSize, uint ChunkMask);
 
     /// <summary>
+    /// Creates a chunk mask from bit count.
+    /// </summary>
+    private static uint MaskFromBits(int bits) => (1u << bits) - 1;
+
+    /// <summary>
     /// File extensions mapped to chunking configurations.
     /// Mask bits determine average chunk size: 2^bits bytes average.
     /// </summary>
     private static readonly Dictionary<string, ChunkSizeConfig> ChunkConfigByExtension = new(StringComparer.OrdinalIgnoreCase)
     {
         // Documents - smaller chunks for better delta efficiency (frequently edited)
-        [".docx"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),      // 32KB-256KB, ~128KB avg
-        [".xlsx"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".pptx"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".doc"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".xls"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".ppt"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".odt"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".ods"] = new(32 * 1024, 256 * 1024, 0x0001FFFF),
-        [".pdf"] = new(64 * 1024, 512 * 1024, 0x0003FFFF),
+        [".docx"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),      // 32KB-256KB, ~128KB avg
+        [".xlsx"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".pptx"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".doc"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".xls"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".ppt"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".odt"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".ods"] = new(32 * KB, 256 * KB, MaskFromBits(MediumChunkMaskBits)),
+        [".pdf"] = new(64 * KB, 512 * KB, DefaultChunkMask),
 
         // Text/Code - small chunks (frequently edited, small changes)
-        [".txt"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),       // 16KB-128KB, ~64KB avg
-        [".md"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".cs"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".js"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".ts"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".py"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".java"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".cpp"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".h"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".json"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".xml"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".yaml"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".yml"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".html"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
-        [".css"] = new(16 * 1024, 128 * 1024, 0x0000FFFF),
+        [".txt"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),       // 16KB-128KB, ~64KB avg
+        [".md"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".cs"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".js"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".ts"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".py"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".java"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".cpp"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".h"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".json"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".xml"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".yaml"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".yml"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".html"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
+        [".css"] = new(16 * KB, 128 * KB, MaskFromBits(SmallChunkMaskBits)),
 
         // Media - very large chunks (write-once, never edited)
         // 16MB max significantly reduces Azure operations for large media libraries
-        [".mp4"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),   // 1MB-16MB, ~4MB avg
-        [".mkv"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".avi"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".mov"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".wmv"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".webm"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".flv"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".m4v"] = new(1024 * 1024, 64 * 1024 * 1024, 0x003FFFFF),
-        [".mp3"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),     // 512KB-8MB, ~2MB avg
-        [".flac"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".wav"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".aac"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".ogg"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".wma"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".m4a"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
+        [".mp4"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),   // 1MB-16MB, ~4MB avg
+        [".mkv"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".avi"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".mov"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".wmv"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".webm"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".flv"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".m4v"] = new(1 * MB, 64 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".mp3"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),     // 512KB-8MB, ~2MB avg
+        [".flac"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".wav"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".aac"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".ogg"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".wma"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".m4a"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
 
         // Images - large chunks (write-once, rarely edited)
-        [".jpg"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),     // 256KB-4MB, ~1MB avg
-        [".jpeg"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".png"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".gif"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".bmp"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".tiff"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".tif"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".webp"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".heic"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".heif"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".raw"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),     // RAW photos are larger
-        [".cr2"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".nef"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
-        [".arw"] = new(512 * 1024, 8 * 1024 * 1024, 0x001FFFFF),
+        [".jpg"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),     // 256KB-4MB, ~1MB avg
+        [".jpeg"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".png"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".gif"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".bmp"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".tiff"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".tif"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".webp"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".heic"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".heif"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".raw"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),     // RAW photos are larger
+        [".cr2"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".nef"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
+        [".arw"] = new(512 * KB, 8 * MB, MaskFromBits(XLargeChunkMaskBits)),
 
         // Archives - medium-large chunks (already compressed, write-once)
-        [".zip"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),     // 256KB-4MB, ~1MB avg
-        [".7z"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".rar"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".tar"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".gz"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
-        [".xz"] = new(256 * 1024, 4 * 1024 * 1024, 0x000FFFFF),
+        [".zip"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),     // 256KB-4MB, ~1MB avg
+        [".7z"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".rar"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".tar"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".gz"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
+        [".xz"] = new(256 * KB, 4 * MB, MaskFromBits(LargeChunkMaskBits)),
 
         // Disk images / VMs - very large chunks (write-once typically)
-        [".iso"] = new(2 * 1024 * 1024, 64 * 1024 * 1024, 0x007FFFFF), // 2MB-32MB, ~8MB avg
-        [".img"] = new(2 * 1024 * 1024, 64 * 1024 * 1024, 0x007FFFFF),
-        [".vhd"] = new(1024 * 1024, 16 * 1024 * 1024, 0x003FFFFF),     // VMs may have sparse changes
-        [".vhdx"] = new(1024 * 1024, 16 * 1024 * 1024, 0x003FFFFF),
-        [".vmdk"] = new(1024 * 1024, 16 * 1024 * 1024, 0x003FFFFF),
+        [".iso"] = new(2 * MB, 64 * MB, MaskFromBits(HugeChunkMaskBits)), // 2MB-32MB, ~8MB avg
+        [".img"] = new(2 * MB, 64 * MB, MaskFromBits(HugeChunkMaskBits)),
+        [".vhd"] = new(1 * MB, 16 * MB, MaskFromBits(XXLargeChunkMaskBits)),     // VMs may have sparse changes
+        [".vhdx"] = new(1 * MB, 16 * MB, MaskFromBits(XXLargeChunkMaskBits)),
+        [".vmdk"] = new(1 * MB, 16 * MB, MaskFromBits(XXLargeChunkMaskBits)),
 
         // Databases - medium chunks (may have localized changes)
-        [".db"] = new(128 * 1024, 1024 * 1024, 0x0003FFFF),          // 128KB-1MB, ~256KB avg
-        [".sqlite"] = new(128 * 1024, 1024 * 1024, 0x0003FFFF),
-        [".mdf"] = new(256 * 1024, 2 * 1024 * 1024, 0x0007FFFF),
-        [".ldf"] = new(256 * 1024, 2 * 1024 * 1024, 0x0007FFFF),
+        [".db"] = new(128 * KB, 1 * MB, MaskFromBits(DefaultMaskBits)),          // 128KB-1MB, ~256KB avg
+        [".sqlite"] = new(128 * KB, 1 * MB, MaskFromBits(DefaultMaskBits)),
+        [".mdf"] = new(256 * KB, 2 * MB, MaskFromBits(DefaultMaskBits)),
+        [".ldf"] = new(256 * KB, 2 * MB, MaskFromBits(DefaultMaskBits)),
     };
 
     // Large file threshold - files larger than this use optimized large chunks
-    private const long LargeFileThreshold = 500L * 1024 * 1024; // 500 MB
+    private const long LargeFileThreshold = 500L * MB; // 500 MB
     
     // Large file chunking config: 16 MB min, 128 MB max, ~64 MB average
-    // Mask 0x03FFFFFF = 26 bits = 64 MB average chunk size
     private static readonly ChunkSizeConfig LargeFileConfig = new(
-        16 * 1024 * 1024,      // 16 MB minimum
-        128 * 1024 * 1024,     // 128 MB maximum  
-        0x03FFFFFF);           // 26 bits = ~64 MB average
+        16 * MB,                                     // 16 MB minimum
+        128 * MB,                                    // 128 MB maximum  
+        MaskFromBits(GiantChunkMaskBits));           // 26 bits = ~64 MB average
 
     /// <summary>
     /// Gets the chunk configuration for a file based on its extension and size.

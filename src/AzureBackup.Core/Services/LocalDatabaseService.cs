@@ -7,6 +7,7 @@ namespace AzureBackup.Core.Services;
 /// <summary>
 /// Manages local database for tracking backup state, configuration, and file metadata.
 /// Uses LiteDB for embedded, portable storage (no installation required).
+/// The database is encrypted using the user's password for security.
 /// </summary>
 public class LocalDatabaseService : IDisposable
 {
@@ -39,12 +40,95 @@ public class LocalDatabaseService : IDisposable
     }
 
     /// <summary>
-    /// Initializes the database at the specified path.
+    /// Checks if a database file exists at the specified path.
+    /// Used to determine if this is a new user or returning user before password entry.
     /// </summary>
-    public void Initialize(string databasePath)
+    /// <param name="databasePath">Path to check for database file</param>
+    /// <returns>True if database file exists</returns>
+    public static bool DatabaseExists(string databasePath)
+    {
+        return File.Exists(databasePath);
+    }
+
+    /// <summary>
+    /// Checks if an existing database is unencrypted (legacy format).
+    /// Used to detect if migration is needed.
+    /// </summary>
+    /// <param name="databasePath">Path to the database file</param>
+    /// <returns>True if the database exists and is unencrypted</returns>
+    public static bool IsUnencryptedDatabase(string databasePath)
+    {
+        if (!File.Exists(databasePath))
+            return false;
+
+        try
+        {
+            // Try to open without password - if it works, it's unencrypted
+            using var db = new LiteDatabase(databasePath);
+            // Try to read something to verify it's a valid database
+            var _ = db.GetCollectionNames().ToList();
+            return true;
+        }
+        catch
+        {
+            // Either not a database or is encrypted
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Migrates an unencrypted database to an encrypted one.
+    /// Creates a new encrypted database and copies all data.
+    /// </summary>
+    /// <param name="sourcePath">Path to the unencrypted database</param>
+    /// <param name="targetPath">Path for the new encrypted database</param>
+    /// <param name="password">Password to encrypt the new database</param>
+    public static void MigrateToEncrypted(string sourcePath, string targetPath, string password)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+
+        if (!File.Exists(sourcePath))
+            throw new FileNotFoundException("Source database not found", sourcePath);
+
+        // Open source (unencrypted)
+        using var sourceDb = new LiteDatabase(sourcePath);
+        
+        // Create target (encrypted)
+        var targetConnString = new ConnectionString
+        {
+            Filename = targetPath,
+            Password = password,
+            Connection = ConnectionType.Shared
+        };
+        using var targetDb = new LiteDatabase(targetConnString);
+
+        // Copy all collections
+        foreach (var collectionName in sourceDb.GetCollectionNames())
+        {
+            var sourceCollection = sourceDb.GetCollection(collectionName);
+            var targetCollection = targetDb.GetCollection(collectionName);
+            
+            foreach (var doc in sourceCollection.FindAll())
+            {
+                targetCollection.Insert(doc);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Initializes the database at the specified path with password encryption.
+    /// </summary>
+    /// <param name="databasePath">Path to the database file</param>
+    /// <param name="password">Password used to encrypt the database</param>
+    /// <exception cref="LiteException">Thrown if password is incorrect for existing database</exception>
+    public void Initialize(string databasePath, string password)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
-        Log($"Initialize: Opening database at {databasePath}");
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+        
+        Log($"Initialize: Opening encrypted database at {databasePath}");
         
         _databasePath = databasePath;
         
@@ -53,6 +137,66 @@ public class LocalDatabaseService : IDisposable
         {
             Directory.CreateDirectory(directory);
             Log($"Initialize: Created directory {directory}");
+        }
+
+        // Build connection string with password for encryption
+        var connectionString = new ConnectionString
+        {
+            Filename = databasePath,
+            Password = password,
+            Connection = ConnectionType.Shared
+        };
+
+        try
+        {
+            _database = new LiteDatabase(connectionString);
+            
+            _configCollection = _database.GetCollection<BackupConfiguration>("config");
+            _filesCollection = _database.GetCollection<BackedUpFile>("files");
+            _pendingChangesCollection = _database.GetCollection<FileChangeEvent>("pending_changes");
+            _chunkIndexCollection = _database.GetCollection<ChunkIndexEntry>("chunk_index");
+            _indexMetadataCollection = _database.GetCollection<IndexMetadata>("index_metadata");
+
+            // Create indexes for faster queries
+            _filesCollection.EnsureIndex(x => x.LocalPath, unique: true);
+            _filesCollection.EnsureIndex(x => x.Status);
+            _filesCollection.EnsureIndex(x => x.FileHash);
+            
+            // Chunk index indexes
+            _chunkIndexCollection.EnsureIndex(x => x.ChunkHash, unique: true);
+            _chunkIndexCollection.EnsureIndex(x => x.ReferenceCount);
+            _chunkIndexCollection.EnsureIndex(x => x.CurrentTier);
+        }
+        catch (LiteException ex) when (ex.Message.Contains("invalid password", StringComparison.OrdinalIgnoreCase) ||
+                                        ex.Message.Contains("file is not a valid", StringComparison.OrdinalIgnoreCase) ||
+                                        ex.Message.Contains("HMAC", StringComparison.OrdinalIgnoreCase))
+        {
+            Log("Initialize: Invalid password for encrypted database");
+            _database?.Dispose();
+            _database = null;
+            throw new InvalidPasswordException("Invalid password. Please try again.", ex);
+        }
+        
+        Log("Initialize: Encrypted database initialized successfully");
+    }
+
+    /// <summary>
+    /// Initializes the database at the specified path without encryption.
+    /// Only used for migration from unencrypted to encrypted database.
+    /// </summary>
+    [Obsolete("Use Initialize(string, string) with password for encrypted database. This method is only for migration.")]
+    public void InitializeUnencrypted(string databasePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        Log($"InitializeUnencrypted: Opening unencrypted database at {databasePath} (for migration)");
+        
+        _databasePath = databasePath;
+        
+        var directory = Path.GetDirectoryName(databasePath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+            Log($"InitializeUnencrypted: Created directory {directory}");
         }
 
         _database = new LiteDatabase(databasePath);
@@ -73,7 +217,26 @@ public class LocalDatabaseService : IDisposable
         _chunkIndexCollection.EnsureIndex(x => x.ReferenceCount);
         _chunkIndexCollection.EnsureIndex(x => x.CurrentTier);
         
-        Log("Initialize: Database initialized successfully");
+        Log("InitializeUnencrypted: Database initialized successfully");
+    }
+
+    /// <summary>
+    /// Closes the current database connection.
+    /// Used when migrating to allow reopening with different settings.
+    /// </summary>
+    public void Close()
+    {
+        lock (_dbLock)
+        {
+            _database?.Dispose();
+            _database = null;
+            _configCollection = null;
+            _filesCollection = null;
+            _pendingChangesCollection = null;
+            _chunkIndexCollection = null;
+            _indexMetadataCollection = null;
+            Log("Close: Database connection closed");
+        }
     }
 
     #region Configuration
@@ -621,8 +784,10 @@ public class LocalDatabaseService : IDisposable
     #region Reset and Secure Delete
 
     /// <summary>
-    /// Securely deletes all data and resets the database to initial state.
+    /// Securely deletes all data and resets the database.
     /// Overwrites sensitive data before deletion to prevent recovery.
+    /// After calling this method, the database is closed and the application 
+    /// should restart or call Initialize with a new password.
     /// </summary>
     public void SecureReset()
     {
@@ -637,6 +802,11 @@ public class LocalDatabaseService : IDisposable
             // Close the database
             _database.Dispose();
             _database = null;
+            _configCollection = null;
+            _filesCollection = null;
+            _pendingChangesCollection = null;
+            _chunkIndexCollection = null;
+            _indexMetadataCollection = null;
             
             // Securely delete the database file
             SecureDeleteFile(_databasePath);
@@ -648,8 +818,14 @@ public class LocalDatabaseService : IDisposable
                 SecureDeleteFile(journalPath);
             }
             
-            // Re-initialize with a fresh database
-            Initialize(_databasePath);
+            // Also delete the log file if it exists (LiteDB WAL)
+            var logPath = _databasePath + "-log";
+            if (File.Exists(logPath))
+            {
+                SecureDeleteFile(logPath);
+            }
+            
+            Log("SecureReset: Database has been securely deleted. Application restart required.");
         }
     }
 

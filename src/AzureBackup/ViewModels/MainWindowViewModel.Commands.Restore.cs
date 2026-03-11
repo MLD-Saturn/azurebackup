@@ -248,7 +248,7 @@ public partial class MainWindowViewModel
         }
 
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
@@ -375,7 +375,7 @@ public partial class MainWindowViewModel
 
         AddLog($"Deleting {filesToDelete.Count} file(s) from Azure...");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {

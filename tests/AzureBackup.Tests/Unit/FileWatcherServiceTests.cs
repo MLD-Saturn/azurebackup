@@ -9,6 +9,7 @@ namespace AzureBackup.Tests;
 /// </summary>
 public class FileWatcherServiceTests : IDisposable
 {
+    private const string TestPassword = "TestPassword123!";
     private readonly string _tempDbPath;
     private readonly LocalDatabaseService _databaseService;
     private readonly FileWatcherService _fileWatcherService;
@@ -18,7 +19,7 @@ public class FileWatcherServiceTests : IDisposable
     {
         _tempDbPath = Path.Combine(Path.GetTempPath(), $"test_filewatcher_{Guid.NewGuid()}.db");
         _databaseService = new LocalDatabaseService();
-        _databaseService.Initialize(_tempDbPath);
+        _databaseService.Initialize(_tempDbPath, TestPassword);
         _fileWatcherService = new FileWatcherService(_databaseService);
         _testFolder = Path.Combine(Path.GetTempPath(), $"test_watch_{Guid.NewGuid()}");
         Directory.CreateDirectory(_testFolder);

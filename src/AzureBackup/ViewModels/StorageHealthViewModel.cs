@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AzureBackup.Core.Models;
 using AzureBackup.Core.Services;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -188,7 +189,9 @@ public partial class StorageHealthViewModel : ViewModelBase
         IsOperationInProgress = true;
         _operationCts = new CancellationTokenSource();
         StatusMessage = "Scanning for orphaned chunks...";
-        OrphanedChunks.Clear();
+        
+        // Clear collection on UI thread
+        await Dispatcher.UIThread.InvokeAsync(() => OrphanedChunks.Clear());
 
         try
         {
@@ -200,21 +203,24 @@ public partial class StorageHealthViewModel : ViewModelBase
 
             var result = await _chunkIndexService.ScanForOrphansAsync(progress, _operationCts.Token);
 
-            // Update UI with results
-            foreach (var orphan in result.OrphanedChunks)
+            // Update UI with results on UI thread
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                OrphanedChunks.Add(new OrphanChunkViewModel(orphan));
-            }
+                foreach (var orphan in result.OrphanedChunks)
+                {
+                    OrphanedChunks.Add(new OrphanChunkViewModel(orphan));
+                }
 
-            HasOrphanScanResults = true;
-            LastScanTime = result.ScannedAt.ToString("g");
-            ScanDuration = $"{result.ScanDuration.TotalSeconds:F1}s";
-            OrphanCount = result.OrphanedChunks.Count;
-            OrphanSize = FormatBytes(result.TotalOrphanSizeBytes);
-            OrphanCost = $"${result.EstimatedMonthlyCost:F4}/mo";
+                HasOrphanScanResults = true;
+                LastScanTime = result.ScannedAt.ToString("g");
+                ScanDuration = $"{result.ScanDuration.TotalSeconds:F1}s";
+                OrphanCount = result.OrphanedChunks.Count;
+                OrphanSize = FormatBytes(result.TotalOrphanSizeBytes);
+                OrphanCost = $"${result.EstimatedMonthlyCost:F4}/mo";
 
-            StatusMessage = $"Scan complete: {result.OrphanedChunks.Count} orphans found ({FormatBytes(result.TotalOrphanSizeBytes)})";
-            OnPropertyChanged(nameof(HasOrphans));
+                StatusMessage = $"Scan complete: {result.OrphanedChunks.Count} orphans found ({FormatBytes(result.TotalOrphanSizeBytes)})";
+                OnPropertyChanged(nameof(HasOrphans));
+            });
         }
         catch (OperationCanceledException)
         {
@@ -260,17 +266,20 @@ public partial class StorageHealthViewModel : ViewModelBase
 
             var result = await _chunkIndexService.CleanupOrphansAsync(selectedOrphans, progress, _operationCts.Token);
 
-            // Remove deleted orphans from the list
+            // Remove deleted orphans from the list on UI thread
             var deletedHashes = selectedOrphans
                 .Where(o => !result.Errors.Any(e => e.Contains(o.ChunkHash)))
                 .Select(o => o.ChunkHash)
                 .ToHashSet();
 
-            var toRemove = OrphanedChunks.Where(o => deletedHashes.Contains(o.Entry.ChunkHash)).ToList();
-            foreach (var item in toRemove)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                OrphanedChunks.Remove(item);
-            }
+                var toRemove = OrphanedChunks.Where(o => deletedHashes.Contains(o.Entry.ChunkHash)).ToList();
+                foreach (var item in toRemove)
+                {
+                    OrphanedChunks.Remove(item);
+                }
+            });
 
             RefreshSummary();
 

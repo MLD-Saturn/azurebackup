@@ -120,15 +120,24 @@ public class EncryptionService : IDisposable
         Array.Copy(salt, verificationSalt, SaltSize);
         verificationSalt[0] ^= 0xFF; // Modify salt to get different derivation
 
-        using Argon2id argon2 = new(Encoding.UTF8.GetBytes(password))
+        // Convert password to bytes and zero after use
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        try
         {
-            Salt = verificationSalt,
-            DegreeOfParallelism = Argon2DegreeOfParallelism,
-            MemorySize = Argon2MemorySize,
-            Iterations = Argon2Iterations
-        };
+            using Argon2id argon2 = new(passwordBytes)
+            {
+                Salt = verificationSalt,
+                DegreeOfParallelism = Argon2DegreeOfParallelism,
+                MemorySize = Argon2MemorySize,
+                Iterations = Argon2Iterations
+            };
 
-        return await argon2.GetBytesAsync(32);
+            return await argon2.GetBytesAsync(32);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+        }
     }
 
     /// <summary>
