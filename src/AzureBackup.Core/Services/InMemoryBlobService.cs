@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Azure.Core;
@@ -140,8 +141,27 @@ public partial class InMemoryBlobService : IBlobStorageService
         // Check for deduplication
         if (_blobs.ContainsKey(blobName))
         {
-            progress?.Report(chunkData.Length);
-            return blobName;
+            // Defense-in-depth: Verify the stored chunk actually matches our data
+            bool isCollision = false;
+            try
+            {
+                await VerifyChunkIntegrityAsync(chunkHash, chunkData, cancellationToken);
+            }
+            catch (HashCollisionException)
+            {
+                // CRITICAL: Hash collision detected - upload with collision suffix to prevent data loss
+                isCollision = true;
+            }
+
+            if (!isCollision)
+            {
+                // Chunk verified - safe to deduplicate
+                progress?.Report(chunkData.Length);
+                return blobName;
+            }
+
+            // Hash collision detected - find next available collision suffix
+            blobName = FindNextCollisionBlobName(chunkHash);
         }
 
         // Encrypt and store
@@ -405,6 +425,74 @@ public partial class InMemoryBlobService : IBlobStorageService
 
         TotalOperations++;
         return Task.FromResult(_blobs.ContainsKey(blobName));
+    }
+
+    /// <summary>
+    /// Verifies that a chunk's content matches the expected data by downloading and comparing.
+    /// Used for defense-in-depth verification when deduplication detects a hash match.
+    /// </summary>
+    public async Task<bool> VerifyChunkIntegrityAsync(string chunkHash, byte[] expectedData,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        ArgumentNullException.ThrowIfNull(expectedData);
+
+        var blobName = $"chunks/{chunkHash}";
+
+        if (!_blobs.TryGetValue(blobName, out var encryptedData))
+        {
+            throw new InvalidOperationException($"Chunk not found: {chunkHash}");
+        }
+
+        try
+        {
+            // Decrypt the stored chunk
+            var storedData = _encryptionService.Decrypt(encryptedData);
+
+            // Compare sizes first (fast rejection)
+            if (storedData.Length != expectedData.Length)
+            {
+                throw new HashCollisionException(chunkHash, expectedData.Length, storedData.Length);
+            }
+
+            // Compare data byte-by-byte using constant-time comparison
+            if (!CryptographicOperations.FixedTimeEquals(storedData, expectedData))
+            {
+                throw new HashCollisionException(chunkHash,
+                    "Content differs despite matching hash and size. This may indicate data corruption or tampering.");
+            }
+
+            TotalOperations++;
+            return true;
+        }
+        catch (HashCollisionException)
+        {
+            throw; // Re-throw collision exceptions
+        }
+        catch (Exception ex)
+        {
+            throw new DataIntegrityException(
+                $"Failed to verify chunk integrity for {chunkHash}", chunkHash, ex);
+        }
+    }
+
+    /// <summary>
+    /// Finds the next available blob name for a hash collision.
+    /// </summary>
+    private string FindNextCollisionBlobName(string chunkHash)
+    {
+        for (int version = 2; version <= 1000; version++)
+        {
+            var candidateName = $"chunks/{chunkHash}_v{version}";
+            if (!_blobs.ContainsKey(candidateName))
+            {
+                return candidateName;
+            }
+        }
+        
+        throw new InvalidOperationException(
+            $"Exceeded maximum collision versions (1000) for hash {chunkHash}.");
     }
 
     #endregion

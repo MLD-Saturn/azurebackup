@@ -293,7 +293,7 @@ public class BlobServiceTests : IAsyncLifetime
         await _blobService.UploadChunkAsync(data, hash);
         var opsAfterFirst = _blobService.TotalOperations;
 
-        // Upload again with regular method (should skip due to dedup)
+        // Upload again with regular method (should trigger dedup with verification)
         await _blobService.UploadChunkAsync(data, hash);
         var opsAfterSecondRegular = _blobService.TotalOperations;
 
@@ -302,8 +302,8 @@ public class BlobServiceTests : IAsyncLifetime
         var opsAfterDirect = _blobService.TotalOperations;
 
         // Assert
-        // Regular upload deduplicates - no new operation
-        Assert.Equal(opsAfterFirst, opsAfterSecondRegular);
+        // Regular upload now verifies on dedup - adds 1 operation for verification
+        Assert.Equal(opsAfterFirst + 1, opsAfterSecondRegular);
         // Direct upload always uploads - increments operation count
         Assert.Equal(opsAfterSecondRegular + 1, opsAfterDirect);
     }

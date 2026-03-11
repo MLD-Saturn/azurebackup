@@ -259,25 +259,51 @@ public partial class AzureBlobService : IBlobStorageService
         // Check if chunk already exists (deduplication)
         if (await blobClient.ExistsAsync(cancellationToken))
         {
-            // Check if existing chunk is in a different tier than intended
+            // Defense-in-depth: Verify the stored chunk actually matches our data
+            // This guards against the astronomically rare case of a SHA-256 collision
+            // or more likely scenarios like data corruption or tampering
+            bool isCollision = false;
             try
             {
-                var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-                var existingTier = properties.Value.AccessTier?.ToString();
-                if (existingTier != null && existingTier != storageTier.ToString())
-                {
-                    Log($"WARNING: Chunk {chunkHash[..8]}... already exists in {existingTier} tier, " +
-                        $"but file is configured for {storageTier} tier. Chunk will remain in {existingTier}.");
-                }
+                await VerifyChunkIntegrityAsync(chunkHash, chunkData, cancellationToken);
             }
-            catch
+            catch (HashCollisionException ex)
             {
-                // Ignore errors checking tier - the chunk exists which is what matters
+                // CRITICAL: Hash collision detected - we must upload this chunk with a different name
+                // to prevent data loss. This is astronomically rare for SHA-256 but we handle it.
+                Log($"CRITICAL: Hash collision detected for chunk {chunkHash[..8]}... - " +
+                    $"will upload with collision suffix to prevent data loss. Details: {ex.Message}");
+                isCollision = true;
             }
-            
-            Log($"UploadChunkAsync: Chunk already exists (dedup), skipping upload");
-            progress?.Report(encryptedData.Length);
-            return blobName;
+
+            if (!isCollision)
+            {
+                // Chunk verified - safe to deduplicate
+                // Check if existing chunk is in a different tier than intended
+                try
+                {
+                    var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+                    var existingTier = properties.Value.AccessTier?.ToString();
+                    if (existingTier != null && existingTier != storageTier.ToString())
+                    {
+                        Log($"WARNING: Chunk {chunkHash[..8]}... already exists in {existingTier} tier, " +
+                            $"but file is configured for {storageTier} tier. Chunk will remain in {existingTier}.");
+                    }
+                }
+                catch
+                {
+                    // Ignore errors checking tier - the chunk exists which is what matters
+                }
+
+                Log($"UploadChunkAsync: Chunk already exists (dedup verified), skipping upload");
+                progress?.Report(encryptedData.Length);
+                return blobName;
+            }
+
+            // Hash collision detected - find next available collision suffix
+            blobName = await FindNextCollisionBlobNameAsync(chunkHash, cancellationToken);
+            blobClient = _containerClient!.GetBlobClient(blobName);
+            Log($"UploadChunkAsync: Using collision blob name: {blobName}");
         }
 
         // Upload with specified tier and parallel transfer options for large chunks
@@ -684,6 +710,82 @@ public partial class AzureBlobService : IBlobStorageService
         
         TotalOperations++;
         return exists.Value;
+    }
+
+    /// <summary>
+    /// Verifies that a chunk's content matches the expected data by downloading and comparing.
+    /// Used for defense-in-depth verification when deduplication detects a hash match.
+    /// </summary>
+    public async Task<bool> VerifyChunkIntegrityAsync(string chunkHash, byte[] expectedData,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        ArgumentNullException.ThrowIfNull(expectedData);
+
+        var blobName = $"chunks/{chunkHash}";
+
+        try
+        {
+            // Download and decrypt the stored chunk
+            var storedData = await DownloadChunkAsync(blobName, cancellationToken);
+
+            // Compare sizes first (fast rejection)
+            if (storedData.Length != expectedData.Length)
+            {
+                Log($"CRITICAL: Hash collision detected! Chunk {chunkHash[..8]}... has different sizes: " +
+                    $"expected {expectedData.Length}, stored {storedData.Length}");
+                throw new HashCollisionException(chunkHash, expectedData.Length, storedData.Length);
+            }
+
+            // Compare data byte-by-byte using constant-time comparison to prevent timing attacks
+            if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(storedData, expectedData))
+            {
+                Log($"CRITICAL: Hash collision detected! Chunk {chunkHash[..8]}... has same hash but different content");
+                throw new HashCollisionException(chunkHash,
+                    "Content differs despite matching hash and size. This may indicate data corruption or tampering.");
+            }
+
+            Log($"VerifyChunkIntegrityAsync: Chunk {chunkHash[..8]}... verified successfully");
+            return true;
+        }
+        catch (HashCollisionException)
+        {
+            throw; // Re-throw collision exceptions
+        }
+        catch (Exception ex)
+        {
+            Log($"VerifyChunkIntegrityAsync: Failed to verify chunk {chunkHash[..8]}...: {ex.Message}");
+            throw new DataIntegrityException(
+                $"Failed to verify chunk integrity for {chunkHash}", chunkHash, ex);
+        }
+    }
+
+    /// <summary>
+    /// Finds the next available blob name for a hash collision.
+    /// Searches for chunks/{hash}_v2, chunks/{hash}_v3, etc.
+    /// </summary>
+    private async Task<string> FindNextCollisionBlobNameAsync(string chunkHash, CancellationToken cancellationToken)
+    {
+        // Start from _v2 (the original is just chunks/{hash})
+        for (int version = 2; version <= 1000; version++) // Cap at 1000 to prevent infinite loop
+        {
+            var candidateName = $"chunks/{chunkHash}_v{version}";
+            var blobClient = _containerClient!.GetBlobClient(candidateName);
+            
+            if (!await blobClient.ExistsAsync(cancellationToken))
+            {
+                Log($"FindNextCollisionBlobNameAsync: Found available collision name: {candidateName}");
+                return candidateName;
+            }
+            
+            TotalOperations++;
+        }
+        
+        // This should never happen - 1000 collisions for the same hash is beyond impossible
+        throw new InvalidOperationException(
+            $"Exceeded maximum collision versions (1000) for hash {chunkHash}. " +
+            "This indicates a serious system error.");
     }
 
     #endregion

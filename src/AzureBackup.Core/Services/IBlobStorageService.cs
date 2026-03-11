@@ -171,5 +171,16 @@ public interface IBlobStorageService : IAsyncDisposable
     /// <returns>True if the blob exists</returns>
     Task<bool> BlobExistsAsync(string blobName, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Verifies that a chunk's content matches the expected data by downloading and comparing.
+    /// Used for defense-in-depth verification when deduplication detects a hash match.
+    /// </summary>
+    /// <param name="chunkHash">The chunk hash (used as blob name)</param>
+    /// <param name="expectedData">The expected plaintext data to compare against</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>True if the stored chunk matches the expected data exactly</returns>
+    /// <exception cref="HashCollisionException">Thrown if hash matches but data differs (extremely rare)</exception>
+    Task<bool> VerifyChunkIntegrityAsync(string chunkHash, byte[] expectedData, CancellationToken cancellationToken = default);
+
     #endregion
 }

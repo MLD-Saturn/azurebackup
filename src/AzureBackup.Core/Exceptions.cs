@@ -93,3 +93,42 @@ public enum BackupOperationType
     Restore,
     MetadataSync
 }
+
+/// <summary>
+/// Exception thrown when a hash collision is detected during deduplication verification.
+/// This is an extremely rare event (SHA-256 collision probability is 2^-128) and likely
+/// indicates data corruption, a bug, or an intentional attack rather than a true collision.
+/// </summary>
+public class HashCollisionException : Exception
+{
+    /// <summary>
+    /// The hash value that matched but with different data.
+    /// </summary>
+    public string ChunkHash { get; }
+
+    /// <summary>
+    /// Size of the expected data in bytes.
+    /// </summary>
+    public long ExpectedSize { get; }
+
+    /// <summary>
+    /// Size of the stored data in bytes.
+    /// </summary>
+    public long StoredSize { get; }
+
+    public HashCollisionException(string chunkHash, long expectedSize, long storedSize)
+        : base($"CRITICAL: Hash collision detected for chunk {chunkHash}. " +
+               $"Expected {expectedSize} bytes but stored chunk has {storedSize} bytes. " +
+               "This may indicate data corruption or tampering.")
+    {
+        ChunkHash = chunkHash;
+        ExpectedSize = expectedSize;
+        StoredSize = storedSize;
+    }
+
+    public HashCollisionException(string chunkHash, string details)
+        : base($"CRITICAL: Hash collision detected for chunk {chunkHash}. {details}")
+    {
+        ChunkHash = chunkHash;
+    }
+}
