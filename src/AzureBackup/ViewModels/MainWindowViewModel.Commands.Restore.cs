@@ -43,7 +43,15 @@ public partial class MainWindowViewModel
         
         try
         {
-            var files = await _restoreService.ListRestorableFilesAsync();
+            Progress<(int completed, int total)> progress = new(p =>
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    StatusMessage = $"Loading file metadata... {p.completed:N0}/{p.total:N0}";
+                });
+            });
+
+            var files = await _restoreService.ListRestorableFilesAsync(progress: progress);
             
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {

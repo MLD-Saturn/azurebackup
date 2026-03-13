@@ -442,8 +442,8 @@ public partial class AzureBlobService : IBlobStorageService
             var encryptedData = stream.ToArray();
             TotalOperations++;
             
-            // Log size details for chunks >1 MB to track memory pressure on large chunks
-            if (encryptedData.Length > 1_000_000)
+            // Log size details for chunks to track memory pressure on large chunks
+            if (encryptedData.Length > 0)
             {
                 Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length:N0} bytes encrypted, " +
                     $"streamCapacity={streamCapacity:N0}), GC.TotalMemory={GC.GetTotalMemory(false):N0}, decrypting...");
@@ -455,7 +455,7 @@ public partial class AzureBlobService : IBlobStorageService
             try
             {
                 var decrypted = _encryptionService.Decrypt(encryptedData);
-                if (encryptedData.Length > 1_000_000)
+                if (encryptedData.Length > 0)
                 {
                     Log($"DownloadChunkAsync: Decrypted {blobName}: {encryptedData.Length:N0} -> {decrypted.Length:N0} bytes, " +
                         $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
@@ -516,14 +516,10 @@ public partial class AzureBlobService : IBlobStorageService
         {
             var blobClient = _containerClient!.GetBlobClient(blobName);
             
-            // Get blob properties to retrieve the access tier
-            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-            var accessTier = properties.Value.AccessTier;
+            // Single API call to get content (faster than GetProperties + DownloadTo)
+            var response = await blobClient.DownloadContentAsync(cancellationToken);
             
-            await using MemoryStream stream = new();
-            await blobClient.DownloadToAsync(stream, cancellationToken);
-            
-            var encryptedData = stream.ToArray();
+            var encryptedData = response.Value.Content.ToArray();
             TotalOperations++;
             
             var decryptedData = _encryptionService.Decrypt(encryptedData);
@@ -543,14 +539,9 @@ public partial class AzureBlobService : IBlobStorageService
                         blobName);
             }
 
-            // Convert Azure AccessTier to our StorageTier enum
-            StorageTier? storageTier = accessTier?.ToString() switch
-            {
-                "Hot" => StorageTier.Hot,
-                "Cool" => StorageTier.Cool,
-                "Cold" => StorageTier.Cold,
-                _ => null
-            };
+            // Storage tier is not retrieved in single-call mode (would require separate GetProperties)
+            // This is acceptable since tier info is optional for metadata listing
+            StorageTier? storageTier = null;
 
             return new BackedUpFile
             {

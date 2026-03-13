@@ -265,9 +265,14 @@ public partial class MainWindowViewModel
         }
     }
 
+    // Cached Azure file paths from the last successful refresh.
+    // Reused by RefreshLocalFilesAsync to avoid a duplicate ListRestorableFilesAsync call.
+    private HashSet<string>? _cachedAzureFilePaths;
+
     /// <summary>
     /// Refreshes both Backup and Restore file lists from Azure Storage.
     /// Called automatically after successful initialization.
+    /// Caches the result so RefreshLocalFilesAsync can reuse it.
     /// </summary>
     private async Task RefreshFromAzureAsync()
     {
@@ -289,7 +294,20 @@ public partial class MainWindowViewModel
         {
             AddLog("Loading files from Azure Storage...");
             
-            var files = await _restoreService.ListRestorableFilesAsync();
+            Progress<(int completed, int total)> progress = new(p =>
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    StatusMessage = $"Loading file metadata... {p.completed:N0}/{p.total:N0}";
+                });
+            });
+            
+            var files = await _restoreService.ListRestorableFilesAsync(progress: progress);
+            
+            // Cache the file paths for RefreshLocalFilesAsync to reuse
+            _cachedAzureFilePaths = files
+                .Select(f => f.LocalPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
@@ -351,24 +369,9 @@ public partial class MainWindowViewModel
 
         AddLog("Scanning local files...");
 
-        // Get the set of files actually in Azure for validation
-        // This ensures we don't show files as "backed up" if they're not actually in Azure
-        HashSet<string>? azureFilePaths = null;
-        if (_blobService.IsConnected)
-        {
-            try
-            {
-                var azureFiles = await _restoreService.ListRestorableFilesAsync();
-                azureFilePaths = azureFiles
-                    .Select(f => f.LocalPath)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                // If we can't get Azure files, continue without validation
-                // This allows offline viewing of local files
-            }
-        }
+        // Use cached Azure file paths from RefreshFromAzureAsync if available.
+        // This avoids a duplicate ListRestorableFilesAsync call (which downloads all metadata again).
+        var azureFilePaths = _cachedAzureFilePaths;
 
         await Task.Run(() =>
         {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Threading.Channels;
 using AzureBackup.Core.Models;
@@ -103,31 +104,60 @@ public class RestoreService
 
     /// <summary>
     /// Lists all files available for restore from Azure.
+    /// Downloads metadata blobs in parallel for faster loading.
     /// </summary>
-    public async Task<List<BackedUpFile>> ListRestorableFilesAsync(CancellationToken cancellationToken = default)
+    public async Task<List<BackedUpFile>> ListRestorableFilesAsync(
+        IProgress<(int completed, int total)>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         Log("ListRestorableFilesAsync: Starting to list restorable files");
-        List<BackedUpFile> files = new();
         
         StatusChanged?.Invoke(this, "Retrieving file list from Azure...");
 
         var metadataBlobs = await _blobService.ListMetadataBlobsAsync(cancellationToken);
-        Log($"ListRestorableFilesAsync: Found {metadataBlobs.Count} metadata blobs");
+        var total = metadataBlobs.Count;
+        Log($"ListRestorableFilesAsync: Found {total} metadata blobs");
         
-        foreach (var blobName in metadataBlobs)
+        if (total == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            
-            var file = await _blobService.DownloadFileMetadataAsync(blobName, cancellationToken);
-            if (file != null)
-            {
-                files.Add(file);
-            }
+            StatusChanged?.Invoke(this, "No files found in Azure");
+            return [];
         }
+
+        StatusChanged?.Invoke(this, $"Loading metadata for {total} files...");
+        progress?.Report((0, total));
+
+        // Download metadata in parallel with bounded concurrency
+        const int maxParallelDownloads = 32;
+        ConcurrentBag<BackedUpFile> files = [];
+        var completed = 0;
+
+        await Parallel.ForEachAsync(
+            metadataBlobs,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxParallelDownloads,
+                CancellationToken = cancellationToken
+            },
+            async (blobName, ct) =>
+            {
+                var file = await _blobService.DownloadFileMetadataAsync(blobName, ct);
+                if (file != null)
+                {
+                    files.Add(file);
+                }
+
+                var count = Interlocked.Increment(ref completed);
+                if (count % 50 == 0 || count == total)
+                {
+                    progress?.Report((count, total));
+                    StatusChanged?.Invoke(this, $"Loading file metadata... {count:N0}/{total:N0}");
+                }
+            });
 
         Log($"ListRestorableFilesAsync: Loaded {files.Count} file metadata entries");
         StatusChanged?.Invoke(this, $"Found {files.Count} files available for restore");
-        return files;
+        return files.ToList();
     }
 
     /// <summary>
@@ -687,7 +717,7 @@ public class RestoreService
     {
         StatusChanged?.Invoke(this, "Starting full restore...");
 
-        var files = await ListRestorableFilesAsync(cancellationToken);
+        var files = await ListRestorableFilesAsync(progress: null, cancellationToken);
         return await RestoreFilesAsync(files, restoreDirectory, 
             preserveFolderStructure: true, overwriteExisting, progress, cancellationToken);
     }
@@ -737,7 +767,7 @@ public class RestoreService
         string searchPattern,
         CancellationToken cancellationToken = default)
     {
-        var allFiles = await ListRestorableFilesAsync(cancellationToken);
+        var allFiles = await ListRestorableFilesAsync(progress: null, cancellationToken);
         
         var pattern = searchPattern.ToLowerInvariant();
         return allFiles.Where(f => 
