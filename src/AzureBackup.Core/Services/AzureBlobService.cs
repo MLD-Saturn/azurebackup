@@ -438,17 +438,34 @@ public partial class AzureBlobService : IBlobStorageService
             
             await blobClient.DownloadToAsync(stream, downloadOptions, cancellationToken);
             
+            var streamCapacity = stream.Capacity;
             var encryptedData = stream.ToArray();
             TotalOperations++;
             
-            Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length} bytes encrypted), decrypting...");
+            // Log size details for chunks >1 MB to track memory pressure on large chunks
+            if (encryptedData.Length > 1_000_000)
+            {
+                Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length:N0} bytes encrypted, " +
+                    $"streamCapacity={streamCapacity:N0}), GC.TotalMemory={GC.GetTotalMemory(false):N0}, decrypting...");
+            }
+            else
+            {
+                Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length} bytes encrypted), decrypting...");
+            }
             try
             {
-                return _encryptionService.Decrypt(encryptedData);
+                var decrypted = _encryptionService.Decrypt(encryptedData);
+                if (encryptedData.Length > 1_000_000)
+                {
+                    Log($"DownloadChunkAsync: Decrypted {blobName}: {encryptedData.Length:N0} -> {decrypted.Length:N0} bytes, " +
+                        $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
+                }
+                return decrypted;
             }
             catch (Exception ex)
             {
-                Log($"DownloadChunkAsync: DECRYPT FAILED for {blobName}: {ex.GetType().Name}: {ex.Message}");
+                Log($"DownloadChunkAsync: DECRYPT FAILED for {blobName} " +
+                    $"(encryptedSize={encryptedData.Length:N0}): {ex.GetType().Name}: {ex.Message}");
                 throw;
             }
         }

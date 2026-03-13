@@ -194,7 +194,11 @@ public class RestoreService
                     $"Chunk size mismatch: chunks total {totalChunkSize} bytes, expected {file.FileSize} bytes",
                     file.LocalPath);
             }
-            Log($"RestoreFileAsync: Chunk validation passed, downloading {sortedChunks.Count} chunks");
+        var maxChunkLen = sortedChunks.Max(c => c.Length);
+            var minChunkLen = sortedChunks.Min(c => c.Length);
+            Log($"RestoreFileAsync: Chunk validation passed, downloading {sortedChunks.Count} chunks " +
+                $"(min={minChunkLen:N0}, max={maxChunkLen:N0} bytes), " +
+                $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
 
             long currentBytes = 0;
             
@@ -269,13 +273,16 @@ public class RestoreService
             // Set file timestamps
             File.SetLastWriteTimeUtc(targetPath, file.LastModified);
 
-            Log($"RestoreFileAsync: Successfully restored '{Path.GetFileName(targetPath)}' ({file.FileSize} bytes)");
+            Log($"RestoreFileAsync: Successfully restored '{Path.GetFileName(targetPath)}' ({file.FileSize} bytes), " +
+                $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
             StatusChanged?.Invoke(this, $"Restored and verified: {Path.GetFileName(targetPath)}");
             return true;
         }
         catch (DataIntegrityException ex)
         {
-            Log($"RestoreFileAsync: DataIntegrityException: {ex.Message}");
+            Log($"RestoreFileAsync: DataIntegrityException: {ex.Message}, " +
+                $"file='{file.LocalPath}', size={file.FileSize:N0}, chunks={file.Chunks.Count}, " +
+                $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
             throw; // Re-throw integrity exceptions
         }
         catch (OperationCanceledException)
@@ -288,6 +295,14 @@ public class RestoreService
         {
             Log($"RestoreFileAsync: EXCEPTION: {ex.GetType().Name}: {ex.Message}");
             Log($"RestoreFileAsync: StackTrace: {ex.StackTrace}");
+            Log($"RestoreFileAsync: Context - file='{file.LocalPath}', size={file.FileSize:N0}, " +
+                $"chunks={file.Chunks.Count}, target='{targetPath}', " +
+                $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
+            if (ex is IOException ioEx)
+            {
+                Log($"RestoreFileAsync: IOException HResult=0x{ioEx.HResult:X8}, " +
+                    $"tempExists={File.Exists(tempPath)}, targetExists={File.Exists(targetPath)}");
+            }
             // Clean up temp file on error
             try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* ignore */ }
             
@@ -354,7 +369,23 @@ public class RestoreService
         Action<long> updateCurrentBytes,
         CancellationToken cancellationToken)
     {
-        Log($"BoundedParallelDownload: Starting for '{Path.GetFileName(file.LocalPath)}' - {sortedChunks.Count} chunks, max concurrency={MaxParallelChunkDownloads}");
+        var maxChunkBytes = sortedChunks.Max(c => c.Length);
+        var totalChunkBytes = sortedChunks.Sum(c => (long)c.Length);
+        var gcMemBefore = GC.GetTotalMemory(false);
+        Log($"BoundedParallelDownload: Starting for '{Path.GetFileName(file.LocalPath)}' - " +
+            $"{sortedChunks.Count} chunks, max concurrency={MaxParallelChunkDownloads}, " +
+            $"maxChunkSize={maxChunkBytes:N0} bytes, totalChunkBytes={totalChunkBytes:N0}, " +
+            $"GC.TotalMemory={gcMemBefore:N0} bytes");
+        
+        // Log if memory pressure could be dangerous:
+        // Each parallel chunk needs ~3x memory (stream buffer + encrypted array + decrypted array)
+        var estimatedPeakMemory = (long)maxChunkBytes * 3 * MaxParallelChunkDownloads;
+        if (estimatedPeakMemory > 1_000_000_000) // >1 GB estimated peak
+        {
+            Log($"BoundedParallelDownload: WARNING - Estimated peak memory={estimatedPeakMemory:N0} bytes " +
+                $"({MaxParallelChunkDownloads} parallel x {maxChunkBytes:N0} bytes x 3 copies). " +
+                $"Risk of OutOfMemoryException for large chunks.");
+        }
         
         var channelOptions = new BoundedChannelOptions(MaxParallelChunkDownloads)
         {
@@ -400,7 +431,8 @@ public class RestoreService
                             var count = Interlocked.Increment(ref chunksDownloaded);
                             if (count % 50 == 0 || count == sortedChunks.Count)
                             {
-                                Log($"BoundedParallelDownload.Producer: Downloaded {count}/{sortedChunks.Count} chunks");
+                                Log($"BoundedParallelDownload.Producer: Downloaded {count}/{sortedChunks.Count} chunks, " +
+                                    $"lastChunkSize={chunkData.Length:N0}, GC.TotalMemory={GC.GetTotalMemory(false):N0}");
                             }
                         }
                         catch (OperationCanceledException)
@@ -409,7 +441,12 @@ public class RestoreService
                         }
                         catch (Exception ex)
                         {
-                            Log($"BoundedParallelDownload.Producer: EXCEPTION downloading chunk {chunk.Index} (blob={chunk.BlobName}): {ex.GetType().Name}: {ex.Message}");
+                            var wasFirst = downloadException == null;
+                            Log($"BoundedParallelDownload.Producer: EXCEPTION downloading chunk {chunk.Index} " +
+                                $"(blob={chunk.BlobName}, chunkLength={chunk.Length:N0}): " +
+                                $"{ex.GetType().Name}: {ex.Message} " +
+                                $"[thread={Environment.CurrentManagedThreadId}, firstError={wasFirst}]");
+                            Log($"BoundedParallelDownload.Producer: StackTrace: {ex.StackTrace}");
                             downloadException ??= ex;
                             await linkedCts.CancelAsync();
                             throw;
@@ -487,6 +524,13 @@ public class RestoreService
                     else
                     {
                         pendingChunks[index] = data;
+                        if (pendingChunks.Count % 10 == 0 || pendingChunks.Count > MaxParallelChunkDownloads)
+                        {
+                            var bufferedBytes = pendingChunks.Values.Sum(d => (long)d.Length);
+                            Log($"BoundedParallelDownload.Consumer: Buffering chunk {index} (waiting for {nextChunkToWrite}), " +
+                                $"{pendingChunks.Count} chunks buffered ({bufferedBytes:N0} bytes), " +
+                                $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
+                        }
                     }
                 }
                 
@@ -495,7 +539,10 @@ public class RestoreService
             }
             catch (ChannelClosedException)
             {
-                Log($"BoundedParallelDownload.Consumer: Channel closed, downloadException={downloadException?.Message ?? "none"}");
+                Log($"BoundedParallelDownload.Consumer: Channel closed unexpectedly. " +
+                    $"chunksWritten={chunksWritten}, nextExpected={nextChunkToWrite}, " +
+                    $"pendingBuffered={pendingChunks.Count}, " +
+                    $"downloadException={downloadException?.GetType().Name ?? "none"}: {downloadException?.Message ?? "none"}");
                 if (downloadException != null)
                     throw downloadException;
                 throw;
@@ -503,6 +550,15 @@ public class RestoreService
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 Log($"BoundedParallelDownload.Consumer: EXCEPTION writing: {ex.GetType().Name}: {ex.Message}");
+                Log($"BoundedParallelDownload.Consumer: StackTrace: {ex.StackTrace}");
+                Log($"BoundedParallelDownload.Consumer: State - chunksWritten={chunksWritten}, " +
+                    $"nextExpected={nextChunkToWrite}, pendingBuffered={pendingChunks.Count}, " +
+                    $"currentBytes={currentBytes:N0}, GC.TotalMemory={GC.GetTotalMemory(false):N0}");
+                if (ex is IOException ioEx)
+                {
+                    Log($"BoundedParallelDownload.Consumer: IOException HResult=0x{ioEx.HResult:X8}, " +
+                        $"tempPath={tempPath}");
+                }
                 throw;
             }
         }, linkedCts.Token);
@@ -519,9 +575,35 @@ public class RestoreService
         catch (Exception ex)
         {
             Log($"BoundedParallelDownload: EXCEPTION in WhenAll: {ex.GetType().Name}: {ex.Message}");
+            Log($"BoundedParallelDownload: WhenAll StackTrace: {ex.StackTrace}");
+            
+            // Unpack AggregateException to log ALL inner exceptions (Task.WhenAll only surfaces the first)
+            if (ex is AggregateException agg)
+            {
+                Log($"BoundedParallelDownload: AggregateException contains {agg.InnerExceptions.Count} inner exception(s):");
+                for (int i = 0; i < agg.InnerExceptions.Count; i++)
+                {
+                    var inner = agg.InnerExceptions[i];
+                    Log($"BoundedParallelDownload:   [{i}] {inner.GetType().Name}: {inner.Message}");
+                    Log($"BoundedParallelDownload:   [{i}] StackTrace: {inner.StackTrace}");
+                }
+            }
+            
+            // Log producer vs consumer task states for diagnosis
+            Log($"BoundedParallelDownload: producerTask.Status={producerTask.Status}, writerTask.Status={writerTask.Status}");
+            if (producerTask.Exception != null)
+            {
+                Log($"BoundedParallelDownload: Producer exception: {producerTask.Exception.GetType().Name}: {producerTask.Exception.Message}");
+            }
+            if (writerTask.Exception != null)
+            {
+                Log($"BoundedParallelDownload: Writer exception: {writerTask.Exception.GetType().Name}: {writerTask.Exception.Message}");
+            }
+            
             if (downloadException != null)
             {
                 Log($"BoundedParallelDownload: Original download exception: {downloadException.GetType().Name}: {downloadException.Message}");
+                Log($"BoundedParallelDownload: Original download StackTrace: {downloadException.StackTrace}");
                 throw downloadException;
             }
             throw;
@@ -534,7 +616,8 @@ public class RestoreService
                 file.LocalPath);
         }
         
-        Log($"BoundedParallelDownload: Completed, wrote {chunksWritten} chunks, {currentBytes} bytes");
+        Log($"BoundedParallelDownload: Completed, wrote {chunksWritten} chunks, {currentBytes} bytes, " +
+            $"GC.TotalMemory={GC.GetTotalMemory(false):N0}");
     }
 
     /// <summary>
