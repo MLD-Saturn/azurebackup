@@ -282,23 +282,7 @@ public partial class AzureBlobService : IBlobStorageService
 
             if (!isCollision)
             {
-                // Chunk verified - safe to deduplicate
-                // Check if existing chunk is in a different tier than intended
-                try
-                {
-                    var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-                    var existingTier = properties.Value.AccessTier?.ToString();
-                    if (existingTier != null && existingTier != storageTier.ToString())
-                    {
-                        Log($"WARNING: Chunk {chunkHash[..8]}... already exists in {existingTier} tier, " +
-                            $"but file is configured for {storageTier} tier. Chunk will remain in {existingTier}.");
-                    }
-                }
-                catch
-                {
-                    // Ignore errors checking tier - the chunk exists which is what matters
-                }
-
+                // Chunk verified — safe to deduplicate
                 Log($"UploadChunkAsync: Chunk already exists (dedup verified), skipping upload");
                 progress?.Report(encryptedData.Length);
                 return blobName;
@@ -418,49 +402,29 @@ public partial class AzureBlobService : IBlobStorageService
     }
 
     /// <summary>
-    /// Downloads and decrypts a chunk using parallel transfers for large chunks.
+    /// Downloads and decrypts a chunk. Uses a single API call to retrieve both
+    /// content and Content-MD5 hash for transport integrity verification.
     /// </summary>
     public async Task<byte[]> DownloadChunkAsync(string blobName, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
-        
+
         // Validate blob name format
         if (!blobName.StartsWith("chunks/"))
             throw new SecurityPolicyException("Invalid chunk blob name", SecurityPolicyType.InvalidBlobName);
 
         var blobClient = _containerClient!.GetBlobClient(blobName);
-        
+
         try
         {
-            // Get blob properties to retrieve the stored Content-MD5 for post-download verification
-            byte[]? storedContentHash = null;
-            try
-            {
-                var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
-                storedContentHash = properties.Value.ContentHash;
-            }
-            catch
-            {
-                // Properties fetch failed - continue without MD5 verification
-            }
-
-            await using MemoryStream stream = new();
-
-            // Use parallel transfer options for faster downloads
-            BlobDownloadToOptions downloadOptions = new()
-            {
-                TransferOptions = DefaultTransferOptions
-            };
-
-            await blobClient.DownloadToAsync(stream, downloadOptions, cancellationToken);
-
-            var streamCapacity = stream.Capacity;
-            var encryptedData = stream.ToArray();
+            // Single API call — returns both content and Content-MD5 in one HTTP response
+            var response = await blobClient.DownloadContentAsync(cancellationToken);
+            var encryptedData = response.Value.Content.ToArray();
+            var storedContentHash = response.Value.Details.ContentHash;
             TotalOperations++;
 
             // Verify download integrity against stored Content-MD5 (if available)
-            // This catches corruption during download before attempting decryption
             if (storedContentHash is { Length: > 0 })
             {
                 var downloadedHash = MD5.HashData(encryptedData);
@@ -472,12 +436,11 @@ public partial class AzureBlobService : IBlobStorageService
                         $"Download integrity check failed for {blobName} - data corrupted during transfer", blobName);
                 }
             }
-            
-            // Log size details for chunks to track memory pressure on large chunks
+
             if (encryptedData.Length > 0)
             {
-                Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length:N0} bytes encrypted, " +
-                    $"streamCapacity={streamCapacity:N0}), GC.TotalMemory={GC.GetTotalMemory(false):N0}, decrypting...");
+                Log($"DownloadChunkAsync: Downloaded {blobName} ({encryptedData.Length:N0} bytes encrypted), " +
+                    $"GC.TotalMemory={GC.GetTotalMemory(false):N0}, decrypting...");
             }
             else
             {
@@ -534,14 +497,8 @@ public partial class AzureBlobService : IBlobStorageService
 
         try
         {
-            await using MemoryStream stream = new();
-            BlobDownloadToOptions downloadOptions = new()
-            {
-                TransferOptions = DefaultTransferOptions
-            };
-
-            await blobClient.DownloadToAsync(stream, downloadOptions, cancellationToken);
-            var encryptedData = stream.ToArray();
+            var response = await blobClient.DownloadContentAsync(cancellationToken);
+            var encryptedData = response.Value.Content.ToArray();
             TotalOperations++;
 
             var decrypted = _encryptionService.DecryptBestEffort(encryptedData);
@@ -710,14 +667,13 @@ public partial class AzureBlobService : IBlobStorageService
     {
         EnsureConnected();
         ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
-        
+
         var blobClient = _containerClient!.GetBlobClient(blobName);
-        
-        await using MemoryStream stream = new();
-        await blobClient.DownloadToAsync(stream, cancellationToken);
-        
+
+        var response = await blobClient.DownloadContentAsync(cancellationToken);
+
         TotalOperations++;
-        return stream.ToArray();
+        return response.Value.Content.ToArray();
     }
 
     /// <summary>
