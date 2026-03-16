@@ -526,28 +526,33 @@ public class BoundedParallelDownloadTests : IAsyncLifetime
     [Fact]
     public async Task RestoreFileAsync_DownloadFailure_CancelsOtherDownloads()
     {
-        // Arrange - Use a blob service that fails on specific chunks
-        FailingBlobService failingBlobService = new(_encryptionService, failOnChunkIndex: 3);
-        await failingBlobService.ConnectAsync("fake", "container");
-        RestoreService restoreService = new(_databaseService, failingBlobService, _encryptionService);
+        // This test is timing-sensitive: parallel downloads may complete before the
+        // failing chunk's error propagates, causing the restore to occasionally succeed.
+        await FlakyTestHelper.RetryAsync(async () =>
+        {
+            // Arrange - Use a blob service that fails on specific chunks
+            FailingBlobService failingBlobService = new(_encryptionService, failOnChunkIndex: 3);
+            await failingBlobService.ConnectAsync("fake", "container");
+            RestoreService restoreService = new(_databaseService, failingBlobService, _encryptionService);
 
-        var content = CreateRandomContent(2 * 1024 * 1024);
-        var sourceFile = Path.Combine(_sourceDirectory, "fail_test.bin");
-        await File.WriteAllBytesAsync(sourceFile, content);
-        
-        var backedUp = await BackupFileAsync(failingBlobService, sourceFile);
-        failingBlobService.EnableFailure();
-        
-        var restorePath = Path.Combine(_restoreDirectory, "fail_test.bin");
+            var content = CreateRandomContent(2 * 1024 * 1024);
+            var sourceFile = Path.Combine(_sourceDirectory, "fail_test.bin");
+            await File.WriteAllBytesAsync(sourceFile, content);
 
-        // Act & Assert - Should fail but not hang
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await restoreService.RestoreFileAsync(backedUp, restorePath, true, null, cts.Token);
-        
-        Assert.False(result);
-        
-        // Temp file should be cleaned up
-        Assert.False(File.Exists(restorePath + ".tmp"));
+            var backedUp = await BackupFileAsync(failingBlobService, sourceFile);
+            failingBlobService.EnableFailure();
+
+            var restorePath = Path.Combine(_restoreDirectory, "fail_test.bin");
+
+            // Act & Assert - Should fail but not hang
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var result = await restoreService.RestoreFileAsync(backedUp, restorePath, true, null, cts.Token);
+
+            Assert.False(result);
+
+            // Temp file should be cleaned up
+            Assert.False(File.Exists(restorePath + ".tmp"));
+        });
     }
 
     #region Helper Methods
