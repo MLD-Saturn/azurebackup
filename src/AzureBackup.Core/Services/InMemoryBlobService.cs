@@ -377,22 +377,6 @@ public partial class InMemoryBlobService : IBlobStorageService
         return Task.FromResult(data);
     }
 
-    public Task<(long totalBytes, decimal estimatedMonthlyCost)> GetStorageStatsAsync(CancellationToken cancellationToken = default)
-    {
-        EnsureConnected();
-        
-        var totalBytes = _blobs.Values.Sum(b => (long)b.Length);
-        var gbStored = totalBytes / (1024m * 1024m * 1024m);
-        var estimatedCost = gbStored * 0.0115m; // Cool tier pricing
-        
-        return Task.FromResult((totalBytes, estimatedCost));
-    }
-
-    public decimal GetEstimatedOperationsCost()
-    {
-        return TotalOperations * 0.00001m;
-    }
-
     public Task<(long sizeBytes, StorageTier tier)> GetBlobPropertiesAsync(
         string blobName, CancellationToken cancellationToken = default)
     {

@@ -71,14 +71,6 @@
                                 <TextBlock Text="Deduplicated" Opacity="0.7" HorizontalAlignment="Center"/>
                                 <TextBlock Text="{Binding DeduplicationSavings}" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
                             </StackPanel>
-                            
-                            <!-- Orphan Cost -->
-                            <StackPanel Grid.Column="3" HorizontalAlignment="Center">
-                                <TextBlock Text="{Binding OrphanCost}" FontSize="28" FontWeight="Bold" 
-                                           HorizontalAlignment="Center" Foreground="Orange"/>
-                                <TextBlock Text="Orphan Cost" Opacity="0.7" HorizontalAlignment="Center"/>
-                                <TextBlock Text="per month" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
-                            </StackPanel>
                         </Grid>
                         
                         <!-- Last Operations -->
@@ -109,8 +101,6 @@
                                     <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
                                     <TextBlock Text="{Binding HotTierSize}" FontSize="20" FontWeight="Bold" 
                                                HorizontalAlignment="Center"/>
-                                    <TextBlock Text="{Binding HotTierCost}" FontSize="12" Opacity="0.7" 
-                                               HorizontalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
                             
@@ -122,8 +112,6 @@
                                     <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
                                     <TextBlock Text="{Binding CoolTierSize}" FontSize="20" FontWeight="Bold" 
                                                HorizontalAlignment="Center"/>
-                                    <TextBlock Text="{Binding CoolTierCost}" FontSize="12" Opacity="0.7" 
-                                               HorizontalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
                             
@@ -134,8 +122,6 @@
                                     <TextBlock Text="{Binding ColdTierChunks}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
                                     <TextBlock Text="chunks" FontSize="11" Opacity="0.7" HorizontalAlignment="Center"/>
                                     <TextBlock Text="{Binding ColdTierSize}" FontSize="20" FontWeight="Bold" 
-                                               HorizontalAlignment="Center"/>
-                                    <TextBlock Text="{Binding ColdTierCost}" FontSize="12" Opacity="0.7" 
                                                HorizontalAlignment="Center"/>
                                 </StackPanel>
                             </Border>

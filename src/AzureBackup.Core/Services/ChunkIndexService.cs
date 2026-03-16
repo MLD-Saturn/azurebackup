@@ -14,14 +14,6 @@ public class ChunkIndexService
     private readonly EncryptionService _encryptionService;
     
     private const string IndexBackupBlobName = "index/chunk-index-backup.enc";
-    
-    // Storage tier pricing per GB per month (approximate Azure pricing)
-    private static readonly Dictionary<StorageTier, decimal> TierPricingPerGbMonth = new()
-    {
-        [StorageTier.Hot] = 0.018m,
-        [StorageTier.Cool] = 0.01m,
-        [StorageTier.Cold] = 0.004m
-    };
 
     /// <summary>
     /// Event raised for diagnostic logging.
@@ -295,11 +287,9 @@ public class ChunkIndexService
 
         result.ChunksScanned = scanned;
         result.ScanDuration = DateTime.UtcNow - startTime;
-        result.EstimatedMonthlyCost = CalculateMonthlyCost(result.OrphanedChunks);
 
         Log($"Orphan scan complete: {result.OrphanedChunks.Count} orphans found, " +
-            $"{FormatHelper.FormatBytes(result.TotalOrphanSizeBytes)} total, " +
-            $"${result.EstimatedMonthlyCost:F4}/month");
+            $"{FormatHelper.FormatBytes(result.TotalOrphanSizeBytes)} total");
 
         return result;
     }
@@ -408,8 +398,7 @@ public class ChunkIndexService
             summary.TierBreakdown[tier] = new TierStatistics
             {
                 ChunkCount = tierEntries.Count,
-                TotalSizeBytes = tierSize,
-                EstimatedMonthlyCost = CalculateTierCost(tierSize, tier)
+                TotalSizeBytes = tierSize
             };
         }
 
@@ -622,22 +611,6 @@ public class ChunkIndexService
     {
         var blobName = $"chunks/{chunkHash}";
         return await _blobService.GetBlobPropertiesAsync(blobName, cancellationToken);
-    }
-
-    private decimal CalculateMonthlyCost(IList<ChunkIndexEntry> chunks)
-    {
-        decimal total = 0;
-        foreach (var chunk in chunks)
-        {
-            total += CalculateTierCost(chunk.SizeBytes, chunk.CurrentTier);
-        }
-        return total;
-    }
-
-    private static decimal CalculateTierCost(long sizeBytes, StorageTier tier)
-    {
-        var gbSize = sizeBytes / (1024m * 1024m * 1024m);
-        return gbSize * TierPricingPerGbMonth.GetValueOrDefault(tier, 0.01m);
     }
 
     #endregion

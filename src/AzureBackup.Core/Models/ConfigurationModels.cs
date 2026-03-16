@@ -83,8 +83,7 @@ public class BackupConfiguration
     public byte[]? PasswordVerificationHash { get; set; }
     public DateTime? LastBackupTime { get; set; }
     public long TotalBytesUploaded { get; set; }
-    public decimal EstimatedMonthlyCost { get; set; }
-    
+
     /// <summary>
     /// Number of consecutive failed login attempts.
     /// </summary>

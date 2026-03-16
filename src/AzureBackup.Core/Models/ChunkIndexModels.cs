@@ -140,11 +140,6 @@ public class TierStatistics
     /// Total size of chunks in this tier.
     /// </summary>
     public long TotalSizeBytes { get; set; }
-
-    /// <summary>
-    /// Estimated monthly storage cost for this tier.
-    /// </summary>
-    public decimal EstimatedMonthlyCost { get; set; }
 }
 
 /// <summary>
@@ -161,11 +156,6 @@ public class OrphanScanResult
     /// Total size of orphaned chunks.
     /// </summary>
     public long TotalOrphanSizeBytes { get; set; }
-
-    /// <summary>
-    /// Estimated monthly cost of orphaned storage.
-    /// </summary>
-    public decimal EstimatedMonthlyCost { get; set; }
 
     /// <summary>
     /// When the scan was performed.

@@ -533,40 +533,6 @@ public class BlobServiceTests : IAsyncLifetime
 
     #endregion
 
-    #region Storage Stats Tests
-
-    [Fact]
-    public async Task GetStorageStatsAsync_EmptyStorage_ReturnsZero()
-    {
-        // Act
-        var (totalBytes, cost) = await _blobService.GetStorageStatsAsync();
-
-        // Assert
-        Assert.Equal(0, totalBytes);
-        Assert.Equal(0m, cost);
-    }
-
-    [Fact]
-    public async Task GetStorageStatsAsync_WithStorage_ReturnsPositiveValue()
-    {
-        // Arrange - Upload some data
-        for (int i = 0; i < 10; i++)
-        {
-            var data = CreateRandomContent(10 * 1024);
-            var hash = ComputeHash(data);
-            await _blobService.UploadChunkAsync(data, hash);
-        }
-
-        // Act
-        var (totalBytes, cost) = await _blobService.GetStorageStatsAsync();
-
-        // Assert
-        Assert.True(totalBytes > 0);
-        Assert.True(cost > 0);
-    }
-
-    #endregion
-
     #region Latency and Cancellation Tests
 
     [Fact]

@@ -329,9 +329,7 @@ public partial class MainWindowViewModel
         finally
         {
             IsOperationInProgress = false;
-            IsTransferInProgress = false;
-            ProgressValue = 0;
-            ProgressText = string.Empty;
+            StopProgressTracking();
         }
     }
 

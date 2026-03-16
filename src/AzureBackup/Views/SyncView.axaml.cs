@@ -625,7 +625,7 @@ public partial class SyncView : UserControl
             if (filePaths != null && filePaths.Count > 0)
             {
                 vm.AddLogMessage($"Backing up {filePaths.Count} file(s) to Azure...");
-                await vm.BackupSpecificFilesAsync(filePaths);
+                await vm.BackupFilePathsAsync(filePaths);
             }
             return;
         }
@@ -665,7 +665,7 @@ public partial class SyncView : UserControl
         if (externalFilePaths.Count > 0)
         {
             vm.AddLogMessage($"Backing up {externalFilePaths.Count} external file(s) to Azure...");
-            await vm.BackupSpecificFilesAsync(externalFilePaths);
+            await vm.BackupFilePathsAsync(externalFilePaths);
         }
     }
 }

@@ -29,10 +29,6 @@ public class BackupOrchestrator : IAsyncDisposable
     // Entra ID credential (cached after authentication)
     private TokenCredential? _credential;
 
-    // Budget monitoring
-    private decimal _monthlyBudget = 150m;
-    private decimal _budgetWarningThreshold = 0.9m; // 90%
-    
     // Rate limiting for password attempts
     private const int MaxFailedAttempts = 5;
     private const int LockoutMinutesBase = 15;
@@ -44,8 +40,7 @@ public class BackupOrchestrator : IAsyncDisposable
     public event EventHandler<BackupProgressEventArgs>? ProgressChanged;
     public event EventHandler<string>? StatusChanged;
     public event EventHandler<string>? ErrorOccurred;
-    public event EventHandler? BudgetExceeded;
-    
+
     /// <summary>
     /// Event for detailed debug/diagnostic logging.
     /// Subscribe to this event to capture detailed operation logs.
@@ -528,20 +523,6 @@ public class BackupOrchestrator : IAsyncDisposable
         _databaseService.SecureReset();
 
         StatusChanged?.Invoke(this, "Application reset complete. Please set up a new password and configure Azure connection.");
-    }
-
-    /// <summary>
-    /// Sets the monthly budget and warning threshold.
-    /// </summary>
-    public void SetBudget(decimal monthlyBudget, decimal warningThreshold = 0.9m)
-    {
-        if (monthlyBudget < 0)
-            throw new ArgumentOutOfRangeException(nameof(monthlyBudget), "Budget cannot be negative");
-        if (warningThreshold < 0 || warningThreshold > 1)
-            throw new ArgumentOutOfRangeException(nameof(warningThreshold), "Threshold must be between 0 and 1");
-            
-        _monthlyBudget = monthlyBudget;
-        _budgetWarningThreshold = warningThreshold;
     }
 
     /// <summary>
@@ -1071,14 +1052,6 @@ public class BackupOrchestrator : IAsyncDisposable
                     continue;
                 }
 
-                // Check budget
-                if (!await CheckBudgetAsync(cancellationToken))
-                {
-                    Pause();
-                    BudgetExceeded?.Invoke(this, EventArgs.Empty);
-                    continue;
-                }
-
                 // Process pending changes
                 var pendingChanges = _databaseService.GetPendingChanges(10);
                 
@@ -1132,39 +1105,6 @@ public class BackupOrchestrator : IAsyncDisposable
                 ErrorOccurred?.Invoke(this, $"Backup loop error: {ex.Message}");
                 await Task.Delay(5000, cancellationToken);
             }
-        }
-    }
-
-    private async Task<bool> CheckBudgetAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var (totalBytes, estimatedCost) = await _blobService.GetStorageStatsAsync(cancellationToken);
-            var operationsCost = _blobService.GetEstimatedOperationsCost();
-            var totalCost = estimatedCost + operationsCost;
-
-            // Update config
-            var config = _databaseService.GetConfiguration();
-            config.EstimatedMonthlyCost = totalCost;
-            _databaseService.SaveConfiguration(config);
-
-            if (totalCost >= _monthlyBudget)
-            {
-                StatusChanged?.Invoke(this, $"Budget exceeded: ${totalCost:F2} / ${_monthlyBudget:F2}");
-                return false;
-            }
-
-            if (totalCost >= _monthlyBudget * _budgetWarningThreshold)
-            {
-                StatusChanged?.Invoke(this, $"Budget warning: ${totalCost:F2} / ${_monthlyBudget:F2}");
-            }
-
-            return true;
-        }
-        catch
-        {
-            // If we can't check budget, assume it's okay and continue
-            return true;
         }
     }
 

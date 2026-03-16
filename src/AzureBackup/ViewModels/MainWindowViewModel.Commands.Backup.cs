@@ -49,7 +49,7 @@ public partial class MainWindowViewModel
         // Generate preview of what will be backed up
         AddLog("Analyzing files for backup...");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
@@ -97,19 +97,16 @@ public partial class MainWindowViewModel
             {
                 AddLog($"All {syncResult.UnchangedFiles} files are up to date");
             }
-            
-            ProgressValue = 0;
-            ProgressText = string.Empty;
         }
         catch (OperationCanceledException)
         {
             AddLog("Sync cancelled");
-            IsOperationInProgress = false;
             return;
         }
         finally
         {
             IsOperationInProgress = false;
+            StopProgressTracking();
         }
 
         // Start the backup monitoring service
@@ -171,7 +168,7 @@ public partial class MainWindowViewModel
         // Generate preview showing ALL files (for full scan)
         AddLog("Analyzing all files for full scan...");
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
         
         try
         {
@@ -259,8 +256,7 @@ public partial class MainWindowViewModel
         finally
         {
             IsOperationInProgress = false;
-            ProgressValue = 0;
-            ProgressText = string.Empty;
+            StopProgressTracking();
         }
     }
 
@@ -272,9 +268,9 @@ public partial class MainWindowViewModel
     }
 
     /// <summary>
-    /// Called by the View after files are selected for backup via file picker.
+    /// Backs up files by their paths. Used by file picker, drag-drop, and external callers.
     /// </summary>
-    public async Task BackupSelectedFilesAsync(string[] filePaths)
+    public async Task BackupFilePathsAsync(IReadOnlyList<string> filePaths)
     {
         if (!IsInitialized)
         {
@@ -282,15 +278,34 @@ public partial class MainWindowViewModel
             return;
         }
 
-        if (filePaths.Length == 0) return;
+        if (!_blobService.IsConnected)
+        {
+            AddLog("Not connected to Azure Storage. Please check your connection settings.");
+            return;
+        }
 
-        AddLog($"Preparing to backup {filePaths.Length} file(s)...");
+        if (filePaths.Count == 0) return;
+
+        AddLog($"Preparing to backup {filePaths.Count} file(s)...");
+        await ConfirmAndExecuteBackupAsync(filePaths.ToList());
+    }
+
+    #endregion
+
+    #region Backup Helpers
+
+    /// <summary>
+    /// Full backup lifecycle: preview → confirm → filter exclusions → execute with progress → cleanup.
+    /// All file-based backup entry points delegate to this method for consistent behavior.
+    /// </summary>
+    private async Task ConfirmAndExecuteBackupAsync(List<string> filePaths)
+    {
         IsOperationInProgress = true;
-        _operationCts = new CancellationTokenSource();
+        CreateOperationCts();
 
         try
         {
-            var result = await ConfirmAndFilterBackupFilesAsync(filePaths.ToList(), _operationCts.Token);
+            var result = await ConfirmAndFilterBackupFilesAsync(filePaths, _operationCts!.Token);
             if (result is null) return;
 
             await ExecuteBackupAsync(result.Value.files, result.Value.preview, _operationCts.Token);
@@ -311,10 +326,6 @@ public partial class MainWindowViewModel
             StopProgressTracking();
         }
     }
-
-    #endregion
-
-    #region Backup Helpers
 
     /// <summary>
     /// Shows a backup preview dialog and filters out files the user excluded.

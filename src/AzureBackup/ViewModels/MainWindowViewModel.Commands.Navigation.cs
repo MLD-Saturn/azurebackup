@@ -221,8 +221,7 @@ public partial class MainWindowViewModel
                 TotalSize = "0 B";
                 PendingChanges = 0;
                 LastBackupTime = "Never";
-                EstimatedCost = "$0.00";
-                
+
                 // Clear tree views
                 FileTreeRoots.Clear();
                 LocalFileTreeRoots.Clear();

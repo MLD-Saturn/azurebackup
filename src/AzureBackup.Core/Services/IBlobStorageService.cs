@@ -138,16 +138,6 @@ public interface IBlobStorageService : IAsyncDisposable
     Task DeleteBlobAsync(string blobName, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Estimates monthly storage cost based on current usage.
-    /// </summary>
-    Task<(long totalBytes, decimal estimatedMonthlyCost)> GetStorageStatsAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Gets the estimated cost for operations performed.
-    /// </summary>
-    decimal GetEstimatedOperationsCost();
-
-    /// <summary>
     /// Gets the properties of a blob including its storage tier and size.
     /// </summary>
     /// <param name="blobName">The blob name (e.g., "chunks/abc123")</param>

@@ -23,11 +23,7 @@ public partial class AzureBlobService : IBlobStorageService
     private BlobContainerClient? _containerClient;
     private readonly EncryptionService _encryptionService;
     
-    // Cost tracking (approximate Cool tier pricing)
-    private const decimal CostPerGbStorage = 0.0115m;  // Cool tier $/GB/month
-    private const decimal CostPerWriteOp = 0.00001m;   // $/operation
-    private const decimal CostPerReadOp = 0.000001m;   // $/operation
-    
+
     // Transfer optimization settings
     // These settings maximize bandwidth by using parallel block transfers within each blob
     private static readonly StorageTransferOptions DefaultTransferOptions = new()
@@ -674,35 +670,6 @@ public partial class AzureBlobService : IBlobStorageService
 
         TotalOperations++;
         return response.Value.Content.ToArray();
-    }
-
-    /// <summary>
-    /// Estimates monthly storage cost based on current usage.
-    /// </summary>
-    public async Task<(long totalBytes, decimal estimatedMonthlyCost)> GetStorageStatsAsync(
-        CancellationToken cancellationToken = default)
-    {
-        EnsureConnected();
-
-        long totalBytes = 0;
-        
-        await foreach (var blob in _containerClient!.GetBlobsAsync(cancellationToken: cancellationToken))
-        {
-            totalBytes += blob.Properties.ContentLength ?? 0;
-        }
-        
-        var gbStored = totalBytes / (1024m * 1024m * 1024m);
-        var estimatedCost = gbStored * CostPerGbStorage;
-        
-        return (totalBytes, estimatedCost);
-    }
-
-    /// <summary>
-    /// Gets the estimated cost for operations performed.
-    /// </summary>
-    public decimal GetEstimatedOperationsCost()
-    {
-        return TotalOperations * CostPerWriteOp;
     }
 
     /// <summary>

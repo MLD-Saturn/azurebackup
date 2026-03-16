@@ -262,7 +262,7 @@ public partial class MainWindow : Window
                 
                 if (filePaths.Length > 0)
                 {
-                    await vm.BackupSelectedFilesAsync(filePaths);
+                    await vm.BackupFilePathsAsync(filePaths);
                 }
             }
         }

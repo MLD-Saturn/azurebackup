@@ -195,8 +195,6 @@ public partial class MainWindowViewModel
             var config = _databaseService.GetConfiguration();
             config.WatchedFolders = WatchedFolders.Select(f => f.ToModel()).ToList();
             _databaseService.SaveConfiguration(config);
-            
-            _orchestrator.SetBudget(MonthlyBudget);
         }
         catch (System.Exception ex)
         {
@@ -218,8 +216,7 @@ public partial class MainWindowViewModel
             config.StorageAccountName = StorageAccountName;
             config.WatchedFolders = WatchedFolders.Select(f => f.ToModel()).ToList();
             _databaseService.SaveConfiguration(config);
-            
-            _orchestrator.SetBudget(MonthlyBudget);
+
             AddLog("Settings saved");
         }
         catch (System.Exception ex)
@@ -598,8 +595,6 @@ public partial class MainWindowViewModel
                 var config = _databaseService.GetConfiguration();
                 config.WatchedFolders = WatchedFolders.Select(f => f.ToModel()).ToList();
                 _databaseService.SaveConfiguration(config);
-                
-                _orchestrator.SetBudget(MonthlyBudget);
 
                 // Save storage settings using the preserved user input
                 if (UseEntraIdAuth)

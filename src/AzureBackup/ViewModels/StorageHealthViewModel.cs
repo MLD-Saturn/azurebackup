@@ -50,9 +50,6 @@ public partial class StorageHealthViewModel : ViewModelBase
     private string _orphanSize = "0 B";
 
     [ObservableProperty]
-    private string _orphanCost = "$0.00";
-
-    [ObservableProperty]
     private int _sharedChunks;
 
     [ObservableProperty]
@@ -72,25 +69,16 @@ public partial class StorageHealthViewModel : ViewModelBase
     private string _hotTierSize = "0 B";
 
     [ObservableProperty]
-    private string _hotTierCost = "$0.00";
-
-    [ObservableProperty]
     private int _coolTierChunks;
 
     [ObservableProperty]
     private string _coolTierSize = "0 B";
 
     [ObservableProperty]
-    private string _coolTierCost = "$0.00";
-
-    [ObservableProperty]
     private int _coldTierChunks;
 
     [ObservableProperty]
     private string _coldTierSize = "0 B";
-
-    [ObservableProperty]
-    private string _coldTierCost = "$0.00";
 
     // Orphan Scan Results
     [ObservableProperty]
@@ -150,32 +138,19 @@ public partial class StorageHealthViewModel : ViewModelBase
         {
             HotTierChunks = hot.ChunkCount;
             HotTierSize = FormatHelper.FormatBytes(hot.TotalSizeBytes);
-            HotTierCost = $"${hot.EstimatedMonthlyCost:F4}/mo";
         }
 
         if (summary.TierBreakdown.TryGetValue(StorageTier.Cool, out var cool))
         {
             CoolTierChunks = cool.ChunkCount;
             CoolTierSize = FormatHelper.FormatBytes(cool.TotalSizeBytes);
-            CoolTierCost = $"${cool.EstimatedMonthlyCost:F4}/mo";
         }
 
         if (summary.TierBreakdown.TryGetValue(StorageTier.Cold, out var cold))
         {
             ColdTierChunks = cold.ChunkCount;
             ColdTierSize = FormatHelper.FormatBytes(cold.TotalSizeBytes);
-            ColdTierCost = $"${cold.EstimatedMonthlyCost:F4}/mo";
         }
-
-        // Calculate total orphan cost
-        var orphanEntries = _databaseService.GetOrphanedChunks();
-        decimal totalOrphanCost = 0;
-        foreach (var entry in orphanEntries)
-        {
-            var gbSize = entry.SizeBytes / (1024m * 1024m * 1024m);
-            totalOrphanCost += gbSize * GetTierPricing(entry.CurrentTier);
-        }
-        OrphanCost = $"${totalOrphanCost:F4}/mo";
 
         OnPropertyChanged(nameof(HasOrphans));
         StatusMessage = $"Summary refreshed at {DateTime.Now:T}";
@@ -217,7 +192,6 @@ public partial class StorageHealthViewModel : ViewModelBase
                 ScanDuration = $"{result.ScanDuration.TotalSeconds:F1}s";
                 OrphanCount = result.OrphanedChunks.Count;
                 OrphanSize = FormatHelper.FormatBytes(result.TotalOrphanSizeBytes);
-                OrphanCost = $"${result.EstimatedMonthlyCost:F4}/mo";
 
                 StatusMessage = $"Scan complete: {result.OrphanedChunks.Count} orphans found ({FormatHelper.FormatBytes(result.TotalOrphanSizeBytes)})";
                 OnPropertyChanged(nameof(HasOrphans));
@@ -427,20 +401,9 @@ public partial class StorageHealthViewModel : ViewModelBase
         OnPropertyChanged(nameof(SelectedOrphanSize));
     }
 
-    #region Helpers
+    }
 
-    private static decimal GetTierPricing(StorageTier tier) => tier switch
-    {
-        StorageTier.Hot => 0.018m,
-        StorageTier.Cool => 0.01m,
-        StorageTier.Cold => 0.004m,
-        _ => 0.01m
-    };
-
-    #endregion
-}
-
-/// <summary>
+    /// <summary>
 /// ViewModel for an orphaned chunk in the list.
 /// </summary>
 public partial class OrphanChunkViewModel : ObservableObject

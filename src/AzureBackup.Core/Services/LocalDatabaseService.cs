@@ -999,8 +999,7 @@ public class LocalDatabaseService : IDisposable
                 FailedFiles = files.Count(x => x.Status == BackupStatus.Failed),
                 PendingChanges = _pendingChangesCollection!.Count(),
                 LastBackupTime = config.LastBackupTime,
-                TotalBytesUploaded = config.TotalBytesUploaded,
-                EstimatedMonthlyCost = config.EstimatedMonthlyCost
+                TotalBytesUploaded = config.TotalBytesUploaded
             };
         }
     }
@@ -1192,7 +1191,6 @@ public class BackupStatistics
     public int PendingChanges { get; set; }
     public DateTime? LastBackupTime { get; set; }
     public long TotalBytesUploaded { get; set; }
-    public decimal EstimatedMonthlyCost { get; set; }
 
     public string TotalSizeFormatted => FormatHelper.FormatBytes(TotalSize);
     public string TotalBytesUploadedFormatted => FormatHelper.FormatBytes(TotalBytesUploaded);

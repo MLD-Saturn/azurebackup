@@ -216,9 +216,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private string _containerName = "backup";
 
     [ObservableProperty]
-    private decimal _monthlyBudget = 150m;
-
-    [ObservableProperty]
     private string _currentView = "Sync";
 
     // Statistics
@@ -233,9 +230,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     [ObservableProperty]
     private string _lastBackupTime = "Never";
-
-    [ObservableProperty]
-    private string _estimatedCost = "$0.00";
 
     [ObservableProperty]
     private double _progressValue;
@@ -579,7 +573,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         // Wire up status events
         _orchestrator.StatusChanged += (s, msg) => AddLog(msg);
         _orchestrator.ErrorOccurred += (s, msg) => AddLog($"ERROR: {msg}");
-        _orchestrator.BudgetExceeded += (s, e) => AddLog("BUDGET EXCEEDED - Backup paused!");
         _orchestrator.ProgressChanged += (s, e) => UpdateProgress(e);
 
         _restoreService.StatusChanged += (s, msg) => AddLog(msg);
@@ -738,7 +731,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         TotalSize = stats.TotalSizeFormatted;
         PendingChanges = stats.PendingChanges;
         LastBackupTime = stats.LastBackupTime?.ToString("g") ?? "Never";
-        EstimatedCost = $"${stats.EstimatedMonthlyCost:F2}/month";
     }
 
     private void AddLog(string message)

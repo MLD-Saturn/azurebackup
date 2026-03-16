@@ -280,30 +280,7 @@ public partial class MainWindowViewModel
         }
 
         AddLog($"Preparing to backup {selectedFiles.Count} selected file(s)...");
-        IsOperationInProgress = true;
-        CreateOperationCts();
-
-        try
-        {
-            var filePaths = selectedFiles.Select(f => f.FullPath).ToList();
-            var result = await ConfirmAndFilterBackupFilesAsync(filePaths, _operationCts!.Token);
-            if (result is null) return;
-
-            await ExecuteBackupAsync(result.Value.files, result.Value.preview, _operationCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            AddLog("Backup cancelled");
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Backup failed: {ex.Message}");
-        }
-        finally
-        {
-            IsOperationInProgress = false;
-            StopProgressTracking();
-        }
+        await ConfirmAndExecuteBackupAsync(selectedFiles.Select(f => f.FullPath).ToList());
     }
 
     /// <summary>
@@ -448,55 +425,6 @@ public partial class MainWindowViewModel
                 .Where(f => f.IsSelected)
                 .Select(f => f.LocalPath)
                 .ToList();
-        }
-    }
-
-    /// <summary>
-    /// Backs up specific files by their paths (used for drag-drop operations).
-    /// </summary>
-    public async Task BackupSpecificFilesAsync(List<string> filePaths)
-    {
-        if (!IsInitialized)
-        {
-            AddLog("Please initialize first");
-            return;
-        }
-
-        if (!_blobService.IsConnected)
-        {
-            AddLog("Not connected to Azure Storage. Please check your connection settings.");
-            return;
-        }
-
-        if (filePaths.Count == 0)
-        {
-            AddLog("No files to backup");
-            return;
-        }
-
-        AddLog($"Preparing to backup {filePaths.Count} file(s)...");
-        IsOperationInProgress = true;
-        CreateOperationCts();
-
-        try
-        {
-            var result = await ConfirmAndFilterBackupFilesAsync(filePaths, _operationCts!.Token);
-            if (result is null) return;
-
-            await ExecuteBackupAsync(result.Value.files, result.Value.preview, _operationCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            AddLog("Backup cancelled");
-        }
-        catch (Exception ex)
-        {
-            AddLog($"Backup failed: {ex.Message}");
-        }
-        finally
-        {
-            IsOperationInProgress = false;
-            StopProgressTracking();
         }
     }
 
