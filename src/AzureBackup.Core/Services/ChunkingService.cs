@@ -321,7 +321,7 @@ public class ChunkingService
         ArgumentNullException.ThrowIfNull(existingChunks);
         ArgumentNullException.ThrowIfNull(newChunks);
         
-        var existingHashes = existingChunks.Select(c => c.Hash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existingHashes = existingChunks.Select(c => c.Hash).ToHashSet(StringComparer.Ordinal);
         return newChunks.Where(c => !existingHashes.Contains(c.Hash)).ToList();
     }
 

@@ -285,7 +285,7 @@ public class RestoreService
             StatusChanged?.Invoke(this, $"Verifying integrity: {Path.GetFileName(targetPath)}");
             var restoredHash = await ComputeFileHashAsync(tempPath, cancellationToken);
             
-            if (!string.Equals(restoredHash, file.FileHash, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(restoredHash, file.FileHash, StringComparison.Ordinal))
             {
                 Log($"RestoreFileAsync: HASH MISMATCH! expected={file.FileHash}, got={restoredHash}");
                 // Delete corrupted temp file
@@ -382,7 +382,7 @@ public class RestoreService
 
         // Verify chunk hash matches metadata
         var actualHash = ComputeChunkHash(chunkData);
-        if (!string.Equals(actualHash, chunk.Hash, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(actualHash, chunk.Hash, StringComparison.Ordinal))
         {
             throw new DataIntegrityException(
                 $"Chunk {chunk.Index} hash mismatch: expected {chunk.Hash}, got {actualHash}",
@@ -912,7 +912,7 @@ public class RestoreService
                         {
                             // File appears unchanged - verify with hash for certainty
                             var localHash = await ComputeFileHashAsync(targetPath, ct);
-                            if (string.Equals(localHash, backupFile.FileHash, StringComparison.OrdinalIgnoreCase))
+                            if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
                             {
                                 lock (resultLock) { result.FilesUnchanged++; }
                                 progress?.Report((currentOp, totalOperations, Path.GetFileName(targetPath), "Unchanged"));
@@ -1398,7 +1398,7 @@ public class RestoreService
                 {
                     // Quick check - likely unchanged, but verify with hash
                     var localHash = await ComputeFileHashAsync(targetPath, cancellationToken);
-                    if (string.Equals(localHash, backupFile.FileHash, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
                     {
                         preview.FilesToSkip.Add(new PreviewFileAction
                         {

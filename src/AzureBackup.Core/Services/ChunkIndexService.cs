@@ -173,7 +173,7 @@ public class ChunkIndexService
         Log($"Updating chunk references for modified file: {filePath}");
 
         // Find chunks that are no longer used by this file
-        var newHashSet = new HashSet<string>(newChunks.Select(c => c.hash), StringComparer.OrdinalIgnoreCase);
+        var newHashSet = new HashSet<string>(newChunks.Select(c => c.hash), StringComparer.Ordinal);
         var removedHashes = oldChunkHashes.Where(h => !newHashSet.Contains(h)).ToList();
 
         // Remove references to old chunks
@@ -605,13 +605,13 @@ public class ChunkIndexService
         // This replaces N*M sequential HTTP calls with one parallel batch
         var uniqueChunkHashes = allMetadata
             .SelectMany(m => m.Chunks.Select(c => c.Hash))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(StringComparer.Ordinal)
             .ToList();
 
         Log($"Found {uniqueChunkHashes.Count} unique chunks to query");
 
         const int maxParallelChunkQueries = 32;
-        var chunkInfoCache = new System.Collections.Concurrent.ConcurrentDictionary<string, (long size, StorageTier tier)>(StringComparer.OrdinalIgnoreCase);
+        var chunkInfoCache = new System.Collections.Concurrent.ConcurrentDictionary<string, (long size, StorageTier tier)>(StringComparer.Ordinal);
         int queriedChunks = 0;
 
         await Parallel.ForEachAsync(

@@ -894,7 +894,7 @@ public class LocalDatabaseService : IDisposable
 
         lock (_dbLock)
         {
-            var result = new Dictionary<string, (int, long, StorageTier)>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, (int, long, StorageTier)>(StringComparer.Ordinal);
             foreach (var entry in _chunkIndexCollection!.FindAll())
             {
                 result[entry.ChunkHash] = (entry.ReferenceCount, entry.SizeBytes, entry.CurrentTier);
