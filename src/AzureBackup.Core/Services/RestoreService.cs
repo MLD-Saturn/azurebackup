@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Threading.Channels;
 using AzureBackup.Core.Models;
@@ -34,6 +35,7 @@ public class RestoreService
     /// </summary>
     public event EventHandler<string>? DiagnosticLog;
     
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

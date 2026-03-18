@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -54,6 +55,7 @@ public partial class AzureBlobService : IBlobStorageService
     /// </summary>
     public event EventHandler<string>? DiagnosticLog;
     
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

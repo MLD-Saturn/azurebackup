@@ -264,14 +264,18 @@ public class ChunkIndexServiceTests : IAsyncLifetime
         var filePath = @"C:\TestFiles\file1.txt";
         var logMessages = new List<string>();
         _indexService.DiagnosticLog += (s, msg) => logMessages.Add(msg);
-        
+
         // Don't add the chunk to the index
-        
+
         // Act
         _indexService.VerifyBackupConsistency(filePath, new List<string> { chunkHash });
-        
-        // Assert
+
+        // Assert — Log calls are compiled out when DIAGNOSTICLOG is not defined
+#if DIAGNOSTICLOG
         Assert.Contains(logMessages, m => m.Contains("WARNING") && m.Contains("not found"));
+#else
+        Assert.Empty(logMessages);
+#endif
     }
 
     #endregion

@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>$(DefineConstants);DIAGNOSTICLOG</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.13.2" />
     <PackageReference Include="Azure.Storage.Blobs" Version="12.21.0" />

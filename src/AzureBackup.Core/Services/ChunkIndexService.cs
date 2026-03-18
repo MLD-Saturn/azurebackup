@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AzureBackup.Core.Models;
 
@@ -20,6 +21,7 @@ public class ChunkIndexService
     /// </summary>
     public event EventHandler<string>? DiagnosticLog;
 
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

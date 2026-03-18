@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
@@ -12,7 +13,7 @@ public class EncryptionService : IDisposable
 {
     private byte[]? _derivedKey;
     private bool _disposed;
-    private readonly object _keyLock = new();
+    private readonly Lock _keyLock = new();
 
     // Argon2id parameters - secure defaults for password hashing
     private const int Argon2DegreeOfParallelism = 8;
@@ -37,6 +38,7 @@ public class EncryptionService : IDisposable
     /// </summary>
     public event EventHandler<string>? DiagnosticLog;
     
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
@@ -117,12 +119,11 @@ public class EncryptionService : IDisposable
     /// </summary>
     public string ComputeHmacHex(ReadOnlySpan<byte> data)
     {
-        byte[] keyCopy;
+        Span<byte> keyCopy = stackalloc byte[KeySize];
         lock (_keyLock)
         {
             EnsureInitialized();
-            keyCopy = new byte[KeySize];
-            Array.Copy(_derivedKey!, keyCopy, KeySize);
+            _derivedKey.AsSpan().CopyTo(keyCopy);
         }
 
         try
@@ -259,8 +260,9 @@ public class EncryptionService : IDisposable
         // Verify checksum first
         var dataWithoutChecksum = encryptedData[..^ChecksumSize];
         var storedChecksum = encryptedData[^ChecksumSize..];
-        var computedChecksum = ComputeChecksum(dataWithoutChecksum);
-        
+        Span<byte> computedChecksum = stackalloc byte[ChecksumSize];
+        WriteChecksum(dataWithoutChecksum, computedChecksum);
+
         if (!storedChecksum.SequenceEqual(computedChecksum))
         {
             Log($"Decrypt: CRC32 checksum mismatch (data length={encryptedData.Length})");
@@ -423,15 +425,6 @@ public class EncryptionService : IDisposable
     {
         var crc = System.IO.Hashing.Crc32.HashToUInt32(data);
         BitConverter.TryWriteBytes(destination, crc);
-    }
-
-    /// <summary>
-    /// Computes CRC32 checksum for corruption detection.
-    /// </summary>
-    private static byte[] ComputeChecksum(ReadOnlySpan<byte> data)
-    {
-        var crc = System.IO.Hashing.Crc32.HashToUInt32(data);
-        return BitConverter.GetBytes(crc);
     }
 
     private void EnsureInitialized()

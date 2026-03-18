@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Azure.Core;
 using Azure.Identity;
@@ -105,6 +106,7 @@ public class BackupOrchestrator : IAsyncDisposable
     /// <summary>
     /// Logs a diagnostic message.
     /// </summary>
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

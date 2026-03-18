@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using AzureBackup.Core.Models;
 
@@ -29,6 +30,7 @@ public class FileWatcherService : IDisposable
     /// </summary>
     public event EventHandler<string>? DiagnosticLog;
     
+    [Conditional("DIAGNOSTICLOG")]
     private void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

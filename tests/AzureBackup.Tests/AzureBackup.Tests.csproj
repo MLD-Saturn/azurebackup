@@ -7,6 +7,10 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>$(DefineConstants);DIAGNOSTICLOG</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
