@@ -1,5 +1,3 @@
-using System.IO.Hashing;
-using System.Security.Cryptography;
 using AzureBackup.Core.Models;
 
 namespace AzureBackup.Core.Services;
@@ -293,25 +291,13 @@ public class ChunkingService
     /// SHA-256 provides collision resistance for deduplication safety.
     /// </summary>
     private static string ComputeChunkHash(ReadOnlySpan<byte> data)
-    {
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(data, hash);
-        return Convert.ToHexString(hash);
-    }
+        => HashHelper.ComputeHash(data);
 
     /// <summary>
     /// Computes SHA-256 hash of file for integrity verification.
     /// </summary>
     public async Task<string> ComputeFileHashAsync(string filePath, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        
-        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            bufferSize: 81920, useAsync: true);
-        
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
-        return Convert.ToHexString(hash);
-    }
+        => await HashHelper.ComputeFileHashAsync(filePath, cancellationToken);
 
     /// <summary>
     /// Compares two sets of chunks and returns which chunks need to be uploaded.
@@ -343,7 +329,7 @@ public class ChunkingService
         return data;
     }
 
-    private static uint ComputePower(uint baseVal, int exp)
+    private static uint ComputePower(uint baseVal, uint exp)
     {
         uint result = 1;
         while (exp > 0)

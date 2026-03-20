@@ -243,7 +243,7 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
             if (!Directory.Exists(folder.Path)) continue;
 
             LocalFileTreeNodeViewModel rootNode = new(
-                GetRootDisplayName(folder.Path),
+                AzureBackup.Core.PathHelper.GetDisplayName(folder.Path),
                 folder.Path,
                 isFolder: true);
 
@@ -253,22 +253,6 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
         }
 
         return roots;
-    }
-
-    /// <summary>
-    /// Gets a display name for a root watched folder path.
-    /// Handles drive roots (e.g. "J:\") where Path.GetFileName returns empty string.
-    /// </summary>
-    private static string GetRootDisplayName(string folderPath)
-    {
-        var trimmed = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var name = Path.GetFileName(trimmed);
-
-        // Path.GetFileName returns empty for drive roots like "J:" 
-        if (string.IsNullOrEmpty(name))
-            return trimmed + Path.DirectorySeparatorChar; // "J:\"
-
-        return name;
     }
 
     private static void BuildTreeRecursive(
@@ -283,17 +267,17 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
             foreach (var subDir in Directory.EnumerateDirectories(directoryPath))
             {
                 var dirName = Path.GetFileName(subDir);
-                
+
                 // Check exclusion patterns
-                if (ShouldExclude(dirName, excludePatterns)) continue;
+                if (AzureBackup.Core.GlobMatcher.MatchesAny(dirName, excludePatterns)) continue;
 
                 LocalFileTreeNodeViewModel dirNode = new(dirName, subDir, isFolder: true)
                 {
                     Parent = parentNode
                 };
-                
+
                 BuildTreeRecursive(dirNode, subDir, backedUpFiles, excludePatterns);
-                
+
                 // Only add non-empty directories
                 if (dirNode.Children.Count > 0)
                 {
@@ -305,10 +289,9 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
             foreach (var filePath in Directory.EnumerateFiles(directoryPath))
             {
                 var fileName = Path.GetFileName(filePath);
-                
-                // Check exclusion patterns
-                if (ShouldExclude(fileName, excludePatterns)) continue;
 
+                // Check exclusion patterns
+                if (AzureBackup.Core.GlobMatcher.MatchesAny(fileName, excludePatterns)) continue;
 
                 try
                 {
@@ -333,7 +316,7 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
                         var hasValidBackup = backup.Status == AzureBackup.Core.Models.BackupStatus.Completed &&
                                             !string.IsNullOrEmpty(backup.FileHash) &&
                                             backup.FileSize > 0;
-                        
+
                         if (backup.Status == AzureBackup.Core.Models.BackupStatus.Excluded)
                         {
                             fileNode.BackupStatusValue = LocalFileBackupStatus.Excluded;
@@ -389,22 +372,5 @@ public partial class LocalFileTreeNodeViewModel : TreeNodeViewModelBase<LocalFil
         {
             // Skip directories we can't access
         }
-    }
-
-    private static bool ShouldExclude(string name, List<string> patterns)
-    {
-        foreach (var pattern in patterns)
-        {
-            if (string.IsNullOrWhiteSpace(pattern)) continue;
-            
-            // Simple wildcard matching
-            if (pattern.StartsWith("*") && name.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase))
-                return true;
-            if (pattern.EndsWith("*") && name.StartsWith(pattern[..^1], StringComparison.OrdinalIgnoreCase))
-                return true;
-            if (name.Equals(pattern, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
     }
 }

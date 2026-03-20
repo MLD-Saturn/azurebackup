@@ -933,13 +933,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             {
                 var remainingBytes = TotalBytesToProcess - TotalBytesProcessed;
                 var remainingSeconds = remainingBytes / bytesPerSecond;
-                
-                if (remainingSeconds < 60)
-                    EstimatedTimeRemaining = $"{remainingSeconds:F0}s remaining";
-                else if (remainingSeconds < 3600)
-                    EstimatedTimeRemaining = $"{remainingSeconds / 60:F0}m {remainingSeconds % 60:F0}s remaining";
-                else
-                    EstimatedTimeRemaining = $"{remainingSeconds / 3600:F0}h {(remainingSeconds % 3600) / 60:F0}m remaining";
+                EstimatedTimeRemaining = $"{AzureBackup.Core.FormatHelper.FormatDuration(remainingSeconds)} remaining";
             }
         }
     }

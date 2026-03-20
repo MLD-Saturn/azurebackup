@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Azure;
 using Azure.Core;
 using Azure.Identity;
@@ -18,7 +17,7 @@ namespace AzureBackup.Core.Services;
 /// Uploads encrypted chunks to Cool tier for cost optimization.
 /// Uses parallel transfers to maximize bandwidth utilization.
 /// </summary>
-public partial class AzureBlobService : IBlobStorageService
+public class AzureBlobService : IBlobStorageService
 {
     private BlobServiceClient? _serviceClient;
     private BlobContainerClient? _containerClient;
@@ -37,15 +36,7 @@ public partial class AzureBlobService : IBlobStorageService
     // Retry settings for upload integrity failures (MD5 mismatch from Azure)
     private const int MaxUploadRetries = 25;
     private const int UploadRetryBaseDelayMs = 500;
-    
-    // Regex for validating blob names (SHA-256 hex string)
-    [GeneratedRegex(@"^[A-Fa-f0-9]{64}$", RegexOptions.Compiled)]
-    private static partial Regex ValidHashPattern();
-    
-    // Regex for validating metadata blob names (Base64-like with replacements)
-    [GeneratedRegex(@"^[A-Za-z0-9_\-=]+$", RegexOptions.Compiled)]
-    private static partial Regex ValidMetadataHashPattern();
-    
+
     public bool IsConnected => _containerClient != null;
     public long TotalBytesUploaded { get; private set; }
     public int TotalOperations { get; private set; }
@@ -79,31 +70,6 @@ public partial class AzureBlobService : IBlobStorageService
         StorageTier.Archive => AccessTier.Archive,
         _ => AccessTier.Cool // Default to Cool for unknown values
     };
-
-    /// <summary>
-    /// Validates a chunk hash to prevent path traversal attacks.
-    /// </summary>
-    private static void ValidateChunkHash(string hash)
-    {
-        if (string.IsNullOrWhiteSpace(hash))
-            throw new SecurityPolicyException("Chunk hash cannot be empty", SecurityPolicyType.InvalidBlobName);
-        
-        
-        if (!ValidHashPattern().IsMatch(hash))
-            throw new SecurityPolicyException($"Invalid chunk hash format: {hash}", SecurityPolicyType.InvalidBlobName);
-    }
-    
-    /// <summary>
-    /// Validates a metadata hash to prevent path traversal attacks.
-    /// </summary>
-    private static void ValidateMetadataHash(string hash)
-    {
-        if (string.IsNullOrWhiteSpace(hash))
-            throw new SecurityPolicyException("Metadata hash cannot be empty", SecurityPolicyType.InvalidBlobName);
-        
-        if (!ValidMetadataHashPattern().IsMatch(hash) || hash.Length > 100)
-            throw new SecurityPolicyException($"Invalid metadata hash format", SecurityPolicyType.InvalidBlobName);
-    }
 
     #region Connection String Authentication
 
@@ -249,7 +215,7 @@ public partial class AzureBlobService : IBlobStorageService
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
-        ValidateChunkHash(chunkHash);
+        BlobNameValidator.ValidateChunkHash(chunkHash);
         Log($"UploadChunkAsync: Uploading chunk {chunkHash[..8]}... ({chunkData.Length} bytes) to {storageTier} tier");
 
         // Encrypt the chunk before upload
@@ -326,7 +292,7 @@ public partial class AzureBlobService : IBlobStorageService
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
-        ValidateChunkHash(chunkHash);
+        BlobNameValidator.ValidateChunkHash(chunkHash);
         Log($"UploadChunkDirectAsync: Direct upload chunk {chunkHash[..8]}... ({chunkData.Length} bytes) to {storageTier} tier");
 
         // Encrypt the chunk before upload

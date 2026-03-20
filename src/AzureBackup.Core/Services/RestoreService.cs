@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Threading.Channels;
 using AzureBackup.Core.Models;
 
@@ -285,7 +284,7 @@ public class RestoreService
             // Verify restored file integrity
             Log($"RestoreFileAsync: Verifying file integrity of temp file: {tempPath}");
             StatusChanged?.Invoke(this, $"Verifying integrity: {Path.GetFileName(targetPath)}");
-            var restoredHash = await ComputeFileHashAsync(tempPath, cancellationToken);
+            var restoredHash = await HashHelper.ComputeFileHashAsync(tempPath, cancellationToken);
             
             if (!string.Equals(restoredHash, file.FileHash, StringComparison.Ordinal))
             {
@@ -348,28 +347,6 @@ public class RestoreService
     }
     
     /// <summary>
-    /// Computes SHA-256 hash of a file for integrity verification.
-    /// </summary>
-    private static async Task<string> ComputeFileHashAsync(string filePath, CancellationToken cancellationToken)
-    {
-        await using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, 
-            FileShare.Read, bufferSize: 81920, useAsync: true);
-        
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
-        return Convert.ToHexString(hash);
-    }
-
-    /// <summary>
-    /// Computes SHA-256 hash of chunk data for integrity verification.
-    /// </summary>
-    private static string ComputeChunkHash(ReadOnlySpan<byte> data)
-    {
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(data, hash);
-        return Convert.ToHexString(hash);
-    }
-
-    /// <summary>
     /// Verifies downloaded chunk data matches expected hash and size.
     /// </summary>
     private void VerifyChunkIntegrity(byte[] chunkData, ChunkInfo chunk, string filePath)
@@ -383,7 +360,7 @@ public class RestoreService
         }
 
         // Verify chunk hash matches metadata
-        var actualHash = ComputeChunkHash(chunkData);
+        var actualHash = HashHelper.ComputeHash(chunkData);
         if (!string.Equals(actualHash, chunk.Hash, StringComparison.Ordinal))
         {
             throw new DataIntegrityException(
@@ -751,29 +728,7 @@ public class RestoreService
         if (allPaths.Count <= 1)
             return Path.GetFileName(currentPath);
 
-        // Find common root directory
-        var directories = allPaths
-            .Select(p => Path.GetDirectoryName(p) ?? string.Empty)
-            .Where(d => !string.IsNullOrEmpty(d))
-            .ToList();
-
-        if (directories.Count == 0)
-            return Path.GetFileName(currentPath);
-
-        var commonRoot = directories[0];
-        foreach (var dir in directories.Skip(1))
-        {
-            while (!dir.StartsWith(commonRoot, StringComparison.OrdinalIgnoreCase) && commonRoot.Length > 0)
-            {
-                var parentDir = Path.GetDirectoryName(commonRoot);
-                if (string.IsNullOrEmpty(parentDir) || parentDir == commonRoot)
-                {
-                    commonRoot = string.Empty;
-                    break;
-                }
-                commonRoot = parentDir;
-            }
-        }
+        var commonRoot = PathHelper.FindCommonRoot(allPaths);
 
         if (string.IsNullOrEmpty(commonRoot))
             return Path.GetFileName(currentPath);
@@ -892,7 +847,7 @@ public class RestoreService
                 try
                 {
                     // Calculate target path by remapping base path
-                    var relativePath = GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
+                    var relativePath = PathHelper.GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
                     var targetPath = Path.Combine(targetDirectory, relativePath);
                     expectedLocalFiles.TryAdd(targetPath, 0);
 
@@ -912,7 +867,7 @@ public class RestoreService
                             Math.Abs((localInfo.LastWriteTimeUtc - backupFile.LastModified).TotalSeconds) < 2)
                         {
                             // File appears unchanged - verify with hash for certainty
-                            var localHash = await ComputeFileHashAsync(targetPath, ct);
+                            var localHash = await HashHelper.ComputeFileHashAsync(targetPath, ct);
                             if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
                             {
                                 lock (resultLock) { result.FilesUnchanged++; }
@@ -1007,7 +962,7 @@ public class RestoreService
             }
 
             // Clean up empty directories
-            CleanEmptyDirectories(targetDirectory);
+            FileSystemHelper.CleanEmptyDirectories(targetDirectory);
         }
         catch (Exception ex)
         {
@@ -1030,48 +985,6 @@ public class RestoreService
         Log($"MirrorSyncToLocalAsync: {summaryText}");
 
         return result;
-    }
-
-    /// <summary>
-    /// Gets the relative path from a base path.
-    /// </summary>
-    private static string GetRelativePathFromBase(string fullPath, string basePath)
-    {
-        // Normalize paths
-        fullPath = Path.GetFullPath(fullPath);
-        basePath = Path.GetFullPath(basePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        if (fullPath.StartsWith(basePath, StringComparison.OrdinalIgnoreCase))
-        {
-            var relative = fullPath.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            return string.IsNullOrEmpty(relative) ? Path.GetFileName(fullPath) : relative;
-        }
-
-        // If not under base path, just return the filename
-        return Path.GetFileName(fullPath);
-    }
-
-    /// <summary>
-    /// Removes empty directories recursively.
-    /// </summary>
-    private static void CleanEmptyDirectories(string directory)
-    {
-        foreach (var subDir in Directory.EnumerateDirectories(directory))
-        {
-            CleanEmptyDirectories(subDir);
-            
-            if (!Directory.EnumerateFileSystemEntries(subDir).Any())
-            {
-                try
-                {
-                    Directory.Delete(subDir);
-                }
-                catch
-                {
-                    // Ignore errors when cleaning up directories
-                }
-            }
-        }
     }
 
     /// <summary>
@@ -1385,7 +1298,7 @@ public class RestoreService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var relativePath = GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
+            var relativePath = PathHelper.GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
             var targetPath = Path.Combine(targetDirectory, relativePath);
             expectedLocalFiles.Add(targetPath);
 
@@ -1398,7 +1311,7 @@ public class RestoreService
                     Math.Abs((localInfo.LastWriteTimeUtc - backupFile.LastModified).TotalSeconds) < 2)
                 {
                     // Quick check - likely unchanged, but verify with hash
-                    var localHash = await ComputeFileHashAsync(targetPath, cancellationToken);
+                    var localHash = await HashHelper.ComputeFileHashAsync(targetPath, cancellationToken);
                     if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
                     {
                         preview.FilesToSkip.Add(new PreviewFileAction

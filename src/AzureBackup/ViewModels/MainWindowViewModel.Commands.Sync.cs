@@ -55,7 +55,7 @@ public partial class MainWindowViewModel
         {
             foreach (var root in LocalFileTreeRoots)
             {
-                SelectLocalTreeNodeRecursive(root, true);
+                root.IsSelected = true;
             }
         }
         else
@@ -93,7 +93,7 @@ public partial class MainWindowViewModel
         {
             foreach (var root in LocalFileTreeRoots)
             {
-                SelectLocalTreeNodeRecursive(root, false);
+                root.IsSelected = false;
             }
         }
         else
@@ -129,7 +129,7 @@ public partial class MainWindowViewModel
         {
             foreach (var root in LocalFileTreeRoots)
             {
-                SelectLocalTreeNodeRecursive(root, false);
+                root.IsSelected = false;
             }
         }
         else
@@ -159,18 +159,6 @@ public partial class MainWindowViewModel
             DeselectAllFiles();
         }
         NotifySelectionChanged();
-    }
-
-    /// <summary>
-    /// Recursively selects or deselects local tree nodes.
-    /// </summary>
-    private static void SelectLocalTreeNodeRecursive(LocalFileTreeNodeViewModel node, bool isSelected)
-    {
-        node.IsSelected = isSelected;
-        foreach (var child in node.Children)
-        {
-            SelectLocalTreeNodeRecursive(child, isSelected);
-        }
     }
 
     /// <summary>

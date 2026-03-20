@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using AzureBackup.Core.Models;
 
 namespace AzureBackup.Core.Services;
@@ -326,14 +325,14 @@ public class FileWatcherService : IDisposable
         // Check global exclude patterns
         foreach (var pattern in globalPatterns)
         {
-            if (MatchesPattern(fileName, pattern) || MatchesPattern(relativePath, pattern))
+            if (GlobMatcher.IsMatch(fileName, pattern) || GlobMatcher.IsMatch(relativePath, pattern))
                 return true;
         }
 
         // Check folder-specific exclude patterns
         foreach (var pattern in folder.ExcludePatterns)
         {
-            if (MatchesPattern(fileName, pattern) || MatchesPattern(relativePath, pattern))
+            if (GlobMatcher.IsMatch(fileName, pattern) || GlobMatcher.IsMatch(relativePath, pattern))
                 return true;
         }
 
@@ -352,41 +351,10 @@ public class FileWatcherService : IDisposable
             ".DS_Store", "*.swp", "*.bak"
         };
 
-        foreach (var pattern in systemPatterns)
-        {
-            if (MatchesPattern(fileName, pattern))
-                return true;
-        }
+        if (GlobMatcher.MatchesAny(fileName, systemPatterns))
+            return true;
 
         return false;
-    }
-
-    /// <summary>
-    /// Timeout for regex operations to prevent ReDoS attacks.
-    /// </summary>
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
-
-    private static bool MatchesPattern(string input, string pattern)
-    {
-        if (string.IsNullOrEmpty(pattern) || string.IsNullOrEmpty(input))
-            return false;
-
-        try
-        {
-            // Convert glob pattern to regex with non-greedy quantifiers
-            var regexPattern = "^" + Regex.Escape(pattern)
-                .Replace("\\*", ".*?")  // Non-greedy to reduce backtracking
-                .Replace("\\?", ".") + "$";
-
-            return Regex.IsMatch(input, regexPattern, 
-                RegexOptions.IgnoreCase | RegexOptions.Singleline, 
-                RegexTimeout);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            // Pattern too complex - treat as no match for safety
-            return false;
-        }
     }
 
     public void Dispose()

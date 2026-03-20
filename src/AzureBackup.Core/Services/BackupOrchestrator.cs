@@ -65,9 +65,6 @@ public class BackupOrchestrator : IAsyncDisposable
     /// </summary>
     public string? AzureConnectionError { get; private set; }
 
-    // Password strength requirements
-    private const int MinPasswordLength = 12;
-
     public BackupOrchestrator(
         LocalDatabaseService databaseService,
         EncryptionService encryptionService,
@@ -139,33 +136,6 @@ public class BackupOrchestrator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Validates password strength for new setups.
-    /// Requires minimum 12 characters with all four character types.
-    /// </summary>
-    private static void ValidatePasswordStrength(string password)
-    {
-        if (password.Length < MinPasswordLength)
-        {
-            throw new SecurityPolicyException(
-                $"Password must be at least {MinPasswordLength} characters long.",
-                SecurityPolicyType.WeakPassword);
-        }
-
-        var hasUpper = password.Any(char.IsUpper);
-        var hasLower = password.Any(char.IsLower);
-        var hasDigit = password.Any(char.IsDigit);
-        var hasSpecial = password.Any(c => !char.IsLetterOrDigit(c));
-
-        // Require all 4 character types for maximum security
-        if (!hasUpper || !hasLower || !hasDigit || !hasSpecial)
-        {
-            throw new SecurityPolicyException(
-                "Password must contain all of: uppercase, lowercase, digits, and special characters.",
-                SecurityPolicyType.WeakPassword);
-        }
-    }
-
-    /// <summary>
     /// Initializes the orchestrator with a password.
     /// Includes rate limiting to prevent brute force attacks.
     /// </summary>
@@ -190,7 +160,7 @@ public class BackupOrchestrator : IAsyncDisposable
         {
             // First time setup - enforce password strength
             Log("InitializeAsync: First time setup - validating password strength");
-            ValidatePasswordStrength(password);
+            PasswordValidator.Validate(password);
             
             // First time setup - create new salt
             config.PasswordSalt = EncryptionService.GenerateSalt();

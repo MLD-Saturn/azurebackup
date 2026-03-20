@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Azure.Core;
 using AzureBackup.Core.Models;
 
@@ -13,7 +12,7 @@ namespace AzureBackup.Core.Services;
 /// and security validation matching AzureBlobService behavior.
 /// Supports both connection string and Entra ID authentication (simulated).
 /// </summary>
-public partial class InMemoryBlobService : IBlobStorageService
+public class InMemoryBlobService : IBlobStorageService
 {
     private readonly EncryptionService _encryptionService;
     private readonly ConcurrentDictionary<string, byte[]> _blobs = new();
@@ -29,10 +28,6 @@ public partial class InMemoryBlobService : IBlobStorageService
     // Thread-safe random number generator lock
     private readonly object _randomLock = new();
     private readonly Random _random = new();
-    
-    // Regex for validating chunk hash (SHA-256 hex string) - same as AzureBlobService
-    [GeneratedRegex(@"^[A-Fa-f0-9]{64}$", RegexOptions.Compiled)]
-    private static partial Regex ValidHashPattern();
 
     public bool IsConnected => _isConnected;
     public long TotalBytesUploaded { get; private set; }
@@ -55,20 +50,6 @@ public partial class InMemoryBlobService : IBlobStorageService
         _simulatedLatencyMs = simulatedLatencyMs;
         _failureRate = Math.Clamp(failureRate, 0.0, 1.0);
     }
-    
-    /// <summary>
-    /// Validates a chunk hash to prevent path traversal attacks.
-    /// Matches AzureBlobService validation.
-    /// </summary>
-    private static void ValidateChunkHash(string hash)
-    {
-        if (string.IsNullOrWhiteSpace(hash))
-            throw new SecurityPolicyException("Chunk hash cannot be empty", SecurityPolicyType.InvalidBlobName);
-        
-        if (!ValidHashPattern().IsMatch(hash))
-            throw new SecurityPolicyException($"Invalid chunk hash format: {hash}", SecurityPolicyType.InvalidBlobName);
-    }
-
 
     #region Connection String Authentication
 
@@ -131,8 +112,8 @@ public partial class InMemoryBlobService : IBlobStorageService
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
-        ValidateChunkHash(chunkHash);
-        
+        BlobNameValidator.ValidateChunkHash(chunkHash);
+
         await SimulateLatencyAsync(cancellationToken);
         SimulateFailure("Upload chunk");
 
@@ -186,8 +167,8 @@ public partial class InMemoryBlobService : IBlobStorageService
     {
         EnsureConnected();
         ArgumentNullException.ThrowIfNull(chunkData);
-        ValidateChunkHash(chunkHash);
-        
+        BlobNameValidator.ValidateChunkHash(chunkHash);
+
         await SimulateLatencyAsync(cancellationToken);
         SimulateFailure("Upload chunk direct");
 
