@@ -690,16 +690,46 @@ public class AzureBlobService : IBlobStorageService
         EnsureConnected();
 
         List<string> chunks = new();
-        
+
         await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
         {
             // Extract the hash from the blob name (remove "chunks/" prefix)
             var hash = blob.Name.Replace("chunks/", "");
             chunks.Add(hash);
         }
-        
+
         TotalOperations++;
         return chunks;
+    }
+
+    /// <summary>
+    /// Lists all chunk blobs with their properties in a single listing call.
+    /// Azure's GetBlobsAsync returns ContentLength and AccessTier in the listing response,
+    /// eliminating the need for individual GetProperties calls.
+    /// </summary>
+    public async Task<Dictionary<string, (long sizeBytes, StorageTier tier)>> ListChunkBlobsWithPropertiesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        var result = new Dictionary<string, (long, StorageTier)>(StringComparer.Ordinal);
+
+        await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
+        {
+            var hash = blob.Name.Replace("chunks/", "");
+            var tier = blob.Properties.AccessTier?.ToString() switch
+            {
+                "Hot" => StorageTier.Hot,
+                "Cool" => StorageTier.Cool,
+                "Cold" => StorageTier.Cold,
+                _ => StorageTier.Hot
+            };
+            result[hash] = (blob.Properties.ContentLength ?? 0, tier);
+        }
+
+        TotalOperations++;
+        Log($"ListChunkBlobsWithPropertiesAsync: Listed {result.Count} chunks with properties");
+        return result;
     }
 
     /// <summary>

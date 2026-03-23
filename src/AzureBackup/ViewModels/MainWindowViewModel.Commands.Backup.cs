@@ -372,8 +372,7 @@ public partial class MainWindowViewModel
 
     /// <summary>
     /// Executes a batch backup with standard progress tracking.
-    /// Uses the same StartProgressTracking/UpdateFileProgress/CompleteFileProgress
-    /// pattern as restore operations for consistent UI behavior.
+    /// Uses aggregate byte tracking from the service layer for accurate parallel progress.
     /// </summary>
     private async Task ExecuteBackupAsync(
         List<string> filePaths,
@@ -383,35 +382,20 @@ public partial class MainWindowViewModel
         var totalFiles = preview.IncludedCreateCount + preview.IncludedOverwriteCount;
         StartProgressTracking("Backing up", totalFiles, preview.TotalBytesToTransfer);
 
-        var lastFileIndex = -1;
-        long lastFileSize = 0;
-
         Progress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)> progress = new(p =>
         {
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
-                // Detect file transitions — when fileIndex advances, the previous file is complete
-                if (p.fileIndex != lastFileIndex)
-                {
-                    if (lastFileIndex >= 0)
-                    {
-                        CompleteFileProgress(lastFileSize);
-                    }
-                    lastFileIndex = p.fileIndex;
-                }
-                lastFileSize = p.currentFileSize;
-
-                UpdateFileProgress(p.fileName, p.currentFileBytes, p.currentFileSize, p.fileIndex);
+                // Use aggregate bytesProcessed from the service — already handles parallel delta tracking
+                UpdateOverallProgress(p.bytesProcessed, p.fileIndex + 1);
+                UpdateCurrentFileDisplay(p.fileName, p.currentFileBytes, p.currentFileSize, p.fileIndex);
             });
         });
 
         await _orchestrator.BackupFilesAsync(filePaths, progress, cancellationToken);
 
-        // Finalize the last file's progress
-        if (lastFileIndex >= 0)
-        {
-            CompleteFileProgress(lastFileSize);
-        }
+        // Ensure bar reaches 100% at completion
+        UpdateOverallProgress(preview.TotalBytesToTransfer, totalFiles);
 
         AddLog($"Successfully backed up {totalFiles} file(s)");
 

@@ -842,7 +842,7 @@ public class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(entry);
-        
+
         lock (_dbLock)
         {
             var existing = _chunkIndexCollection!.FindOne(x => x.ChunkHash == entry.ChunkHash);
@@ -854,6 +854,21 @@ public class LocalDatabaseService : IDisposable
             {
                 _chunkIndexCollection.Insert(entry);
             }
+        }
+    }
+
+    /// <summary>
+    /// Bulk-inserts chunk index entries. Use only after ClearChunkIndex when no existing entries exist.
+    /// Significantly faster than individual SaveChunkIndexEntry calls for rebuilds.
+    /// </summary>
+    public void BulkInsertChunkIndexEntries(IEnumerable<ChunkIndexEntry> entries)
+    {
+        EnsureInitialized();
+        ArgumentNullException.ThrowIfNull(entries);
+
+        lock (_dbLock)
+        {
+            _chunkIndexCollection!.InsertBulk(entries);
         }
     }
 

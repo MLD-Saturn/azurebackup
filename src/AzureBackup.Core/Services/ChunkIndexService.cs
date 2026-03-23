@@ -550,6 +550,8 @@ public class ChunkIndexService
     /// <summary>
     /// Rebuilds the chunk index by scanning all metadata blobs in Azure.
     /// Uses parallel metadata downloads and batched chunk info lookups.
+    /// Detects and cleans up incomplete metadata entries (files with missing chunks)
+    /// and deletes orphaned chunks that were only referenced by those entries.
     /// </summary>
     /// <param name="progress">Progress reporter</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -567,9 +569,9 @@ public class ChunkIndexService
         var total = metadataBlobs.Count;
         Log($"Found {total} metadata blobs to process");
 
-        // Phase 1: Download all metadata in parallel (same pattern as ListRestorableFilesAsync)
+        // Phase 1: Download all metadata in parallel, tracking blob names for cleanup
         const int maxParallelMetadataDownloads = 32;
-        var allMetadata = new System.Collections.Concurrent.ConcurrentBag<BackedUpFile>();
+        var allMetadata = new System.Collections.Concurrent.ConcurrentBag<(string blobName, BackedUpFile file)>();
         int downloaded = 0;
 
         await Parallel.ForEachAsync(
@@ -586,7 +588,7 @@ public class ChunkIndexService
                     var metadata = await _blobService.DownloadFileMetadataAsync(blobName, ct);
                     if (metadata != null)
                     {
-                        allMetadata.Add(metadata);
+                        allMetadata.Add((blobName, metadata));
                     }
                 }
                 catch (Exception ex)
@@ -601,74 +603,166 @@ public class ChunkIndexService
                 }
             });
 
-        Log($"Downloaded {allMetadata.Count} metadata entries. Collecting unique chunk hashes...");
+        Log($"Downloaded {allMetadata.Count} metadata entries. Listing chunks from Azure...");
 
-        // Phase 2: Collect all unique chunk hashes and fetch their properties in parallel
-        // This replaces N*M sequential HTTP calls with one parallel batch
+        // Phase 2: List all chunk blobs with properties in a single API call
+        // Replaces N individual GetBlobProperties HEAD requests with one paginated listing
+        progress?.Report((0, 1, "Listing all chunks from Azure..."));
+        var chunkInfoCache = await _blobService.ListChunkBlobsWithPropertiesAsync(cancellationToken);
+
+        Log($"Listed {chunkInfoCache.Count} chunks with properties. Checking integrity...");
+
+        // Phase 3: Detect incomplete metadata (files with missing chunks) and clean up
         var uniqueChunkHashes = allMetadata
-            .SelectMany(m => m.Chunks.Select(c => c.Hash))
+            .SelectMany(m => m.file.Chunks.Select(c => c.Hash))
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        Log($"Found {uniqueChunkHashes.Count} unique chunks to query");
+        var missingChunkHashes = new HashSet<string>(
+            uniqueChunkHashes.Where(h => !chunkInfoCache.ContainsKey(h)),
+            StringComparer.Ordinal);
 
-        const int maxParallelChunkQueries = 32;
-        var chunkInfoCache = new System.Collections.Concurrent.ConcurrentDictionary<string, (long size, StorageTier tier)>(StringComparer.Ordinal);
-        int queriedChunks = 0;
+        var validMetadata = allMetadata.ToList();
 
-        await Parallel.ForEachAsync(
-            uniqueChunkHashes,
-            new ParallelOptions
+        if (missingChunkHashes.Count > 0)
+        {
+            Log($"Found {missingChunkHashes.Count} chunks missing from Azure — checking for incomplete files");
+
+            var incompleteEntries = allMetadata
+                .Where(e => e.file.Chunks.Any(c => missingChunkHashes.Contains(c.Hash)))
+                .ToList();
+
+            if (incompleteEntries.Count > 0)
             {
-                MaxDegreeOfParallelism = maxParallelChunkQueries,
-                CancellationToken = cancellationToken
-            },
-            async (chunkHash, ct) =>
-            {
-                try
-                {
-                    var info = await GetChunkInfoFromAzureAsync(chunkHash, ct);
-                    chunkInfoCache.TryAdd(chunkHash, info);
-                }
-                catch
-                {
-                    // Will fall back to chunk.Length when processing
-                }
+                Log($"Found {incompleteEntries.Count} incomplete metadata entries — deleting from Azure");
 
-                var count = Interlocked.Increment(ref queriedChunks);
-                if (count % 100 == 0 || count == uniqueChunkHashes.Count)
-                {
-                    progress?.Report((downloaded, total, $"Querying chunk info... {count}/{uniqueChunkHashes.Count}"));
-                }
-            });
+                // Collect chunk hashes referenced by valid (complete) metadata
+                var incompleteSet = new HashSet<string>(
+                    incompleteEntries.Select(e => e.blobName), StringComparer.Ordinal);
+                validMetadata = allMetadata.Where(e => !incompleteSet.Contains(e.blobName)).ToList();
 
-        Log($"Cached info for {chunkInfoCache.Count} chunks. Building index...");
+                var validChunkHashes = new HashSet<string>(
+                    validMetadata.SelectMany(e => e.file.Chunks.Select(c => c.Hash)),
+                    StringComparer.Ordinal);
 
-        // Phase 3: Build the index from cached data (all local, no HTTP)
+                // Chunks only referenced by deleted metadata that still exist in Azure
+                var orphanedChunkHashes = incompleteEntries
+                    .SelectMany(e => e.file.Chunks.Select(c => c.Hash))
+                    .Where(h => !validChunkHashes.Contains(h) && chunkInfoCache.ContainsKey(h))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                // Build full list of blobs to delete (metadata + orphaned chunks)
+                var blobsToDelete = incompleteEntries
+                    .Select(e => (blobName: e.blobName, label: Path.GetFileName(e.file.LocalPath)))
+                    .Concat(orphanedChunkHashes.Select(h => (blobName: $"chunks/{h}", label: h[..8] + "...")))
+                    .ToList();
+
+                // Parallel deletion of incomplete metadata and orphaned chunks
+                const int maxParallelDeletes = 16;
+                int deletedCount = 0;
+                int deletedMetadata = 0;
+                int deletedChunks = 0;
+
+                await Parallel.ForEachAsync(
+                    blobsToDelete,
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = maxParallelDeletes,
+                        CancellationToken = cancellationToken
+                    },
+                    async (item, ct) =>
+                    {
+                        try
+                        {
+                            await _blobService.DeleteBlobAsync(item.blobName, ct);
+                            if (item.blobName.StartsWith("chunks/"))
+                                Interlocked.Increment(ref deletedChunks);
+                            else
+                                Interlocked.Increment(ref deletedMetadata);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"Failed to delete {item.blobName}: {ex.Message}");
+                        }
+
+                        var count = Interlocked.Increment(ref deletedCount);
+                        if (count % 20 == 0 || count == blobsToDelete.Count)
+                        {
+                            progress?.Report((count, blobsToDelete.Count,
+                                $"Cleaning up: {count}/{blobsToDelete.Count}"));
+                        }
+                    });
+
+                Log($"Cleanup complete: {deletedMetadata} metadata entries deleted, " +
+                    $"{deletedChunks} orphaned chunks deleted");
+            }
+        }
+
+        // Phase 4: Build the index from valid (complete) metadata only
+        // Build all entries in memory first, then batch-insert — avoids per-chunk DB read+write
+        Log($"Building index from {validMetadata.Count} valid metadata entries...");
+        progress?.Report((0, validMetadata.Count, "Building index..."));
+
+        var now = DateTime.UtcNow;
+        var indexEntries = new Dictionary<string, ChunkIndexEntry>(StringComparer.Ordinal);
         var processed = 0;
-        foreach (var metadata in allMetadata)
+
+        foreach (var (_, file) in validMetadata)
         {
             cancellationToken.ThrowIfCancellationRequested();
             processed++;
-            progress?.Report((processed, allMetadata.Count, metadata.LocalPath));
 
-            foreach (var chunk in metadata.Chunks)
+            if (processed % 100 == 0 || processed == validMetadata.Count)
+            {
+                progress?.Report((processed, validMetadata.Count, $"Indexing: {Path.GetFileName(file.LocalPath)}"));
+            }
+
+            foreach (var chunk in file.Chunks)
             {
                 var size = (long)chunk.Length;
                 var tier = StorageTier.Hot;
 
                 if (chunkInfoCache.TryGetValue(chunk.Hash, out var cached))
                 {
-                    size = cached.size;
+                    size = cached.sizeBytes;
                     tier = cached.tier;
                 }
 
-                AddReference(chunk.Hash, metadata.LocalPath, chunk.Index, size, tier, false);
+                if (!indexEntries.TryGetValue(chunk.Hash, out var entry))
+                {
+                    entry = new ChunkIndexEntry
+                    {
+                        ChunkHash = chunk.Hash,
+                        FirstUploadedAt = now,
+                        OriginalUploaderPath = file.LocalPath,
+                        CurrentTier = tier,
+                        SizeBytes = size,
+                        LastVerifiedAt = now,
+                        ReferenceCount = 0,
+                        ReferencingFiles = []
+                    };
+                    indexEntries[chunk.Hash] = entry;
+                }
+
+                entry.ReferencingFiles.Add(new ChunkFileReference
+                {
+                    FilePath = file.LocalPath,
+                    ChunkIndex = chunk.Index,
+                    ReferencedAt = now
+                });
+                entry.ReferenceCount = entry.ReferencingFiles.Count;
             }
         }
 
-        _databaseService.SetIndexMetadata("LastFullRebuildAt", DateTime.UtcNow);
-        Log($"Index rebuild complete: processed {processed} files, {uniqueChunkHashes.Count} unique chunks");
+        // Single bulk insert — one DB operation instead of thousands
+        progress?.Report((0, 1, $"Saving {indexEntries.Count} index entries..."));
+        _databaseService.BulkInsertChunkIndexEntries(indexEntries.Values);
+
+        _databaseService.SetIndexMetadata("LastFullRebuildAt", now);
+        Log($"Index rebuild complete: {processed} valid files indexed, " +
+            $"{indexEntries.Count} unique chunks, " +
+            $"{missingChunkHashes.Count} missing chunks detected");
 
         // Backup the newly rebuilt index
         await BackupIndexToAzureAsync(cancellationToken);

@@ -161,6 +161,15 @@ public interface IBlobStorageService : IAsyncDisposable
     Task<List<string>> ListChunkBlobsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists all chunk blobs with their properties (size and tier) in a single listing call.
+    /// More efficient than calling GetBlobPropertiesAsync per chunk.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Dictionary mapping chunk hash to (size, tier)</returns>
+    Task<Dictionary<string, (long sizeBytes, StorageTier tier)>> ListChunkBlobsWithPropertiesAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Checks if a blob exists without downloading it.
     /// </summary>
     /// <param name="blobName">The blob name</param>

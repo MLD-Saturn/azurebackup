@@ -47,12 +47,24 @@ public class RestoreService
     private static void ValidateRestorePath(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        
+
+        // Validate the path doesn't contain invalid characters (check before normalization)
+        var invalidChars = Path.GetInvalidPathChars();
+        if (path.IndexOfAny(invalidChars) >= 0)
+        {
+            throw new SecurityPolicyException(
+                "Invalid restore path: contains invalid characters",
+                SecurityPolicyType.InvalidBlobName);
+        }
+
         // Get the full path to normalize it and resolve any relative components
         var fullPath = Path.GetFullPath(path);
-        
-        // Check for path traversal attempts
-        if (fullPath.Contains("..", StringComparison.Ordinal))
+
+        // Check for path traversal attempts by looking for ".." as a directory segment
+        // in the original path. Path.GetFullPath resolves these, so if the original
+        // contains ".." segments, someone is attempting traversal.
+        var segments = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (segments.Any(s => s == ".."))
         {
             throw new SecurityPolicyException(
                 "Invalid restore path: path traversal detected",
@@ -80,15 +92,6 @@ public class RestoreService
                     $"Cannot restore to protected system directory: {sensitiveDir}",
                     SecurityPolicyType.InvalidBlobName);
             }
-        }
-        
-        // Validate the path doesn't contain invalid characters
-        var invalidChars = Path.GetInvalidPathChars();
-        if (path.IndexOfAny(invalidChars) >= 0)
-        {
-            throw new SecurityPolicyException(
-                "Invalid restore path: contains invalid characters",
-                SecurityPolicyType.InvalidBlobName);
         }
     }
 

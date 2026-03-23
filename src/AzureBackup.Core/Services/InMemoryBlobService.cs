@@ -398,9 +398,32 @@ public class InMemoryBlobService : IBlobStorageService
             .Where(k => k.StartsWith("chunks/"))
             .Select(k => k.Replace("chunks/", ""))
             .ToList();
-        
+
         TotalOperations++;
         return Task.FromResult(chunks);
+    }
+
+    /// <summary>
+    /// Lists all chunk blobs with their properties (size and tier).
+    /// </summary>
+    public Task<Dictionary<string, (long sizeBytes, StorageTier tier)>> ListChunkBlobsWithPropertiesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        var result = new Dictionary<string, (long, StorageTier)>(StringComparer.Ordinal);
+
+        foreach (var (key, data) in _blobs)
+        {
+            if (!key.StartsWith("chunks/")) continue;
+
+            var hash = key.Replace("chunks/", "");
+            var tier = _blobTiers.GetValueOrDefault(key, StorageTier.Hot);
+            result[hash] = (data.Length, tier);
+        }
+
+        TotalOperations++;
+        return Task.FromResult(result);
     }
 
     public Task<bool> BlobExistsAsync(string blobName, CancellationToken cancellationToken = default)

@@ -87,7 +87,8 @@ public partial class SyncView : UserControl
         
         if (folders.Count > 0)
         {
-            var folderPath = folders[0].Path.LocalPath;
+            var uri = folders[0].Path;
+            var folderPath = uri.IsAbsoluteUri ? uri.LocalPath : uri.ToString();
             vm.SetRemapFolderPath(folderPath);
         }
     }

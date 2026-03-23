@@ -888,6 +888,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>
     /// Marks a file as completed in the progress tracking.
+    /// Used by sequential operations (restore) where files complete one at a time.
     /// </summary>
     private void CompleteFileProgress(long fileSize)
     {
@@ -897,15 +898,46 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _lastBytesProcessed += fileSize;
             TotalBytesProcessed = _lastBytesProcessed;
             CurrentFileProgress = 100;
-            
+
             // Update progress value based on bytes
             ProgressValue = TotalBytesToProcess > 0 
                 ? (double)TotalBytesProcessed / TotalBytesToProcess * 100 
                 : 0;
-            
+
             OnPropertyChanged(nameof(BytesProgressText));
             OnPropertyChanged(nameof(FilesProgressText));
         });
+    }
+
+    /// <summary>
+    /// Updates overall progress using a pre-computed aggregate byte total.
+    /// Used by parallel operations where the service layer tracks aggregate bytes via Interlocked.
+    /// Avoids the single-file recomputation that causes jumps during parallel processing.
+    /// </summary>
+    private void UpdateOverallProgress(long aggregateBytesProcessed, int completedFiles)
+    {
+        TotalBytesProcessed = aggregateBytesProcessed;
+        CompletedFilesCount = completedFiles;
+        ProgressValue = TotalBytesToProcess > 0
+            ? (double)TotalBytesProcessed / TotalBytesToProcess * 100
+            : 0;
+
+        OnPropertyChanged(nameof(BytesProgressText));
+        OnPropertyChanged(nameof(FilesProgressText));
+        UpdateSpeedAndEta();
+    }
+
+    /// <summary>
+    /// Updates the current file display (name, per-file progress bar) without modifying
+    /// overall byte totals. Used alongside UpdateOverallProgress for parallel operations.
+    /// </summary>
+    private void UpdateCurrentFileDisplay(string fileName, long bytesProcessed, long fileSize, int fileIndex)
+    {
+        CurrentFileName = fileName;
+        CurrentFileProgress = fileSize > 0 ? (double)bytesProcessed / fileSize * 100 : 0;
+        CurrentFileProgressText = $"{AzureBackup.Core.FormatHelper.FormatBytes(bytesProcessed)} / {AzureBackup.Core.FormatHelper.FormatBytes(fileSize)}";
+        _currentFileIndex = fileIndex;
+        ProgressText = $"{CurrentOperationType}: {fileName} ({fileIndex + 1}/{TotalFilesInOperation})";
     }
 
     /// <summary>
