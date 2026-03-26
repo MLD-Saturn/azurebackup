@@ -177,24 +177,17 @@ public class BlobServiceTests : IAsyncLifetime
     [Fact]
     public async Task UploadChunkAsync_WithProgress_ReportsProgress()
     {
-        // This test is timing-dependent, so we retry up to 5 times
-        await FlakyTestHelper.RetryAsync(async () =>
-        {
-            // Arrange
-            var data = CreateRandomContent(10 * 1024);
-            var hash = ComputeHash(data);
-            long reportedBytes = 0;
-            Progress<long> progress = new(bytes => reportedBytes = bytes);
+        // Arrange
+        var data = CreateRandomContent(10 * 1024);
+        var hash = ComputeHash(data);
+        long reportedBytes = 0;
+        SynchronousProgress<long> progress = new(bytes => reportedBytes = bytes);
 
-            // Act
-            await _blobService.UploadChunkAsync(data, hash, progress: progress);
-            
-            // Give progress time to be reported (it's async)
-            await Task.Delay(100);
+        // Act
+        await _blobService.UploadChunkAsync(data, hash, progress: progress);
 
-            // Assert
-            Assert.True(reportedBytes > 0);
-        });
+        // Assert
+        Assert.True(reportedBytes > 0);
     }
 
     [Fact]
@@ -326,22 +319,17 @@ public class BlobServiceTests : IAsyncLifetime
     [Fact]
     public async Task UploadChunkDirectAsync_WithProgress_ReportsProgress()
     {
-        // This test is timing-dependent, so we retry up to 5 times
-        await FlakyTestHelper.RetryAsync(async () =>
-        {
-            // Arrange
-            var data = CreateRandomContent(1024);
-            var hash = ComputeHash(data);
-            long reportedBytes = 0;
-            Progress<long> progress = new(b => reportedBytes = b);
+        // Arrange
+        var data = CreateRandomContent(1024);
+        var hash = ComputeHash(data);
+        long reportedBytes = 0;
+        SynchronousProgress<long> progress = new(b => reportedBytes = b);
 
-            // Act
-            await _blobService.UploadChunkDirectAsync(data, hash, progress: progress);
-            await Task.Delay(100); // Allow progress callback to execute
+        // Act
+        await _blobService.UploadChunkDirectAsync(data, hash, progress: progress);
 
-            // Assert
-            Assert.True(reportedBytes > 0);
-        });
+        // Assert
+        Assert.True(reportedBytes > 0);
     }
 
     [Fact]

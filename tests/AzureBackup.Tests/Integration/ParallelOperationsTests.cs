@@ -116,33 +116,26 @@ public class ParallelOperationsTests : IAsyncLifetime
     [Fact]
     public async Task ConcurrentChunkUploads_ProgressReporting_ThreadSafe()
     {
-        // This test is timing-dependent due to concurrent progress reporting
-        await FlakyTestHelper.RetryAsync(async () =>
+        // Arrange
+        var chunkCount = 8;
+        var chunks = Enumerable.Range(0, chunkCount)
+            .Select(_ => CreateRandomContent(32 * 1024))
+            .ToList();
+
+        ConcurrentBag<long> progressValues = new();
+        SynchronousProgress<long> progress = new(bytes => progressValues.Add(bytes));
+
+        // Act - Upload concurrently with progress reporting
+        var uploadTasks = chunks.Select(chunk =>
         {
-            // Arrange
-            var chunkCount = 8;
-            var chunks = Enumerable.Range(0, chunkCount)
-                .Select(_ => CreateRandomContent(32 * 1024))
-                .ToList();
-            
-            ConcurrentBag<long> progressValues = new();
-            Progress<long> progress = new(bytes => progressValues.Add(bytes));
-
-            // Act - Upload concurrently with progress reporting
-            var uploadTasks = chunks.Select(chunk =>
-            {
-                var hash = ComputeHash(chunk);
-                return _blobService.UploadChunkAsync(chunk, hash, progress: progress);
-            });
-
-            await Task.WhenAll(uploadTasks);
-
-            // Small delay to allow all progress callbacks to complete
-            await Task.Delay(50);
-
-            // Assert - Progress was reported for each chunk
-            Assert.Equal(chunkCount, progressValues.Count);
+            var hash = ComputeHash(chunk);
+            return _blobService.UploadChunkAsync(chunk, hash, progress: progress);
         });
+
+        await Task.WhenAll(uploadTasks);
+
+        // Assert - Progress was reported for each chunk
+        Assert.Equal(chunkCount, progressValues.Count);
     }
 
     #endregion
@@ -360,7 +353,7 @@ public class ParallelOperationsTests : IAsyncLifetime
         var tasks = chunks.Select(async chunk =>
         {
             var hash = ComputeHash(chunk);
-            Progress<long> progress = new(bytes =>
+            SynchronousProgress<long> progress = new(bytes =>
             {
                 lock (reportLock)
                 {

@@ -277,35 +277,28 @@ public class BackupOrchestratorTests : IAsyncLifetime
     [Fact]
     public async Task BackupFileAsync_WithProgress_ReportsProgress()
     {
-        // This test is timing-dependent, so we retry up to 5 times
-        await FlakyTestHelper.RetryAsync(async () =>
-        {
-            // Arrange
-            await _orchestrator.InitializeAsync(TestPassword);
-            
-            var content = CreateRandomContent(200 * 1024);
-            var filePath = Path.Combine(_sourceDirectory, $"progress_test_{Guid.NewGuid():N}.txt");
-            await File.WriteAllBytesAsync(filePath, content);
+        // Arrange
+        await _orchestrator.InitializeAsync(TestPassword);
 
-            ConcurrentBag<(long current, long total)> progressReports = new();
-            Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
+        var content = CreateRandomContent(200 * 1024);
+        var filePath = Path.Combine(_sourceDirectory, $"progress_test_{Guid.NewGuid():N}.txt");
+        await File.WriteAllBytesAsync(filePath, content);
 
-            // Act
-            await _orchestrator.BackupFileAsync(filePath, progress);
-            
-            // Allow time for async progress callbacks to complete
-            await Task.Delay(100);
+        ConcurrentBag<(long current, long total)> progressReports = new();
+        SynchronousProgress<(long current, long total)> progress = new(p => progressReports.Add(p));
 
-            // Assert
-            Assert.NotEmpty(progressReports);
-            
-            // Final progress should reach or exceed total (encryption adds overhead)
-            var reports = progressReports.ToList();
-            var maxProgress = reports.Max(p => p.current);
-            var anyTotal = reports.First().total;
-            Assert.True(maxProgress >= anyTotal, 
-                $"Final progress ({maxProgress}) should reach total ({anyTotal})");
-        });
+        // Act
+        await _orchestrator.BackupFileAsync(filePath, progress);
+
+        // Assert
+        Assert.NotEmpty(progressReports);
+
+        // Final progress should reach or exceed total (encryption adds overhead)
+        var reports = progressReports.ToList();
+        var maxProgress = reports.Max(p => p.current);
+        var anyTotal = reports.First().total;
+        Assert.True(maxProgress >= anyTotal, 
+            $"Final progress ({maxProgress}) should reach total ({anyTotal})");
     }
 
     [Fact]

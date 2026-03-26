@@ -30,6 +30,17 @@
         <Style Selector="Border.fileRow:disabled">
             <Setter Property="Opacity" Value="0.35"/>
         </Style>
+        <!-- Suppress selection highlight on virtualized file ListBoxes -->
+        <Style Selector="ListBox.fileList ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+        </Style>
+        <Style Selector="ListBox.fileList ListBoxItem:selected /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+        <Style Selector="ListBox.fileList ListBoxItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
         <!-- Section toggle button style -->
         <Style Selector="Button.sectionToggle">
             <Setter Property="Padding" Value="6,2"/>
@@ -41,7 +52,7 @@
 
     <Grid RowDefinitions="Auto,*,Auto">
         <!-- Header -->
-        <Border Grid.Row="0" Background="{DynamicResource SystemAccentColor}" Padding="16">
+        <Border Grid.Row="0" Background="{DynamicResource AppAccentBrush}" Padding="16">
             <Grid ColumnDefinitions="Auto,*">
                 <TextBlock Text="{Binding Icon}" FontSize="32" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <StackPanel Grid.Column="1">
@@ -146,34 +157,33 @@
                                 <TextBlock Grid.Column="3" Text="Modified" Classes="colHeader"/>
                                 <TextBlock Grid.Column="4" Text="Directory" Classes="colHeader"/>
                             </Grid>
-                            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" 
-                                          VerticalScrollBarVisibility="Auto" MaxHeight="250">
-                                <ItemsControl ItemsSource="{Binding FilesToCreate}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
-                                                    IsEnabled="{Binding IsIncluded}"
-                                                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
-                                                <Grid ColumnDefinitions="28,3*,70,90,4*">
-                                                    <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
-                                                              Click="FileCheckBox_Click" Padding="0" MinWidth="0"
-                                                              VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
-                                                               ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="4" Text="{Binding Directory}" TextTrimming="CharacterEllipsis"
-                                                               Opacity="0.6" FontSize="11" ToolTip.Tip="{Binding Directory}"
-                                                               VerticalAlignment="Center"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding FilesToCreate}"
+                                     Classes="fileList" MaxHeight="250"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
+                                                IsEnabled="{Binding IsIncluded}"
+                                                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
+                                            <Grid ColumnDefinitions="28,3*,70,90,4*">
+                                                <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
+                                                          Click="FileCheckBox_Click" Padding="0" MinWidth="0"
+                                                          VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                           ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="4" Text="{Binding Directory}" TextTrimming="CharacterEllipsis"
+                                                           Opacity="0.6" FontSize="11" ToolTip.Tip="{Binding Directory}"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </Grid>
                     </Border>
                 </Expander>
@@ -201,34 +211,33 @@
                                 <TextBlock Grid.Column="3" Text="Modified" Classes="colHeader"/>
                                 <TextBlock Grid.Column="4" Text="Reason" Classes="colHeader"/>
                             </Grid>
-                            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" 
-                                          VerticalScrollBarVisibility="Auto" MaxHeight="250">
-                                <ItemsControl ItemsSource="{Binding FilesToOverwrite}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
-                                                    IsEnabled="{Binding IsIncluded}"
-                                                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
-                                                <Grid ColumnDefinitions="28,3*,70,90,4*">
-                                                    <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
-                                                              Click="FileCheckBox_Click" Padding="0" MinWidth="0"
-                                                              VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
-                                                               ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="4" Text="{Binding Reason}" TextTrimming="CharacterEllipsis"
-                                                               Opacity="0.7" Foreground="Orange"
-                                                               VerticalAlignment="Center"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding FilesToOverwrite}"
+                                     Classes="fileList" MaxHeight="250"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
+                                                IsEnabled="{Binding IsIncluded}"
+                                                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
+                                            <Grid ColumnDefinitions="28,3*,70,90,4*">
+                                                <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
+                                                          Click="FileCheckBox_Click" Padding="0" MinWidth="0"
+                                                          VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                           ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="4" Text="{Binding Reason}" TextTrimming="CharacterEllipsis"
+                                                           Opacity="0.7" Foreground="Orange"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </Grid>
                     </Border>
                 </Expander>
@@ -256,33 +265,32 @@
                                 <TextBlock Grid.Column="3" Text="Modified" Classes="colHeader"/>
                                 <TextBlock Grid.Column="4" Text="Reason" Classes="colHeader"/>
                             </Grid>
-                            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" 
-                                          VerticalScrollBarVisibility="Auto" MaxHeight="250">
-                                <ItemsControl ItemsSource="{Binding FilesToDelete}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
-                                                    IsEnabled="{Binding IsIncluded}"
-                                                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
-                                                <Grid ColumnDefinitions="28,3*,70,90,4*">
-                                                    <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
-                                                              Click="FileCheckBox_Click" Padding="0" MinWidth="0"
-                                                              VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
-                                                               ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold" Foreground="Red"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
-                                                               VerticalAlignment="Center"/>
-                                                    <TextBlock Grid.Column="4" Text="{Binding Reason}" TextTrimming="CharacterEllipsis"
-                                                               Opacity="0.7" VerticalAlignment="Center"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding FilesToDelete}"
+                                     Classes="fileList" MaxHeight="250"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="4,4" BorderThickness="0,0,0,1" Classes="fileRow"
+                                                IsEnabled="{Binding IsIncluded}"
+                                                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
+                                            <Grid ColumnDefinitions="28,3*,70,90,4*">
+                                                <CheckBox Grid.Column="0" IsChecked="{Binding IsIncluded, Mode=TwoWay}"
+                                                          Click="FileCheckBox_Click" Padding="0" MinWidth="0"
+                                                          VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                           ToolTip.Tip="{Binding FilePath}" FontWeight="SemiBold" Foreground="Red"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding FileSizeText}" Opacity="0.8"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="3" Text="{Binding LastModifiedText}" Opacity="0.7" FontSize="11"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="4" Text="{Binding Reason}" TextTrimming="CharacterEllipsis"
+                                                           Opacity="0.7" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </Grid>
                     </Border>
                 </Expander>
@@ -305,26 +313,25 @@
                                 <TextBlock Grid.Column="2" Text="Modified" Classes="colHeader"/>
                                 <TextBlock Grid.Column="3" Text="Directory" Classes="colHeader"/>
                             </Grid>
-                            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" 
-                                          VerticalScrollBarVisibility="Auto" MaxHeight="250">
-                                <ItemsControl ItemsSource="{Binding FilesToSkip}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="8,6" BorderThickness="0,0,0,1" 
-                                                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
-                                                <Grid ColumnDefinitions="3*,70,90,4*">
-                                                    <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
-                                                               ToolTip.Tip="{Binding FilePath}" Opacity="0.7"/>
-                                                    <TextBlock Grid.Column="1" Text="{Binding FileSizeText}" Opacity="0.6"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding LastModifiedText}" Opacity="0.5" FontSize="11"/>
-                                                    <TextBlock Grid.Column="3" Text="{Binding Directory}" TextTrimming="CharacterEllipsis"
-                                                               Opacity="0.5" FontSize="11" ToolTip.Tip="{Binding Directory}"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding FilesToSkip}"
+                                     Classes="fileList" MaxHeight="250"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8,6" BorderThickness="0,0,0,1" 
+                                                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}">
+                                            <Grid ColumnDefinitions="3*,70,90,4*">
+                                                <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                           ToolTip.Tip="{Binding FilePath}" Opacity="0.7"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding FileSizeText}" Opacity="0.6"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding LastModifiedText}" Opacity="0.5" FontSize="11"/>
+                                                <TextBlock Grid.Column="3" Text="{Binding Directory}" TextTrimming="CharacterEllipsis"
+                                                           Opacity="0.5" FontSize="11" ToolTip.Tip="{Binding Directory}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </Grid>
                     </Border>
                 </Expander>
@@ -356,7 +363,7 @@
                     </Button.Content>
                     <Button.Styles>
                         <Style Selector="Button">
-                            <Setter Property="Background" Value="{DynamicResource SystemAccentColor}"/>
+                            <Setter Property="Background" Value="{DynamicResource AppAccentBrush}"/>
                             <Setter Property="Foreground" Value="White"/>
                         </Style>
                     </Button.Styles>

@@ -50,7 +50,7 @@
                             <!-- Total Chunks -->
                             <StackPanel HorizontalAlignment="Center">
                                 <TextBlock Text="{Binding TotalChunks}" FontSize="28" FontWeight="Bold" 
-                                           HorizontalAlignment="Center" Foreground="{DynamicResource SystemAccentColor}"/>
+                                           Foreground="{DynamicResource AppAccentBrush}"/>
                                 <TextBlock Text="Total Chunks" Opacity="0.7" HorizontalAlignment="Center"/>
                                 <TextBlock Text="{Binding TotalSize}" FontSize="12" Opacity="0.5" HorizontalAlignment="Center"/>
                             </StackPanel>
@@ -171,9 +171,9 @@
                                                        VerticalAlignment="Center" FontFamily="Consolas"
                                                        ToolTip.Tip="{Binding ChunkHash}"/>
                                             <TextBlock Grid.Column="2" Text="{Binding Size}" 
-                                                       VerticalAlignment="Center" Margin="8,0" Opacity="0.8"/>
-                                            <Border Grid.Column="3" Background="{DynamicResource SystemAccentColorLight3}" 
-                                                    CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0">
+                                                        VerticalAlignment="Center" Margin="8,0" Opacity="0.8"/>
+                                            <Border Grid.Column="3" Background="{DynamicResource AppAccentLight3Brush}"
+                                                     CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0">
                                                 <TextBlock Text="{Binding Tier}" FontSize="10"/>
                                             </Border>
                                             <TextBlock Grid.Column="4" Text="{Binding FirstUploaded}" 

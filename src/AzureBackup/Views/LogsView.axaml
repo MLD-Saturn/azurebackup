@@ -38,8 +38,10 @@
                 </ListBox.ContextMenu>
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <TextBlock Text="{Binding}" FontFamily="Consolas,Courier New,monospace"
-                                   TextWrapping="Wrap"/>
+                        <!-- Emoji fallback: Consolas lacks emoji glyphs, so platform emoji fonts
+                             are listed after Consolas so Avalonia falls back to them for U+1Fxxx codepoints -->
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                                   FontFamily="Consolas,Segoe UI Emoji,Apple Color Emoji,Noto Color Emoji,Courier New,monospace"/>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>

@@ -439,6 +439,21 @@ public partial class MainWindowViewModel
     }
 
     /// <summary>
+    /// Refreshes both Azure and local file panes.
+    /// Does not manage <see cref="IsOperationInProgress"/> — callers are responsible.
+    /// Use after operations that change files on both sides (backup, restore, sync).
+    /// Refreshes Azure first (caches file paths), then local (uses cached paths).
+    /// </summary>
+    private async Task RefreshBothFilePanesAsync()
+    {
+        if (_blobService.IsConnected)
+        {
+            await RefreshFromAzureAsync();
+        }
+        await RefreshLocalFilesAsync();
+    }
+
+    /// <summary>
     /// Refreshes both local and Azure file trees.
     /// </summary>
     [RelayCommand]
@@ -453,14 +468,7 @@ public partial class MainWindowViewModel
         IsOperationInProgress = true;
         try
         {
-            // Refresh local files first (doesn't require Azure connection)
-            await RefreshLocalFilesAsync();
-
-            // Then refresh Azure files if connected
-            if (_blobService.IsConnected)
-            {
-                await RefreshFromAzureAsync();
-            }
+            await RefreshBothFilePanesAsync();
         }
         finally
         {

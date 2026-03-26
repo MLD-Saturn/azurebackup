@@ -492,8 +492,9 @@ public class AzureBlobService : IBlobStorageService
     }
 
     /// <summary>
-    /// Downloads and decrypts a chunk using streaming download to reduce memory allocations.
-    /// Uses <see cref="ArrayPool{T}"/> to rent the download buffer, avoiding LOH allocations.
+    /// Downloads and decrypts a chunk using parallel range downloads for improved throughput.
+    /// Uses <see cref="StorageTransferOptions"/> for 8-way parallel block downloads within each chunk,
+    /// and <see cref="ArrayPool{T}"/> to rent the download buffer, avoiding LOH allocations.
     /// The returned decrypted data is a regular array (not pooled) since it is passed to the channel consumer.
     /// </summary>
     public async Task<byte[]> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default)
@@ -508,29 +509,26 @@ public class AzureBlobService : IBlobStorageService
 
         try
         {
-            // Use streaming download — reads directly into our buffer without BinaryData intermediate
-            var response = await blobClient.DownloadStreamingAsync(cancellationToken: cancellationToken);
-            var contentLength = response.Value.Details.ContentLength;
-            var storedContentHash = response.Value.Details.ContentHash;
+            // Use DownloadToAsync with StorageTransferOptions for parallel range downloads.
+            // This enables 8-way concurrent block downloads within a single chunk,
+            // significantly improving throughput for chunks > 8 MB.
+            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+            var contentLength = properties.Value.ContentLength;
+            var storedContentHash = properties.Value.ContentHash;
             TotalOperations++;
 
             // Rent buffer from pool — avoids LOH allocation for large chunks
             var rentedBuffer = ArrayPool<byte>.Shared.Rent((int)contentLength);
             try
             {
-                // Read entire stream into rented buffer
-                var bytesRead = 0;
-                var stream = response.Value.Content;
-                while (bytesRead < contentLength)
+                // Download with parallel ranges into a MemoryStream backed by the rented buffer
+                using var memoryStream = new MemoryStream(rentedBuffer, 0, (int)contentLength, writable: true);
+                var downloadOptions = new BlobDownloadToOptions
                 {
-                    var read = await stream.ReadAsync(
-                        rentedBuffer.AsMemory(bytesRead, (int)contentLength - bytesRead),
-                        cancellationToken);
-                    if (read == 0)
-                        throw new DataIntegrityException(
-                            $"Unexpected end of stream for {blobName} at {bytesRead}/{contentLength}", blobName);
-                    bytesRead += read;
-                }
+                    TransferOptions = DefaultTransferOptions
+                };
+                await blobClient.DownloadToAsync(memoryStream, downloadOptions, cancellationToken);
+                var bytesRead = (int)memoryStream.Position;
 
                 // Verify download integrity against stored Content-MD5 (if available)
                 if (storedContentHash is { Length: > 0 })

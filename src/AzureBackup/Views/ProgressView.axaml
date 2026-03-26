@@ -1,0 +1,211 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:AzureBackup.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="700"
+             x:Class="AzureBackup.Views.ProgressView"
+             x:DataType="vm:ProgressTabViewModel">
+
+    <UserControl.Styles>
+        <!-- Pulsing animation for the activity indicator -->
+        <Style Selector="Ellipse.pulse">
+            <Style.Animations>
+                <Animation Duration="0:0:1.5" IterationCount="INFINITE" PlaybackDirection="Alternate" Easing="CubicEaseInOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0.3"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1.0"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+        <Style Selector="TextBlock.failed">
+            <Setter Property="Foreground" Value="IndianRed"/>
+        </Style>
+        <!-- Failed progress bar turns red; default inherits theme accent -->
+        <Style Selector="ProgressBar.file-progress.failed">
+            <Setter Property="Foreground" Value="IndianRed"/>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- ═══ ACTIVE PROGRESS (shown during operation) ═══ -->
+        <Grid IsVisible="{Binding ShowActiveProgress}" Grid.RowSpan="3"
+              RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+            <!-- Overall progress header -->
+            <Border Classes="card" Margin="0,0,0,8">
+                <Grid RowDefinitions="Auto,Auto,Auto">
+                    <!-- Row 0: Operation type + phase + elapsed + speed + ETA -->
+                    <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Ellipse Classes="pulse" Width="10" Height="10" Fill="#4CAF50"/>
+                            <TextBlock Text="{Binding OperationType}" FontWeight="SemiBold" FontSize="14"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="{Binding PhaseDescription}" Opacity="0.7"
+                                   VerticalAlignment="Center" Margin="12,0,0,0"
+                                   IsVisible="{Binding PhaseDescription, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+                        <!-- Spacer -->
+                        <Border Grid.Column="2"/>
+
+                        <!-- Elapsed -->
+                        <Border Grid.Column="3" Background="#9C27B0" CornerRadius="3" Padding="6,2" Margin="4,0"
+                                IsVisible="{Binding ElapsedTimeText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                            <TextBlock Text="{Binding ElapsedTimeText}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
+                        <!-- Speed -->
+                        <Border Grid.Column="4" Background="#2196F3" CornerRadius="3" Padding="6,2" Margin="4,0"
+                                IsVisible="{Binding OperationSpeed, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                            <TextBlock Text="{Binding OperationSpeed}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
+                        <!-- ETA -->
+                        <Border Grid.Column="5" Background="#4CAF50" CornerRadius="3" Padding="6,2" Margin="4,0"
+                                IsVisible="{Binding EstimatedTimeRemaining, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                            <TextBlock Text="{Binding EstimatedTimeRemaining}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
+                        <!-- Percentage -->
+                        <TextBlock Grid.Column="6" Text="{Binding OverallProgressPercent, StringFormat={}{0:F1}%}"
+                                   FontWeight="SemiBold" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <!-- Row 1: Overall progress bar -->
+                    <ProgressBar Grid.Row="1" Value="{Binding OverallProgressPercent}" Maximum="100"
+                                 Height="14" Margin="0,8,0,4"/>
+
+                    <!-- Row 2: Files count + bytes -->
+                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding FilesProgressText}" FontSize="12" Opacity="0.7"/>
+                        <TextBlock Grid.Column="1" Text="{Binding BytesProgressText}" FontSize="12" Opacity="0.7"/>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- Small file group aggregate row -->
+            <Border Grid.Row="1" Classes="card" Margin="0,0,0,4"
+                    IsVisible="{Binding ShowSmallFileGroup}">
+                <Grid RowDefinitions="Auto,Auto" Margin="4,2">
+                    <Grid ColumnDefinitions="*,Auto,Auto">
+                        <TextBlock Text="{Binding SmallFileGroupText}" FontSize="12" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="{Binding SmallFileGroupBytesText}" FontSize="11"
+                                   Opacity="0.7" Margin="12,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="{Binding SmallFileGroupPercent, StringFormat={}{0:F0}%}"
+                                   FontSize="11" Opacity="0.7" VerticalAlignment="Center" MinWidth="35"/>
+                    </Grid>
+                    <ProgressBar Grid.Row="1" Value="{Binding SmallFileGroupPercent}" Maximum="100"
+                                 Height="4" Margin="0,4,0,0" Foreground="#FF9800"/>
+                </Grid>
+            </Border>
+
+            <!-- Active file header -->
+            <TextBlock Grid.Row="2" Text="Active Files" FontSize="12" FontWeight="SemiBold"
+                       Opacity="0.6" Margin="4,8,0,4"
+                       IsVisible="{Binding HasActiveFiles}"/>
+
+            <!-- Active file list -->
+            <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+                <ItemsControl ItemsSource="{Binding ActiveFiles}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ActiveFileProgressViewModel">
+                            <Border Padding="8,4" Margin="0,1"
+                                    Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+                                    CornerRadius="4">
+                                <Grid RowDefinitions="Auto,Auto">
+                                    <Grid ColumnDefinitions="*,Auto,Auto,Auto">
+                                        <!-- File name -->
+                                        <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                   FontSize="12" VerticalAlignment="Center"/>
+                                        <!-- Bytes -->
+                                        <TextBlock Grid.Column="1" Text="{Binding ProgressText}" FontSize="11"
+                                                   Opacity="0.7" Margin="8,0" VerticalAlignment="Center"/>
+                                        <!-- Percentage -->
+                                        <TextBlock Grid.Column="2" Text="{Binding ProgressPercent, StringFormat={}{0:F0}%}"
+                                                   FontSize="11" Opacity="0.7" VerticalAlignment="Center"
+                                                   MinWidth="35" Margin="4,0"/>
+                                        <!-- Status -->
+                                        <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="11"
+                                                   FontWeight="SemiBold" VerticalAlignment="Center" MinWidth="80"
+                                                   Classes.failed="{Binding IsFailed}"/>
+                                    </Grid>
+                                    <ProgressBar Grid.Row="1" Value="{Binding ProgressPercent}" Maximum="100"
+                                                 Height="3" Margin="0,3,0,0"
+                                                 Classes="file-progress"
+                                                 Classes.failed="{Binding IsFailed}"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- Cancel button -->
+            <Grid Grid.Row="4" Margin="0,8,0,0">
+                <Button Content="Cancel" Command="{Binding RequestCancelCommand}"
+                        HorizontalAlignment="Right" Padding="16,6"/>
+            </Grid>
+        </Grid>
+
+        <!-- ═══ COMPLETION SUMMARY (shown after operation finishes) ═══ -->
+        <Border Grid.RowSpan="3" Classes="card"
+                IsVisible="{Binding ShowCompletionSummary}"
+                VerticalAlignment="Center" HorizontalAlignment="Center"
+                MinWidth="450" MaxWidth="600">
+            <StackPanel Spacing="12">
+                <!-- Title -->
+                <TextBlock Text="{Binding CompletionSummary}" FontSize="16" FontWeight="SemiBold"
+                           TextWrapping="Wrap" HorizontalAlignment="Center"/>
+
+                <!-- Stats grid -->
+                <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,8">
+                    <TextBlock Text="Duration:" FontWeight="SemiBold" Margin="0,2"/>
+                    <TextBlock Grid.Column="1" Text="{Binding CompletionElapsed}" Margin="8,2"/>
+
+                    <TextBlock Grid.Row="1" Text="Data transferred:" FontWeight="SemiBold" Margin="0,2"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CompletionBytes}" Margin="8,2"/>
+
+                    <TextBlock Grid.Row="2" Text="Succeeded:" FontWeight="SemiBold" Margin="0,2"/>
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CompletionSucceeded}" Margin="8,2"/>
+
+                    <TextBlock Grid.Row="3" Text="Failed:" FontWeight="SemiBold" Margin="0,2"
+                               IsVisible="{Binding HasFailures}"/>
+                    <TextBlock Grid.Row="3" Grid.Column="1" Margin="8,2"
+                               IsVisible="{Binding HasFailures}" Foreground="IndianRed">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="{}{0} failed, {1} corrupted recovery">
+                                <Binding Path="CompletionFailed"/>
+                                <Binding Path="CompletionCorruptedRecovery"/>
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                </Grid>
+
+                <!-- Failed files list -->
+                <ItemsControl ItemsSource="{Binding FailedFiles}"
+                              IsVisible="{Binding HasFailures}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ActiveFileProgressViewModel">
+                            <TextBlock FontSize="11" Foreground="IndianRed" Margin="0,1"
+                                       TextTrimming="CharacterEllipsis">
+                                <TextBlock.Text>
+                                    <MultiBinding StringFormat="✗ {0}: {1}">
+                                        <Binding Path="FileName"/>
+                                        <Binding Path="ErrorMessage"/>
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- Ok button -->
+                <Button Content="Ok" Command="{Binding AcknowledgeCompletionCommand}"
+                        HorizontalAlignment="Center" Padding="24,8" Classes="primary"
+                        Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

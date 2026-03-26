@@ -17,7 +17,7 @@
 
     <Grid RowDefinitions="Auto,*,Auto">
         <!-- Navigation Header -->
-        <Border Grid.Row="0" Background="{DynamicResource SystemAccentColor}" Padding="16">
+        <Border Grid.Row="0" Background="{DynamicResource AppAccentBrush}" Padding="16">
             <Grid ColumnDefinitions="Auto,*,Auto">
                 <TextBlock Text="Azure Backup" FontSize="24" FontWeight="Bold" Foreground="White" VerticalAlignment="Center"/>
                 
@@ -32,6 +32,20 @@
                             ToolTip.Tip="Configure Azure connection and watched folders"/>
                     <Button Content="Logs" Command="{Binding NavigateToCommand}" CommandParameter="Logs" Classes="nav"
                             ToolTip.Tip="View application logs"/>
+                    <!-- Progress tab button — only visible during active operations -->
+                    <Button Command="{Binding NavigateToCommand}" CommandParameter="Progress" Classes="nav"
+                            IsVisible="{Binding ShowProgressNavButton}"
+                            ToolTip.Tip="View operation progress">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <!-- Pulsing green dot while operation is active -->
+                            <Ellipse Width="8" Height="8" Fill="#4CAF50" Classes="pulse"
+                                     IsVisible="{Binding ProgressTab.ShowActiveProgress}"/>
+                            <!-- Static blue dot when operation completed (waiting for user Ok) -->
+                            <Ellipse Width="8" Height="8" Fill="#2196F3"
+                                     IsVisible="{Binding ProgressTab.ShowCompletionSummary}"/>
+                            <TextBlock Text="Progress" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -91,6 +105,22 @@
                 </ContentControl.ContentTemplate>
             </ContentControl>
 
+            <!-- Progress View -->
+            <ContentControl Content="{Binding ProgressTab}">
+                <ContentControl.IsVisible>
+                    <Binding Path="CurrentView">
+                        <Binding.Converter>
+                            <vm:EqualityConverter CompareValue="Progress"/>
+                        </Binding.Converter>
+                    </Binding>
+                </ContentControl.IsVisible>
+                <ContentControl.ContentTemplate>
+                    <DataTemplate x:DataType="vm:ProgressTabViewModel">
+                        <views:ProgressView/>
+                    </DataTemplate>
+                </ContentControl.ContentTemplate>
+            </ContentControl>
+
             <!-- Tier Migration View -->
             <ContentControl Content="{Binding TierMigrationViewModel}">
                 <ContentControl.IsVisible>
@@ -137,6 +167,18 @@
             <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundAltHighBrush}"/>
             <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="16"/>
+        </Style>
+        <Style Selector="Ellipse.pulse">
+            <Style.Animations>
+                <Animation Duration="0:0:1.5" IterationCount="INFINITE" PlaybackDirection="Alternate" Easing="CubicEaseInOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0.3"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1.0"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
         </Style>
     </Window.Styles>
 </Window>

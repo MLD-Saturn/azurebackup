@@ -270,7 +270,7 @@ public class CancellationTests : IAsyncLifetime
         var restorePath = Path.Combine(_restoreDirectory, "progress_cancel.bin");
 
         List<(long current, long total)> progressReports = new();
-        Progress<(long current, long total)> progress = new(p => progressReports.Add(p));
+        SynchronousProgress<(long current, long total)> progress = new(p => progressReports.Add(p));
         
         CancellationTokenSource cts = new();
         

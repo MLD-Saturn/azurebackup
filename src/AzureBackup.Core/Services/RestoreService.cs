@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Threading.Channels;
+using Azure;
 using AzureBackup.Core.Models;
 
 namespace AzureBackup.Core.Services;
@@ -19,14 +20,27 @@ public class RestoreService
     private readonly EncryptionService _encryptionService;
     
     // Parallel download settings - increased for better bandwidth utilization
-    // Memory bounded by: MaxParallelChunkDownloads * MaxChunkSize = 12 * 128 MB = 1.5 GB max
-    // In practice, most chunks are much smaller, so typical usage is ~100-500 MB
-    private const int MaxParallelChunkDownloads = 12;
+    // Default concurrency for moderate chunk sizes; adaptive method below adjusts for extremes.
+    // Memory bounded by: effectiveConcurrency * maxChunkSize * ~3 copies
+    private const int DefaultParallelChunkDownloads = 12;
 
     // File-level parallelism for multi-file restore operations
-    // 8 files x 12 chunks = 96 concurrent HTTP downloads max
-    // Well within Azure's 20,000 req/s account limit
-    private const int MaxParallelFileRestores = 8;
+    // 16 files x 12 chunks = 192 concurrent HTTP downloads max
+    // Azure single-account egress limit is 50 Gbps; 16 files better saturates bandwidth.
+    private const int MaxParallelFileRestores = 16;
+
+    // Chunk-level retry settings for transient Azure failures (503, timeouts)
+    private const int MaxChunkRetries = 3;
+    private const int ChunkRetryBaseDelayMs = 500;
+
+    // Large FileStream buffer — reduces syscalls for multi-MB chunk writes
+    private const int LargeFileStreamBufferSize = 4 * 1024 * 1024; // 4 MB
+
+    // Machine-adaptive parallelism for local I/O + CPU operations (e.g., SHA-256 hashing).
+    // Uses logical processor count (cores × threads-per-core on hyperthreaded CPUs).
+    // Not used for Azure-network-bound operations — those have fixed constants
+    // tuned to Azure throughput limits, not local machine capability.
+    private static readonly int LocalIoParallelism = Math.Clamp(Environment.ProcessorCount, 2, 64);
 
     // Cached sensitive directories for ValidateRestorePath — avoids repeated
     // Environment.GetFolderPath calls across thousands of file restores
@@ -60,6 +74,19 @@ public class RestoreService
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
         DiagnosticLog?.Invoke(this, $"[{timestamp}] [Restore] {message}");
+    }
+
+    /// <summary>
+    /// Computes adaptive chunk-level parallelism based on max chunk size.
+    /// Large chunks (64 MB) use fewer concurrent downloads to limit memory,
+    /// while small chunks (256 KB) use more to overcome HTTP latency.
+    /// </summary>
+    private static int ComputeAdaptiveChunkConcurrency(int maxChunkBytes)
+    {
+        // Target ~256 MB of in-flight chunk data (each chunk needs ~3x: encrypted + decrypted + channel buffer)
+        const long TargetInFlightBytes = 256L * 1024 * 1024;
+        var computed = (int)(TargetInFlightBytes / Math.Max(maxChunkBytes, 1));
+        return Math.Clamp(computed, 4, 24);
     }
 
     /// <summary>
@@ -252,7 +279,7 @@ public class RestoreService
 
             if (sortedChunks.Count > 1)
             {
-                Log($"RestoreFileAsync: Using bounded parallel downloads (max={MaxParallelChunkDownloads})");
+                Log($"RestoreFileAsync: Using bounded parallel downloads (adaptive concurrency)");
                 // Use bounded producer-consumer pattern with channels
                 // Hash is computed incrementally as chunks are written in order — no file re-read needed
                 restoredHash = await RestoreWithBoundedParallelDownloadsAsync(
@@ -272,11 +299,31 @@ public class RestoreService
                     cancellationToken.ThrowIfCancellationRequested();
 
                     Log($"RestoreFileAsync: Downloading chunk {chunk.Index} ({chunk.Length} bytes) blob={chunk.BlobName}");
-                    var chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, cancellationToken);
+
+                    // Download with retry for transient Azure failures — same pattern as multi-chunk path.
+                    // Single-chunk files (3,000 small files) are especially vulnerable to transient 503s
+                    // at high concurrency since they have no other chunks to amortize a failure across.
+                    byte[]? chunkData = null;
+                    for (var attempt = 0; attempt <= MaxChunkRetries; attempt++)
+                    {
+                        try
+                        {
+                            chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, cancellationToken);
+                            break;
+                        }
+                        catch (Exception ex) when (attempt < MaxChunkRetries && IsTransientError(ex))
+                        {
+                            var delay = ChunkRetryBaseDelayMs * (1 << attempt);
+                            Log($"RestoreFileAsync: Transient error on single chunk {chunk.Index} " +
+                                $"(attempt {attempt + 1}/{MaxChunkRetries + 1}): {ex.GetType().Name}: {ex.Message}, " +
+                                $"retrying in {delay}ms");
+                            await Task.Delay(delay, cancellationToken);
+                        }
+                    }
 
                     // Verify chunk size and hash match metadata
                     Log($"RestoreFileAsync: Verifying chunk {chunk.Index} integrity");
-                    VerifyChunkIntegrity(chunkData, chunk, file.LocalPath);
+                    VerifyChunkIntegrity(chunkData!, chunk, file.LocalPath);
 
                     await outputStream.WriteAsync(chunkData, cancellationToken);
                     incrementalHash.AppendData(chunkData);
@@ -387,9 +434,35 @@ public class RestoreService
     }
 
     /// <summary>
+    /// Determines whether an exception represents a transient Azure error worth retrying.
+    /// Covers HTTP 408/429/500/502/503/504 from Azure, I/O timeouts, and TaskCanceledException
+    /// caused by HttpClient timeouts (not user cancellation).
+    /// </summary>
+    private static bool IsTransientError(Exception ex)
+    {
+        // Azure SDK wraps transient HTTP errors in RequestFailedException
+        if (ex is Azure.RequestFailedException rfe)
+        {
+            return rfe.Status is 408 or 429 or 500 or 502 or 503 or 504;
+        }
+
+        // HttpClient timeout surfaces as TaskCanceledException with an inner TimeoutException
+        if (ex is TaskCanceledException { InnerException: TimeoutException })
+            return true;
+
+        // Network-level I/O failures
+        if (ex is IOException or System.Net.Http.HttpRequestException)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
     /// Restores a file using bounded parallel downloads with a producer-consumer pattern.
-    /// Downloads chunks in parallel but writes them sequentially, limiting memory usage
-    /// to approximately MaxParallelChunkDownloads chunks at any time.
+    /// Downloads chunks in parallel but writes them sequentially, limiting memory usage.
+    /// Chunk-level concurrency is adaptive based on chunk size (large chunks → fewer concurrent,
+    /// small chunks → more concurrent) to balance memory pressure vs HTTP latency.
+    /// Includes retry with exponential backoff for transient Azure failures.
     /// Computes the file hash incrementally as chunks are written in order,
     /// eliminating the need to re-read the entire file from disk for verification.
     /// </summary>
@@ -405,24 +478,26 @@ public class RestoreService
         var maxChunkBytes = sortedChunks.Max(c => c.Length);
         var totalChunkBytes = sortedChunks.Sum(c => (long)c.Length);
         var gcMemBefore = GC.GetTotalMemory(false);
+
+        // Adaptive concurrency: scale inversely with chunk size to cap memory usage
+        var effectiveConcurrency = ComputeAdaptiveChunkConcurrency(maxChunkBytes);
         Log($"BoundedParallelDownload: Starting for '{Path.GetFileName(file.LocalPath)}' - " +
-            $"{sortedChunks.Count} chunks, max concurrency={MaxParallelChunkDownloads}, " +
-            $"maxChunkSize={maxChunkBytes:N0} bytes, totalChunkBytes={totalChunkBytes:N0}, " +
-            $"GC.TotalMemory={gcMemBefore:N0} bytes");
-        
+            $"{sortedChunks.Count} chunks, adaptive concurrency={effectiveConcurrency} " +
+            $"(default={DefaultParallelChunkDownloads}, maxChunk={maxChunkBytes:N0}), " +
+            $"totalChunkBytes={totalChunkBytes:N0}, GC.TotalMemory={gcMemBefore:N0} bytes");
+
         // Log if memory pressure could be dangerous:
         // Each parallel chunk needs ~3x memory (stream buffer + encrypted array + decrypted array)
-        var estimatedPeakMemory = (long)maxChunkBytes * 3 * MaxParallelChunkDownloads;
+        var estimatedPeakMemory = (long)maxChunkBytes * 3 * effectiveConcurrency;
         if (estimatedPeakMemory > 1_000_000_000) // >1 GB estimated peak
         {
             Log($"BoundedParallelDownload: WARNING - Estimated peak memory={estimatedPeakMemory:N0} bytes " +
-                $"({MaxParallelChunkDownloads} parallel x {maxChunkBytes:N0} bytes x 3 copies). " +
+                $"({effectiveConcurrency} parallel x {maxChunkBytes:N0} bytes x 3 copies). " +
                 $"Risk of OutOfMemoryException for large chunks.");
         }
 
         // Channel capacity is 2x download parallelism so disk writes don't stall network downloads.
-        // While the consumer writes chunk N to disk, chunk N+1..N+12 can already be buffered.
-        var channelCapacity = MaxParallelChunkDownloads * 2;
+        var channelCapacity = effectiveConcurrency * 2;
         var channelOptions = new BoundedChannelOptions(channelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -440,7 +515,7 @@ public class RestoreService
         // Producer task: Download chunks in parallel and write to channel
         var producerTask = Task.Run(async () =>
         {
-            var semaphore = new SemaphoreSlim(MaxParallelChunkDownloads);
+            var semaphore = new SemaphoreSlim(effectiveConcurrency);
             var downloadTasks = new List<Task>();
             try
             {
@@ -458,10 +533,27 @@ public class RestoreService
                         {
                             linkedCts.Token.ThrowIfCancellationRequested();
 
-                            // Use streaming download to reduce LOH allocations via ArrayPool
-                            var chunkData = await _blobService.DownloadChunkStreamingAsync(chunk.BlobName, linkedCts.Token);
+                            // Download with retry for transient Azure failures (503, timeouts).
+                            // At 192 concurrent downloads, transient errors are expected.
+                            byte[]? chunkData = null;
+                            for (var attempt = 0; attempt <= MaxChunkRetries; attempt++)
+                            {
+                                try
+                                {
+                                    chunkData = await _blobService.DownloadChunkStreamingAsync(chunk.BlobName, linkedCts.Token);
+                                    break; // success
+                                }
+                                catch (Exception ex) when (attempt < MaxChunkRetries && IsTransientError(ex))
+                                {
+                                    var delay = ChunkRetryBaseDelayMs * (1 << attempt); // exponential backoff
+                                    Log($"BoundedParallelDownload.Producer: Transient error on chunk {chunk.Index} " +
+                                        $"(attempt {attempt + 1}/{MaxChunkRetries + 1}): {ex.GetType().Name}: {ex.Message}, " +
+                                        $"retrying in {delay}ms");
+                                    await Task.Delay(delay, linkedCts.Token);
+                                }
+                            }
 
-                            VerifyChunkIntegrity(chunkData, chunk, file.LocalPath);
+                            VerifyChunkIntegrity(chunkData!, chunk, file.LocalPath);
 
                             await channel.Writer.WriteAsync((chunk.Index, chunkData), linkedCts.Token);
 
@@ -538,7 +630,7 @@ public class RestoreService
 
             Log($"BoundedParallelDownload.Consumer: Opening output file: {tempPath}");
             await using FileStream outputStream = new(tempPath, FileMode.Create, FileAccess.Write, 
-                FileShare.None, bufferSize: 81920, useAsync: true);
+                FileShare.None, bufferSize: LargeFileStreamBufferSize, useAsync: true);
 
             // Pre-allocate the file to its final size to reduce NTFS fragmentation
             // and avoid repeated metadata updates as the file grows
@@ -591,7 +683,7 @@ public class RestoreService
                     else
                     {
                         pendingChunks[index] = data;
-                        if (pendingChunks.Count % 10 == 0 || pendingChunks.Count > MaxParallelChunkDownloads)
+                        if (pendingChunks.Count % 10 == 0 || pendingChunks.Count > effectiveConcurrency)
                         {
                             var bufferedBytes = pendingChunks.Values.Sum(d => (long)d.Length);
                             Log($"BoundedParallelDownload.Consumer: Buffering chunk {index} (waiting for {nextChunkToWrite}), " +
@@ -921,12 +1013,14 @@ public class RestoreService
     /// <param name="targetDirectory">Local directory to sync to</param>
     /// <param name="sourceBasePath">Original base path in backup (e.g., "J:\")</param>
     /// <param name="progress">Progress reporter</param>
+    /// <param name="fileByteProgress">Reports per-file byte progress (bytesCompleted, fileSize, fileIndex) for active file rows</param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task<MirrorSyncResult> MirrorSyncToLocalAsync(
         IEnumerable<BackedUpFile> backupFiles,
         string targetDirectory,
         string sourceBasePath,
         IProgress<(int current, int total, string file, string action)>? progress = null,
+        IProgress<(long bytesCompleted, long fileSize, int fileIndex)>? fileByteProgress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(backupFiles);
@@ -959,14 +1053,15 @@ public class RestoreService
         Log($"MirrorSyncToLocalAsync: Starting parallel restore phase ({totalOperations} files, max {MaxParallelFileRestores} concurrent)");
 
         await Parallel.ForEachAsync(
-            fileList,
+            fileList.Select((file, index) => (file, index)),
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = MaxParallelFileRestores,
                 CancellationToken = cancellationToken
             },
-            async (backupFile, ct) =>
+            async (item, ct) =>
             {
+                var (backupFile, fileIndex) = item;
                 var currentOp = Interlocked.Increment(ref completedOps);
 
                 try
@@ -1005,9 +1100,15 @@ public class RestoreService
                     // File is missing or outdated - restore it
                     progress?.Report((currentOp, totalOperations, Path.GetFileName(targetPath), "Restoring"));
 
+                    // Create per-file byte progress reporter using the pre-computed index
+                    var individualFileProgress = fileByteProgress != null
+                        ? new Progress<(long current, long total)>(p =>
+                            fileByteProgress.Report((p.current, backupFile.FileSize, fileIndex)))
+                        : null;
+
                     var logPrefix = $"MirrorSyncToLocalAsync: [{currentOp}/{totalOperations}]";
                     var (outcome, recoveredPath, _) = await RestoreFileWithRecoveryAsync(
-                        backupFile, targetPath, overwriteExisting: true, fileProgress: null, logPrefix, ct);
+                        backupFile, targetPath, overwriteExisting: true, individualFileProgress, logPrefix, ct);
 
                     lock (resultLock)
                     {
@@ -1349,7 +1450,7 @@ public class RestoreService
 
         // Size-aware parallelism: small files are latency-bound (high parallelism),
         // large files are bandwidth-bound (moderate parallelism with deep chunk concurrency)
-        const long SmallFileThreshold = 1L * 1024 * 1024; // 1 MB
+        const long SmallFileThreshold = 100L * 1024 * 1024; // 100 MB
         const int MaxParallelSmallFiles = 32;
 
         var smallFiles = new List<(BackedUpFile file, string targetPath, int originalIndex)>();
@@ -1363,7 +1464,11 @@ public class RestoreService
                 largeFiles.Add((fileList[i].file, fileList[i].targetPath, i));
         }
 
-        Log($"RestoreFilesWithRemappingAsync: {smallFiles.Count} small files (≤1 MB, max {MaxParallelSmallFiles} concurrent), " +
+        // Pre-sort large files by size descending so the biggest files start first.
+        // This saturates network bandwidth early and avoids a long tail of large files at the end.
+        largeFiles.Sort((a, b) => b.file.FileSize.CompareTo(a.file.FileSize));
+
+        Log($"RestoreFilesWithRemappingAsync: {smallFiles.Count} small files (≤100 MB, max {MaxParallelSmallFiles} concurrent), " +
             $"{largeFiles.Count} large files (max {MaxParallelFileRestores} concurrent)");
 
         // Run small and large file restores concurrently — they use different resources:
@@ -1481,6 +1586,10 @@ public class RestoreService
 
     /// <summary>
     /// Generates a preview of a mirror sync operation without making any changes.
+    /// Uses parallelism for file comparison: metadata checks (File.Exists, size, timestamp)
+    /// are nearly instant; hash verification uses <see cref="Environment.ProcessorCount"/>
+    /// concurrency since SHA-256 is CPU-bound when files are in OS cache and I/O-bound otherwise —
+    /// ProcessorCount adapts to both (more cores = more throughput for cached; more I/O slots for uncached).
     /// </summary>
     public async Task<OperationPreview> PreviewMirrorSyncAsync(
         IEnumerable<BackedUpFile> backupFiles,
@@ -1504,69 +1613,84 @@ public class RestoreService
         sourceBasePath = Path.GetFullPath(sourceBasePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         targetDirectory = Path.GetFullPath(targetDirectory);
 
-        HashSet<string> expectedLocalFiles = new(StringComparer.OrdinalIgnoreCase);
+        ConcurrentDictionary<string, byte> expectedLocalFiles = new(StringComparer.OrdinalIgnoreCase);
 
-        // Check each backup file
-        foreach (var backupFile in fileList)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        // Thread-safe collectors — parallelism makes List<T>.Add unsafe
+        ConcurrentBag<PreviewFileAction> toSkip = [];
+        ConcurrentBag<PreviewFileAction> toCreate = [];
+        ConcurrentBag<PreviewFileAction> toOverwrite = [];
 
-            var relativePath = PathHelper.GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
-            var targetPath = Path.Combine(targetDirectory, relativePath);
-            expectedLocalFiles.Add(targetPath);
+        Log($"PreviewMirrorSyncAsync: Checking {fileList.Count} files with parallelism={LocalIoParallelism}");
 
-            if (File.Exists(targetPath))
+        await Parallel.ForEachAsync(
+            fileList,
+            new ParallelOptions
             {
-                FileInfo localInfo = new(targetPath);
-                
-                // Compare to see if update needed
-                if (localInfo.Length == backupFile.FileSize && 
-                    Math.Abs((localInfo.LastWriteTimeUtc - backupFile.LastModified).TotalSeconds) < 2)
+                MaxDegreeOfParallelism = LocalIoParallelism,
+                CancellationToken = cancellationToken
+            },
+            async (backupFile, ct) =>
+            {
+                var relativePath = PathHelper.GetRelativePathFromBase(backupFile.LocalPath, sourceBasePath);
+                var targetPath = Path.Combine(targetDirectory, relativePath);
+                expectedLocalFiles.TryAdd(targetPath, 0);
+
+                if (File.Exists(targetPath))
                 {
-                    // Quick check - likely unchanged, but verify with hash
-                    var localHash = await HashHelper.ComputeFileHashAsync(targetPath, cancellationToken);
-                    if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
+                    FileInfo localInfo = new(targetPath);
+
+                    // Quick metadata check — avoids hashing when size or timestamp differ
+                    if (localInfo.Length == backupFile.FileSize &&
+                        Math.Abs((localInfo.LastWriteTimeUtc - backupFile.LastModified).TotalSeconds) < 2)
                     {
-                        preview.FilesToSkip.Add(new PreviewFileAction
+                        var localHash = await HashHelper.ComputeFileHashAsync(targetPath, ct);
+                        if (string.Equals(localHash, backupFile.FileHash, StringComparison.Ordinal))
                         {
-                            FilePath = backupFile.LocalPath,
-                            FileSize = backupFile.FileSize,
-                            LastModified = backupFile.LastModified,
-                            TargetPath = targetPath,
-                            Action = FileActionType.Skip,
-                            Reason = "File is identical"
-                        });
-                        continue;
+                            toSkip.Add(new PreviewFileAction
+                            {
+                                FilePath = backupFile.LocalPath,
+                                FileSize = backupFile.FileSize,
+                                LastModified = backupFile.LastModified,
+                                TargetPath = targetPath,
+                                Action = FileActionType.Skip,
+                                Reason = "File is identical"
+                            });
+                            return;
+                        }
                     }
-                }
 
-            // File exists but is different
-                preview.FilesToOverwrite.Add(new PreviewFileAction
+                    // File exists but is different
+                    toOverwrite.Add(new PreviewFileAction
+                    {
+                        FilePath = backupFile.LocalPath,
+                        FileSize = backupFile.FileSize,
+                        LastModified = backupFile.LastModified,
+                        TargetPath = targetPath,
+                        Action = FileActionType.Overwrite,
+                        Reason = localInfo.Length != backupFile.FileSize
+                            ? $"Size differs (local: {localInfo.Length}, backup: {backupFile.FileSize})"
+                            : "Content differs"
+                    });
+                }
+                else
                 {
-                    FilePath = backupFile.LocalPath,
-                    FileSize = backupFile.FileSize,
-                    LastModified = backupFile.LastModified,
-                    TargetPath = targetPath,
-                    Action = FileActionType.Overwrite,
-                    Reason = localInfo.Length != backupFile.FileSize 
-                        ? $"Size differs (local: {localInfo.Length}, backup: {backupFile.FileSize})"
-                        : "Content differs"
-                });
-            }
-            else
-            {
-            // New file
-                preview.FilesToCreate.Add(new PreviewFileAction
-                {
-                    FilePath = backupFile.LocalPath,
-                    FileSize = backupFile.FileSize,
-                    LastModified = backupFile.LastModified,
-                    TargetPath = targetPath,
-                    Action = FileActionType.Create,
-                    Reason = "File does not exist locally"
-                });
-            }
-        }
+                    // New file
+                    toCreate.Add(new PreviewFileAction
+                    {
+                        FilePath = backupFile.LocalPath,
+                        FileSize = backupFile.FileSize,
+                        LastModified = backupFile.LastModified,
+                        TargetPath = targetPath,
+                        Action = FileActionType.Create,
+                        Reason = "File does not exist locally"
+                    });
+                }
+            });
+
+        // Transfer concurrent results to preview lists (sorted for deterministic UI order)
+        preview.FilesToSkip.AddRange(toSkip.OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase));
+        preview.FilesToCreate.AddRange(toCreate.OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase));
+        preview.FilesToOverwrite.AddRange(toOverwrite.OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase));
 
         // Check for local files that don't exist in backup (will be deleted)
         if (Directory.Exists(targetDirectory))
@@ -1576,9 +1700,9 @@ public class RestoreService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (!expectedLocalFiles.Contains(localFile))
+                if (!expectedLocalFiles.ContainsKey(localFile))
                 {
-                FileInfo fileInfo = new(localFile);
+                    FileInfo fileInfo = new(localFile);
                     preview.FilesToDelete.Add(new PreviewFileAction
                     {
                         FilePath = localFile,
@@ -1590,6 +1714,9 @@ public class RestoreService
                 }
             }
         }
+
+        Log($"PreviewMirrorSyncAsync: {toSkip.Count} skip, {toCreate.Count} create, " +
+            $"{toOverwrite.Count} overwrite, {preview.FilesToDelete.Count} delete");
 
         return preview;
     }

@@ -151,8 +151,10 @@ public partial class MainWindowViewModel
 
         Program.Logger?.Log($"RestoreSelectedTreeFilesAsync: {filesWithPaths.Count} files, totalBytes={filesWithPaths.Sum(f => f.file.FileSize)}");
 
-        // Generate preview to check for overwrites
-        var preview = _restoreService.PreviewRestoreWithRemapping(filesWithPaths);
+        // Generate preview on background thread to avoid UI freeze for large file counts
+        // (File.Exists + FileInfo for 19K files can take seconds on HDD)
+        AddLog($"Preparing preview for {filesWithPaths.Count} files...");
+        var preview = await Task.Run(() => _restoreService.PreviewRestoreWithRemapping(filesWithPaths));
 
         var confirmed = await ShowPreviewDialogAsync(preview);
 
@@ -191,11 +193,15 @@ public partial class MainWindowViewModel
             LogRestoreResult(result);
             Program.Logger?.Log($"RestoreSelectedTreeFilesAsync: Complete - {result.SuccessfulFiles.Count} OK, " +
                 $"{result.CorruptedRecoveryFiles.Count} corrupted-recovered, {result.FailedFiles.Count} failed");
+
+            // Refresh local file panel so newly restored files appear immediately
+            await RefreshLocalFilesAsync();
         }
         catch (OperationCanceledException)
         {
             AddLog("Restore cancelled");
             Program.Logger?.Log("RestoreSelectedTreeFilesAsync: Cancelled by user");
+            ProgressTab.MarkCancelled();
         }
         catch (Exception ex)
         {
@@ -284,15 +290,171 @@ public partial class MainWindowViewModel
             IsOperationInProgress = true;
             CreateOperationCts();
 
-            AddLog($"Mirror sync: {sourceFolder} ? {targetFolder}");
+            AddLog($"Mirror sync: {sourceFolder} → {targetFolder}");
+
+            var totalBytes = filesToSync.Sum(f => f.FileSize);
+            const long SmallFileThreshold = 100L * 1024 * 1024;
+            var smallFileCount = filesToSync.Count(f => f.FileSize <= SmallFileThreshold);
+            var smallFileTotalBytes = filesToSync.Where(f => f.FileSize <= SmallFileThreshold).Sum(f => f.FileSize);
+
+            // Initialize progress tab
+            StartProgressTab("Mirror sync", filesToSync.Count, totalBytes, smallFileCount, smallFileTotalBytes);
+            StartProgressTracking("Mirror sync", filesToSync.Count, totalBytes);
+
+            // Per-file byte tracking for ProgressTab.
+            // perFileBytes stores the last reported bytes per file for delta computation.
+            // totalBytesProcessed is a running total updated via Interlocked.Add with deltas — O(1) per update.
+            var perFileBytes = new long[filesToSync.Count];
+            long totalBytesProcessed = 0;
+            var startedFileSet = new ConcurrentDictionary<int, byte>();
+            var completedFileSet = new ConcurrentDictionary<int, byte>();
+            int mirrorSmallCompleted = 0;
+            long mirrorSmallBytes = 0;
+
+            // Pre-build filename → indices multimap for O(1) lookup in the "Unchanged" handler.
+            // Multiple files can share a filename (e.g., README.md in different directories),
+            // so each filename maps to a list of indices into filesToSync.
+            var fileNameToIndices = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < filesToSync.Count; i++)
+            {
+                var fn = Path.GetFileName(filesToSync[i].LocalPath);
+                if (!fileNameToIndices.TryGetValue(fn, out var indices))
+                {
+                    indices = [];
+                    fileNameToIndices[fn] = indices;
+                }
+                indices.Add(i);
+            }
+
+            bool deletePhaseReported = false;
 
             Progress<(int current, int total, string file, string action)> progress = new(p =>
             {
-                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                // Detect transition to delete phase and report to ProgressTab
+                if (string.Equals(p.action, "Deleting", StringComparison.Ordinal) && !deletePhaseReported)
                 {
-                    ProgressValue = (double)p.current / p.total * 100;
-                    ProgressText = $"{p.action}: {p.current}/{p.total} - {p.file}";
-                });
+                    deletePhaseReported = true;
+                    ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                    {
+                        Type = AzureBackup.Core.Models.OperationProgressType.PhaseChanged,
+                        PhaseDescription = "Cleaning up extra local files..."
+                    });
+                }
+
+                // When mirror sync reports a file as "Unchanged", it will never fire byte-level
+                // progress for that file. Treat it as instantly complete so the overall progress
+                // bar and file counts stay accurate.
+                if (!string.Equals(p.action, "Unchanged", StringComparison.Ordinal))
+                    return;
+
+                // Look up candidate indices by filename, then claim the first uncompleted one.
+                if (!fileNameToIndices.TryGetValue(p.file, out var candidateIndices))
+                    return;
+
+                foreach (var i in candidateIndices)
+                {
+                    if (!completedFileSet.TryAdd(i, 0))
+                        continue;
+
+                    // Add full file size to running total (unchanged files are instantly complete)
+                    var totalProcessed = Interlocked.Add(ref totalBytesProcessed, filesToSync[i].FileSize);
+
+                    var isSmall = filesToSync[i].FileSize <= SmallFileThreshold;
+                    if (isSmall)
+                    {
+                        var sc = Interlocked.Increment(ref mirrorSmallCompleted);
+                        var sb = Interlocked.Add(ref mirrorSmallBytes, filesToSync[i].FileSize);
+                        ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                        {
+                            Type = AzureBackup.Core.Models.OperationProgressType.SmallFileGroupProgress,
+                            SmallFilesCompleted = sc, SmallFilesTotal = smallFileCount,
+                            SmallFilesBytesProcessed = sb, SmallFilesTotalBytes = smallFileTotalBytes,
+                            TotalBytesProcessed = totalProcessed, TotalBytes = totalBytes,
+                            TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                        });
+                    }
+                    else
+                    {
+                        var fn = Path.GetFileName(filesToSync[i].LocalPath);
+                        ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                        {
+                            Type = AzureBackup.Core.Models.OperationProgressType.FileCompleted,
+                            FileIndex = i,
+                            FileName = fn,
+                            FileSize = filesToSync[i].FileSize,
+                            FileBytesProcessed = filesToSync[i].FileSize,
+                            FileStatus = AzureBackup.Core.Models.FileOperationStatus.Complete,
+                            TotalBytesProcessed = totalProcessed, TotalBytes = totalBytes,
+                            TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                        });
+                    }
+                    break;
+                }
+            });
+
+            Progress<(long bytesCompleted, long fileSize, int fileIndex)> byteProgress = new(p =>
+            {
+                var fileName = Path.GetFileName(filesToSync[p.fileIndex].LocalPath);
+                var isSmall = filesToSync[p.fileIndex].FileSize <= SmallFileThreshold;
+
+                if (startedFileSet.TryAdd(p.fileIndex, 0) && !isSmall)
+                {
+                    ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                    {
+                        Type = AzureBackup.Core.Models.OperationProgressType.FileStarted,
+                        FileIndex = p.fileIndex, FileName = fileName, FileSize = p.fileSize,
+                        FileStatus = AzureBackup.Core.Models.FileOperationStatus.Downloading,
+                        TotalBytesProcessed = Volatile.Read(ref totalBytesProcessed), TotalBytes = totalBytes,
+                        TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                    });
+                }
+
+                // Compute delta from previous value and add to running total — O(1) instead of O(n) scan
+                var previousBytes = Interlocked.Exchange(ref perFileBytes[p.fileIndex], p.bytesCompleted);
+                var delta = p.bytesCompleted - previousBytes;
+                var totalProcessed = Interlocked.Add(ref totalBytesProcessed, delta);
+
+                if (!isSmall)
+                {
+                    ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                    {
+                        Type = AzureBackup.Core.Models.OperationProgressType.FileProgress,
+                        FileIndex = p.fileIndex, FileName = fileName, FileSize = p.fileSize,
+                        FileBytesProcessed = p.bytesCompleted,
+                        FileStatus = AzureBackup.Core.Models.FileOperationStatus.Downloading,
+                        TotalBytesProcessed = totalProcessed, TotalBytes = totalBytes,
+                        TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                    });
+                }
+
+                if (p.bytesCompleted >= p.fileSize && completedFileSet.TryAdd(p.fileIndex, 0))
+                {
+                    if (isSmall)
+                    {
+                        var sc = Interlocked.Increment(ref mirrorSmallCompleted);
+                        var sb = Interlocked.Add(ref mirrorSmallBytes, p.fileSize);
+                        ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                        {
+                            Type = AzureBackup.Core.Models.OperationProgressType.SmallFileGroupProgress,
+                            SmallFilesCompleted = sc, SmallFilesTotal = smallFileCount,
+                            SmallFilesBytesProcessed = sb, SmallFilesTotalBytes = smallFileTotalBytes,
+                            TotalBytesProcessed = totalProcessed, TotalBytes = totalBytes,
+                            TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                        });
+                    }
+                    else
+                    {
+                        ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                        {
+                            Type = AzureBackup.Core.Models.OperationProgressType.FileCompleted,
+                            FileIndex = p.fileIndex, FileName = fileName, FileSize = p.fileSize,
+                            FileBytesProcessed = p.fileSize,
+                            FileStatus = AzureBackup.Core.Models.FileOperationStatus.Complete,
+                            TotalBytesProcessed = totalProcessed, TotalBytes = totalBytes,
+                            TotalFilesCompleted = completedFileSet.Count, TotalFiles = filesToSync.Count
+                        });
+                    }
+                }
             });
 
             var result = await _restoreService.MirrorSyncToLocalAsync(
@@ -300,7 +462,14 @@ public partial class MainWindowViewModel
                 targetFolder,
                 sourceFolder,
                 progress,
+                byteProgress,
                 _operationCts!.Token);
+
+            // Show completion summary
+            ProgressTab.CompleteOperation(
+                result.FilesTransferred, result.FilesErrored,
+                result.FilesCorruptedRecovered, result.BytesTransferred);
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => CurrentView = "Progress");
 
             AddLog($"Mirror sync complete: {result.FilesTransferred} restored, {result.FilesDeleted} deleted, " +
                    $"{result.FilesUnchanged} unchanged, {result.FilesErrored} errors");
@@ -318,10 +487,14 @@ public partial class MainWindowViewModel
             {
                 AddLog($"  ... and {result.Errors.Count - 5} more errors");
             }
+
+            // Refresh local file panel so newly synced files appear immediately
+            await RefreshLocalFilesAsync();
         }
         catch (OperationCanceledException)
         {
             AddLog("Mirror sync cancelled");
+            ProgressTab.MarkCancelled();
         }
         catch (Exception ex)
         {
@@ -337,72 +510,120 @@ public partial class MainWindowViewModel
     #region Restore Helpers
 
     /// <summary>
-    /// Executes a batch restore with standard progress tracking.
+    /// Executes a batch restore with progress tracking on the Progress tab.
     /// Uses RestoreFilesWithRemappingAsync for parallel, corrupted-recovery-aware restore.
-    /// Tracks per-file byte progress concurrently since multiple files restore in parallel.
+    /// Reports per-file start/progress/complete events to <see cref="ProgressTab"/>.
+    /// Small files (≤100 MB) are grouped into an aggregate row instead of individual rows.
     /// </summary>
     private async Task<AzureBackup.Core.Services.RestoreResult> ExecuteRestoreWithRemappingAsync(
         List<(BackedUpFile file, string targetPath)> filesWithPaths,
         CancellationToken cancellationToken)
     {
         var totalBytes = filesWithPaths.Sum(f => f.file.FileSize);
+        const long SmallFileThreshold = 100L * 1024 * 1024;
+        var smallFileCount = filesWithPaths.Count(f => f.file.FileSize <= SmallFileThreshold);
+        var smallFileTotalBytes = filesWithPaths.Where(f => f.file.FileSize <= SmallFileThreshold).Sum(f => f.file.FileSize);
+
+        // Initialize progress tab and auto-switch to it
+        StartProgressTab("Restoring", filesWithPaths.Count, totalBytes, smallFileCount, smallFileTotalBytes);
+
+        // Also keep legacy tracking for tray tooltip and IsTransferInProgress
         StartProgressTracking("Restoring", filesWithPaths.Count, totalBytes);
 
         // Track per-file bytes atomically for parallel progress aggregation.
-        // Each slot holds the latest reported bytes for that file index.
+        // perFileBytes stores last reported bytes per file for delta computation.
+        // totalBytesProcessed is a running total updated via Interlocked.Add — O(1) per update.
         var perFileBytes = new long[filesWithPaths.Count];
+        long totalBytesProcessed = 0;
+        var startedFileSet = new ConcurrentDictionary<int, byte>();
         var completedFileSet = new ConcurrentDictionary<int, byte>();
+        int smallFilesCompleted = 0;
+        long smallFilesBytesProcessed = 0;
 
-        Progress<(int current, int total, string file)> fileProgress = new(p =>
-        {
-            // File-level progress is covered by byte-level reporter below
-        });
+        Progress<(int current, int total, string file)> fileProgress = new(_ => { });
 
         Progress<(long bytesCompleted, long fileSize, int fileIndex)> byteProgress = new(p =>
         {
-            // Record latest bytes for this file (may arrive out of order across files)
-            Interlocked.Exchange(ref perFileBytes[p.fileIndex], p.bytesCompleted);
+            var fileName = Path.GetFileName(filesWithPaths[p.fileIndex].file.LocalPath);
+            var isSmall = filesWithPaths[p.fileIndex].file.FileSize <= SmallFileThreshold;
 
-            // Detect file completion: when bytesCompleted reaches fileSize
-            if (p.bytesCompleted >= p.fileSize)
+            // Report file started on first progress for this file (large files only — small are grouped)
+            if (startedFileSet.TryAdd(p.fileIndex, 0) && !isSmall)
             {
-                if (completedFileSet.TryAdd(p.fileIndex, 0))
+                ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
                 {
-                    Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                    Type = AzureBackup.Core.Models.OperationProgressType.FileStarted,
+                    FileIndex = p.fileIndex,
+                    FileName = fileName,
+                    FileSize = p.fileSize,
+                    FileStatus = AzureBackup.Core.Models.FileOperationStatus.Downloading,
+                    TotalBytesProcessed = Volatile.Read(ref totalBytesProcessed),
+                    TotalBytes = totalBytes,
+                    TotalFilesCompleted = completedFileSet.Count,
+                    TotalFiles = filesWithPaths.Count
+                });
+            }
+
+            // Compute delta from previous value and add to running total — O(1) instead of O(n) scan
+            var previousBytes = Interlocked.Exchange(ref perFileBytes[p.fileIndex], p.bytesCompleted);
+            var delta = p.bytesCompleted - previousBytes;
+            var totalProcessed = Interlocked.Add(ref totalBytesProcessed, delta);
+
+            // Report byte progress for large files
+            if (!isSmall)
+            {
+                ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                {
+                    Type = AzureBackup.Core.Models.OperationProgressType.FileProgress,
+                    FileIndex = p.fileIndex,
+                    FileName = fileName,
+                    FileSize = p.fileSize,
+                    FileBytesProcessed = p.bytesCompleted,
+                    FileStatus = AzureBackup.Core.Models.FileOperationStatus.Downloading,
+                    TotalBytesProcessed = totalProcessed,
+                    TotalBytes = totalBytes,
+                    TotalFilesCompleted = completedFileSet.Count,
+                    TotalFiles = filesWithPaths.Count
+                });
+            }
+
+            // Detect file completion
+            if (p.bytesCompleted >= p.fileSize && completedFileSet.TryAdd(p.fileIndex, 0))
+            {
+                if (isSmall)
+                {
+                    var sc = Interlocked.Increment(ref smallFilesCompleted);
+                    var sb = Interlocked.Add(ref smallFilesBytesProcessed, p.fileSize);
+                    ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
                     {
-                        CompletedFilesCount = completedFileSet.Count;
-                        OnPropertyChanged(nameof(FilesProgressText));
+                        Type = AzureBackup.Core.Models.OperationProgressType.SmallFileGroupProgress,
+                        SmallFilesCompleted = sc,
+                        SmallFilesTotal = smallFileCount,
+                        SmallFilesBytesProcessed = sb,
+                        SmallFilesTotalBytes = smallFileTotalBytes,
+                        TotalBytesProcessed = totalProcessed,
+                        TotalBytes = totalBytes,
+                        TotalFilesCompleted = completedFileSet.Count,
+                        TotalFiles = filesWithPaths.Count
+                    });
+                }
+                else
+                {
+                    ProgressTab.ReportProgress(new AzureBackup.Core.Models.OperationProgressReport
+                    {
+                        Type = AzureBackup.Core.Models.OperationProgressType.FileCompleted,
+                        FileIndex = p.fileIndex,
+                        FileName = fileName,
+                        FileSize = p.fileSize,
+                        FileBytesProcessed = p.fileSize,
+                        FileStatus = AzureBackup.Core.Models.FileOperationStatus.Complete,
+                        TotalBytesProcessed = totalProcessed,
+                        TotalBytes = totalBytes,
+                        TotalFilesCompleted = completedFileSet.Count,
+                        TotalFiles = filesWithPaths.Count
                     });
                 }
             }
-
-            // Sum all per-file bytes for overall progress
-            long totalProcessed = 0;
-            for (var i = 0; i < perFileBytes.Length; i++)
-            {
-                totalProcessed += Volatile.Read(ref perFileBytes[i]);
-            }
-
-            var fileName = Path.GetFileName(filesWithPaths[p.fileIndex].file.LocalPath);
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-            {
-                CurrentFileName = fileName;
-                CurrentFileProgress = p.fileSize > 0 ? (double)p.bytesCompleted / p.fileSize * 100 : 0;
-                CurrentFileProgressText = $"{AzureBackup.Core.FormatHelper.FormatBytes(p.bytesCompleted)} / {AzureBackup.Core.FormatHelper.FormatBytes(p.fileSize)}";
-
-                TotalBytesProcessed = totalProcessed;
-                _lastBytesProcessed = totalProcessed;
-                ProgressValue = totalBytes > 0
-                    ? (double)totalProcessed / totalBytes * 100
-                    : 0;
-
-                ProgressText = $"Restoring: {fileName} ({completedFileSet.Count}/{filesWithPaths.Count})";
-
-                OnPropertyChanged(nameof(BytesProgressText));
-                OnPropertyChanged(nameof(FilesProgressText));
-
-                UpdateSpeedAndEta();
-            });
         });
 
         var result = await _restoreService.RestoreFilesWithRemappingAsync(
@@ -412,7 +633,29 @@ public partial class MainWindowViewModel
             byteProgress,
             cancellationToken);
 
+        // Show completion summary on the progress tab
+        ProgressTab.CompleteOperation(
+            result.SuccessfulFiles.Count,
+            result.FailedFiles.Count,
+            result.CorruptedRecoveryFiles.Count,
+            result.TotalBytesRestored);
+
+        // Auto-switch to progress tab for completion summary
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => CurrentView = "Progress");
+
         return result;
+    }
+
+    /// <summary>
+    /// Initializes the Progress tab and auto-switches to it.
+    /// Shared by restore, backup, and mirror operations.
+    /// </summary>
+    private void StartProgressTab(string operationType, int totalFiles, long totalBytes, int smallFileCount = 0, long smallFileTotalBytes = 0)
+    {
+        _viewBeforeProgress = CurrentView;
+        ShowProgressNavButton = true;
+        ProgressTab.StartOperation(operationType, totalFiles, totalBytes, smallFileCount, smallFileTotalBytes);
+        CurrentView = "Progress";
     }
 
     /// <summary>

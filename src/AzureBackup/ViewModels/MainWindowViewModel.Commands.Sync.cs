@@ -366,10 +366,9 @@ public partial class MainWindowViewModel
             }
 
             AddLog("Sync operation complete!");
-            
+
             // Refresh both panels
-            await RefreshLocalFilesAsync();
-            await RefreshRestorableFilesAsync();
+            await RefreshBothFilePanesAsync();
         }
         catch (OperationCanceledException)
         {

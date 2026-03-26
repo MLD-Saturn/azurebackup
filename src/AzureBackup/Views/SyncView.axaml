@@ -117,7 +117,7 @@
                 <!-- Selected files info -->
                 <TextBlock Grid.Column="7" Text="{Binding SelectedFilesText}" 
                            VerticalAlignment="Center" Margin="12,0,0,0"
-                           FontWeight="SemiBold" Foreground="{DynamicResource SystemAccentColor}"/>
+                           FontWeight="SemiBold" Foreground="{DynamicResource AppAccentBrush}"/>
             </Grid>
         </Border>
 
@@ -278,7 +278,7 @@
                     <!-- Path Remapping Panel (visible when folder selected in tree view) -->
                     <Border Grid.Row="1" Classes="card" Margin="0,0,0,8" Padding="8"
                             IsVisible="{Binding CanSetCustomRestorePath}"
-                            BorderBrush="{DynamicResource SystemAccentColor}" BorderThickness="1">
+                            BorderBrush="{DynamicResource AppAccentBrush}" BorderThickness="1">
                         <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*,Auto,Auto,Auto">
                             <TextBlock Text="Remap path:" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="11"/>
                             <TextBlock Grid.Column="1" Text="{Binding SelectedTreeNode.FullPath}" 
@@ -347,22 +347,22 @@
                                         <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
                                                    ToolTip.Tip="{Binding FullPath}"/>
                                         <TextBlock Text="to" IsVisible="{Binding HasCustomRestorePath}" 
-                                                   Foreground="{DynamicResource SystemAccentColor}" VerticalAlignment="Center"
-                                                   FontSize="10"/>
-                                        <TextBlock Text="{Binding EffectiveRestorePath}" 
-                                                   IsVisible="{Binding HasCustomRestorePath}"
-                                                   Foreground="{DynamicResource SystemAccentColor}" 
+                                                   Foreground="{DynamicResource AppAccentBrush}" VerticalAlignment="Center"
+                                                    FontSize="10"/>
+                                         <TextBlock Text="{Binding EffectiveRestorePath}" 
+                                                    IsVisible="{Binding HasCustomRestorePath}"
+                                                    Foreground="{DynamicResource AppAccentBrush}"
                                                    FontSize="10" Opacity="0.8" VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis" MaxWidth="150"/>
                                     </StackPanel>
                                     <!-- Storage tier badge -->
-                                    <Border Grid.Column="3" Background="{DynamicResource SystemAccentColorLight3}" 
-                                            CornerRadius="3" Padding="4,1" Margin="4,0" VerticalAlignment="Center"
-                                            IsVisible="{Binding HasStorageTier}"
-                                            ToolTip.Tip="Azure Storage Tier">
-                                        <TextBlock Text="{Binding StorageTierText}" FontSize="9" Opacity="0.9"/>
-                                    </Border>
-                                    <TextBlock Grid.Column="4" Text="{Binding File.FileSize, Converter={StaticResource BytesToStringConverter}}"
+                                    <Border Grid.Column="3" Background="{DynamicResource AppAccentLight3Brush}" 
+                                             CornerRadius="3" Padding="4,1" Margin="4,0" VerticalAlignment="Center"
+                                             IsVisible="{Binding HasStorageTier}"
+                                             ToolTip.Tip="Azure Storage Tier">
+                                         <TextBlock Text="{Binding StorageTierText}" FontSize="9" Opacity="0.9"/>
+                                     </Border>
+                                     <TextBlock Grid.Column="4" Text="{Binding File.FileSize, Converter={StaticResource BytesToStringConverter}}"
                                                Margin="8,0" Opacity="0.7" VerticalAlignment="Center" FontSize="11"
                                                IsVisible="{Binding IsFile}"/>
                                 </Grid>
@@ -382,7 +382,7 @@
                                     <TextBlock Grid.Column="1" Text="{Binding DisplayPath}" Margin="4,0"
                                                ToolTip.Tip="{Binding LocalPath}" TextTrimming="CharacterEllipsis"/>
                                     <!-- Storage tier badge -->
-                                    <Border Grid.Column="2" Background="{DynamicResource SystemAccentColorLight3}" 
+                                    <Border Grid.Column="2" Background="{DynamicResource AppAccentLight3Brush}"
                                             CornerRadius="3" Padding="4,1" Margin="4,0" VerticalAlignment="Center"
                                             IsVisible="{Binding HasStorageTier}"
                                             ToolTip.Tip="Azure Storage Tier">
@@ -412,57 +412,14 @@
             </Border>
         </Grid>
 
-        <!-- Progress Panel (shown during file transfer operations) -->
-        <Border Grid.Row="3" Classes="card" Margin="0,8,0,0"
+        <!-- Minimal progress indicator (full progress is on the Progress tab) -->
+        <Border Grid.Row="3" Classes="card" Margin="0,8,0,0" Padding="8,6"
                 IsVisible="{Binding IsTransferInProgress}">
-            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
-                <!-- Overall progress header -->
-                <Grid ColumnDefinitions="*,Auto,Auto,Auto">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{Binding CurrentOperationType}" FontWeight="SemiBold" FontSize="14"/>
-                        <TextBlock Text="{Binding FilesProgressText}" Opacity="0.7" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <!-- Total bytes progress next to percentage -->
-                    <TextBlock Grid.Column="1" Text="{Binding BytesProgressText}" 
-                               Opacity="0.7" Margin="12,0" VerticalAlignment="Center" FontSize="12"/>
-                    <TextBlock Grid.Column="2" Text="{Binding ProgressValue, StringFormat={}{0:F0}%}" 
-                               FontWeight="SemiBold" Margin="8,0" VerticalAlignment="Center"/>
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
-                        <Border Background="#2196F3" CornerRadius="3" Padding="6,2" IsVisible="{Binding OperationSpeed, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                            <TextBlock Text="{Binding OperationSpeed}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
-                        </Border>
-                        <Border Background="#4CAF50" CornerRadius="3" Padding="6,2" IsVisible="{Binding EstimatedTimeRemaining, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                            <TextBlock Text="{Binding EstimatedTimeRemaining}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
-                        </Border>
-                    </StackPanel>
-                </Grid>
-                
-                <!-- Overall progress bar -->
-                <ProgressBar Grid.Row="1" Value="{Binding ProgressValue}" Maximum="100" 
-                             Height="12" Margin="0,8,0,0"/>
-
-                <!-- Current file header -->
-                <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,10,0,0">
-                    <TextBlock Text="File:" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" Opacity="0.7"/>
-                    <TextBlock Grid.Column="1" Text="{Binding CurrentFileName}" TextTrimming="CharacterEllipsis" 
-                               Opacity="0.9" VerticalAlignment="Center" FontSize="12"/>
-                    <TextBlock Grid.Column="2" Text="{Binding CurrentFileProgressText}" Margin="8,0" 
-                               Opacity="0.7" FontSize="11" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="3" Text="{Binding CurrentFileProgress, StringFormat={}{0:F0}%}" 
-                               Opacity="0.7" FontSize="11" VerticalAlignment="Center" MinWidth="35"/>
-                </Grid>
-                
-                <!-- Current file progress bar -->
-                <ProgressBar Grid.Row="3" Value="{Binding CurrentFileProgress}" Maximum="100" 
-                             Height="6" Margin="0,4,0,0" Foreground="#4CAF50"/>
-
-                <!-- Cancel button row -->
-                <Grid Grid.Row="4" ColumnDefinitions="*,Auto" Margin="0,10,0,0">
-                    <Border/>
-                    <Button Grid.Column="1" Content="Cancel" Command="{Binding CancelOperationCommand}" 
-                            Padding="16,6"/>
-                </Grid>
-            </Grid>
+            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                <TextBlock Text="⟳" FontSize="14" Opacity="0.6"/>
+                <TextBlock Text="Operation in progress — see Progress tab for details"
+                           FontSize="12" Opacity="0.7" VerticalAlignment="Center"/>
+            </StackPanel>
         </Border>
 
         <!-- Actions panel (shown when files are selected and not during operation) -->

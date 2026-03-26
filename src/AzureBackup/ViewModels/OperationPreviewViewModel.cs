@@ -245,7 +245,7 @@ public partial class OperationPreviewViewModel : ObservableObject
         FilesToCreate = new ObservableCollection<PreviewFileAction>(preview.FilesToCreate);
         FilesToOverwrite = new ObservableCollection<PreviewFileAction>(preview.FilesToOverwrite);
         FilesToDelete = new ObservableCollection<PreviewFileAction>(preview.FilesToDelete);
-        FilesToSkip = new ObservableCollection<PreviewFileAction>(preview.FilesToSkip.Take(100)); // Limit skipped files shown
+        FilesToSkip = new ObservableCollection<PreviewFileAction>(preview.FilesToSkip); // Virtualized ListBox renders only visible rows
     }
 
     /// <summary>

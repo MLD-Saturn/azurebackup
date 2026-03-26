@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -155,6 +156,21 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TrayTooltipText))]
     private bool _isTransferInProgress;
+
+    /// <summary>
+    /// True when the Progress nav button should be visible in the navigation bar.
+    /// Visible while an operation is active or when the completion summary is showing.
+    /// </summary>
+    [ObservableProperty]
+    private bool _showProgressNavButton;
+
+    /// <summary>
+    /// ViewModel for the Progress tab that appears during backup/restore/mirror operations.
+    /// </summary>
+    public ProgressTabViewModel ProgressTab { get; }
+
+    // Stores the view the user was on before the Progress tab auto-switched
+    private string _viewBeforeProgress = "Sync";
 
     /// <summary>
     /// True when a reset has been requested and is awaiting confirmation.
@@ -330,6 +346,13 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     public ObservableCollection<BackedUpFileViewModel> BackedUpFiles { get; } = [];
     public ObservableCollection<BackedUpFileViewModel> RestorableFiles { get; } = [];
     public ObservableCollection<string> LogMessages { get; } = [];
+
+    // Buffered log queue — ensures messages appear in chronological order regardless
+    // of which thread calls AddLog. Without this, concurrent Dispatcher.Post calls
+    // can interleave and insert messages out of timestamp order.
+    private readonly ConcurrentQueue<string> _pendingLogMessages = new();
+    private int _logDrainScheduled;
+    private string? _latestStatusMessage;
 
     /// <summary>
     /// True if no restorable files have been loaded.
@@ -608,7 +631,16 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _blobService, _fileWatcherService);
         _restoreService = new RestoreService(_databaseService, _blobService, _encryptionService);
 
-        // Initialize chunk index service (requires blob service to be connected later)
+        // Initialize progress tab for backup/restore/mirror operations
+        ProgressTab = new ProgressTabViewModel();
+        ProgressTab.CompletionAcknowledged += (_, _) =>
+        {
+            ShowProgressNavButton = false;
+            CurrentView = _viewBeforeProgress;
+        };
+        ProgressTab.CancelRequested += (_, _) => _operationCts?.Cancel();
+
+        // Initialize chunk index service
         _chunkIndexService = new ChunkIndexService(_databaseService, _blobService, _encryptionService);
         _orchestrator.SetChunkIndexService(_chunkIndexService);
         
@@ -697,17 +729,8 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     {
         if (EnableDiagnosticLogging)
         {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-            {
-                // Add to log with diagnostic prefix
-                LogMessages.Add($"?? {message}");
-                
-                // Keep log size manageable
-                while (LogMessages.Count > 500)
-                {
-                    LogMessages.RemoveAt(0);
-                }
-            });
+            _pendingLogMessages.Enqueue($"\U0001f50d {message}");
+            DrainLogQueue();
         }
     }
 
@@ -795,12 +818,39 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private void AddLog(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
+        _pendingLogMessages.Enqueue($"[{timestamp}] {message}");
+        Interlocked.Exchange(ref _latestStatusMessage, message);
+        DrainLogQueue();
+    }
+
+    /// <summary>
+    /// Schedules a single UI-thread drain of the buffered log queue.
+    /// Multiple concurrent AddLog calls coalesce into one drain, preserving enqueue order.
+    /// </summary>
+    private void DrainLogQueue()
+    {
+        // Only one Post in flight at a time — subsequent calls are no-ops
+        // because the scheduled drain will pick up their enqueued messages too.
+        if (Interlocked.CompareExchange(ref _logDrainScheduled, 1, 0) != 0)
+            return;
+
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
-            LogMessages.Insert(0, $"[{timestamp}] {message}");
+            Volatile.Write(ref _logDrainScheduled, 0);
+
+            // Drain all buffered messages in FIFO order.
+            // Insert each at position 0 so the last dequeued (newest) ends up at the top.
+            while (_pendingLogMessages.TryDequeue(out var entry))
+            {
+                LogMessages.Insert(0, entry);
+            }
+
             while (LogMessages.Count > 1000)
                 LogMessages.RemoveAt(LogMessages.Count - 1);
-            StatusMessage = message;
+
+            var status = Interlocked.Exchange(ref _latestStatusMessage, null);
+            if (status != null)
+                StatusMessage = status;
         });
     }
 

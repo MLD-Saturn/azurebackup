@@ -14,6 +14,11 @@
     </Application.Styles>
 
     <Application.Resources>
+        <!-- Brush wrappers for system accent colors — Avalonia's SystemAccentColor is a Color,
+             but Foreground/Background/BorderBrush properties require a Brush. -->
+        <SolidColorBrush x:Key="AppAccentBrush" Color="{DynamicResource SystemAccentColor}"/>
+        <SolidColorBrush x:Key="AppAccentLight3Brush" Color="{DynamicResource SystemAccentColorLight3}"/>
+
         <vm:BoolToColorConverter x:Key="BoolToColorConverter"/>
         <vm:BoolToStatusConverter x:Key="BoolToStatusConverter"/>
         <vm:BoolToViewModeConverter x:Key="BoolToViewModeConverter"/>
