@@ -8,7 +8,7 @@
              x:Class="AzureBackup.Views.SyncView"
              x:DataType="vm:MainWindowViewModel">
 
-    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto">
         
         <!-- Phase 1: Status Toolbar -->
         <Border Classes="card" Margin="0,0,0,8">
@@ -179,6 +179,8 @@
                             <ContextMenu>
                                 <MenuItem Header="Backup Selected" Command="{Binding BackupSelectedLocalFilesCommand}"
                                           IsEnabled="{Binding HasSelectedLocalFiles}"/>
+                                <MenuItem Header="Mirror Sync to Azure" Command="{Binding MirrorSyncToAzureCommand}"
+                                          IsEnabled="{Binding CanMirrorSyncToAzure}"/>
                                 <Separator/>
                                 <MenuItem Header="Add Watched Folder..." Command="{Binding AddWatchedFolderCommand}"/>
                                 <MenuItem Header="Remove from Watch List" Command="{Binding RemoveSelectedLocalFolderCommand}"
@@ -422,57 +424,61 @@
             </StackPanel>
         </Border>
 
-        <!-- Actions panel (shown when files are selected and not during operation) -->
+        <!-- Actions panel: Local files (shown when local files are selected) -->
         <Border Grid.Row="4" Classes="card" Margin="0,8,0,0"
+                IsVisible="{Binding HasSelectedLocalFiles}">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="{Binding SelectedLocalFilesText}" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Backup Selected" Command="{Binding BackupSelectedLocalFilesCommand}"
+                            Classes="primary" ToolTip.Tip="Backup selected local files to Azure"
+                            IsEnabled="{Binding HasSelectedLocalFiles}"/>
+                    <Button Content="Mirror Sync to Azure" Command="{Binding MirrorSyncToAzureCommand}"
+                            ToolTip.Tip="Mirror sync: backup new/modified files from the selected watched folder to Azure and mark deleted files"
+                            IsEnabled="{Binding CanMirrorSyncToAzure}"
+                            Foreground="DodgerBlue"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Actions panel: Azure files (shown when Azure files are selected) -->
+        <Border Grid.Row="5" Classes="card" Margin="0,8,0,0"
                 IsVisible="{Binding HasSelectedFiles}">
-            <Grid RowDefinitions="Auto,Auto">
-                <!-- Row 1: Local file actions -->
-                <Grid ColumnDefinitions="Auto,*,Auto" IsVisible="{Binding HasSelectedLocalFiles}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{Binding SelectedLocalFilesText}" VerticalAlignment="Center" FontWeight="SemiBold"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-                        <Button Content="Backup Selected" Command="{Binding BackupSelectedLocalFilesCommand}"
-                                Classes="primary" ToolTip.Tip="Backup selected local files to Azure"
-                                IsEnabled="{Binding HasSelectedLocalFiles}"/>
-                    </StackPanel>
-                </Grid>
-                
-                <!-- Row 2: Azure file actions -->
-                <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="0,8,0,0">
-                    <TextBlock Text="{Binding SelectedFilesText}" VerticalAlignment="Center" FontWeight="SemiBold"/>
-                    
-                    <!-- Center: Restore options -->
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                        <CheckBox Content="Restore to original location" 
-                                  IsChecked="{Binding RestoreToOriginalLocation}"
-                                  VerticalAlignment="Center"
-                                  ToolTip.Tip="When checked, files will be restored to their original paths"/>
-                        <TextBlock Text="or" VerticalAlignment="Center" Opacity="0.5" 
-                                   IsVisible="{Binding !RestoreToOriginalLocation}"/>
-                        <TextBox Text="{Binding RestoreDirectory}" Watermark="Select restore directory..."
-                                 Width="200" IsReadOnly="True"
-                                 IsVisible="{Binding !RestoreToOriginalLocation}"/>
-                        <Button Content="Browse..." Command="{Binding BrowseRestoreDirectoryCommand}"
-                                ToolTip.Tip="Browse for restore directory"
-                                IsVisible="{Binding !RestoreToOriginalLocation}"/>
-                    </StackPanel>
-                    
-                    <!-- Right: Action buttons -->
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-                        <Button Content="Mirror Sync" Command="{Binding MirrorSyncToLocalCommand}"
-                                ToolTip.Tip="Sync selected folder to target: restore missing/updated files, delete extra local files"
-                                IsEnabled="{Binding CanSetCustomRestorePath}"
-                                Foreground="DodgerBlue"/>
-                        <Button Content="Restore Selected" Command="{Binding RestoreSelectedTreeFilesCommand}"
-                                Classes="primary" ToolTip.Tip="Restore selected files to the destination"
-                                IsEnabled="{Binding HasSelectedFiles}"/>
-                        <Button Content="Delete from Azure" Command="{Binding DeleteSelectedFilesCommand}"
-                                ToolTip.Tip="Delete selected files from Azure Storage (cannot be undone!)"
-                                Foreground="IndianRed"
-                                IsEnabled="{Binding HasSelectedFiles}"/>
-                    </StackPanel>
-                </Grid>
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <TextBlock Text="{Binding SelectedFilesText}" VerticalAlignment="Center" FontWeight="SemiBold"/>
+
+                <!-- Center: Restore options -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                    <CheckBox Content="Restore to original location" 
+                              IsChecked="{Binding RestoreToOriginalLocation}"
+                              VerticalAlignment="Center"
+                              ToolTip.Tip="When checked, files will be restored to their original paths"/>
+                    <TextBlock Text="or" VerticalAlignment="Center" Opacity="0.5" 
+                               IsVisible="{Binding !RestoreToOriginalLocation}"/>
+                    <TextBox Text="{Binding RestoreDirectory}" Watermark="Select restore directory..."
+                             Width="200" IsReadOnly="True"
+                             IsVisible="{Binding !RestoreToOriginalLocation}"/>
+                    <Button Content="Browse..." Command="{Binding BrowseRestoreDirectoryCommand}"
+                            ToolTip.Tip="Browse for restore directory"
+                            IsVisible="{Binding !RestoreToOriginalLocation}"/>
+                </StackPanel>
+
+                <!-- Right: Action buttons -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Mirror Sync to Local" Command="{Binding MirrorSyncToLocalCommand}"
+                            ToolTip.Tip="Sync selected folder to target: restore missing/updated files, delete extra local files"
+                            IsEnabled="{Binding CanSetCustomRestorePath}"
+                            Foreground="DodgerBlue"/>
+                    <Button Content="Restore Selected" Command="{Binding RestoreSelectedTreeFilesCommand}"
+                            Classes="primary" ToolTip.Tip="Restore selected files to the destination"
+                            IsEnabled="{Binding HasSelectedFiles}"/>
+                    <Button Content="Delete from Azure" Command="{Binding DeleteSelectedFilesCommand}"
+                            ToolTip.Tip="Delete selected files from Azure Storage (cannot be undone!)"
+                            Foreground="IndianRed"
+                            IsEnabled="{Binding HasSelectedFiles}"/>
+                </StackPanel>
             </Grid>
         </Border>
     </Grid>

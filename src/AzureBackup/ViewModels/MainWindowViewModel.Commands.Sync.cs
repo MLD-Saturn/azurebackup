@@ -272,6 +272,95 @@ public partial class MainWindowViewModel
     }
 
     /// <summary>
+    /// Returns true when a single root watched folder is selected on the left pane,
+    /// enabling the Mirror Sync to Azure operation.
+    /// </summary>
+    public bool CanMirrorSyncToAzure =>
+        IsInitialized && _blobService.IsConnected &&
+        LocalFileTreeRoots.Count(r => r.IsSelected) == 1 &&
+        LocalFileTreeRoots.First(r => r.IsSelected).IsFolder;
+
+    /// <summary>
+    /// Performs a mirror sync from the selected local watched folder to Azure:
+    /// backs up new/modified files, marks deleted files as excluded.
+    /// </summary>
+    [RelayCommand]
+    private async Task MirrorSyncToAzureAsync()
+    {
+        if (!IsInitialized || !_blobService.IsConnected)
+        {
+            AddLog("Please initialize and connect to Azure first");
+            return;
+        }
+
+        var selectedRoot = LocalFileTreeRoots.FirstOrDefault(r => r.IsSelected && r.IsFolder);
+        if (selectedRoot == null)
+        {
+            AddLog("Please select a watched folder to mirror sync");
+            return;
+        }
+
+        // Find the matching WatchedFolder model
+        var config = _databaseService.GetConfiguration();
+        var watchedFolder = config.WatchedFolders
+            .FirstOrDefault(f => f.Path.Equals(selectedRoot.FullPath, StringComparison.OrdinalIgnoreCase));
+
+        if (watchedFolder == null)
+        {
+            AddLog($"Watched folder not found in configuration: {selectedRoot.FullPath}");
+            return;
+        }
+
+        IsOperationInProgress = true;
+        CreateOperationCts();
+
+        try
+        {
+            AddLog($"Mirror sync to Azure: {watchedFolder.Path}");
+
+            var totalFiles = selectedRoot.TotalFileCount;
+            StartProgressTab("Mirror syncing to Azure", totalFiles, 0, totalFiles, 0);
+            StartProgressTracking("Mirror syncing to Azure", totalFiles, 0);
+
+            Progress<(int current, int total, string file, string action)> progress = new(p =>
+            {
+                ProgressValue = totalFiles > 0 ? (double)p.current / p.total * 100 : 0;
+                ProgressText = $"[{p.current}/{p.total}] {p.action}: {p.file}";
+            });
+
+            var result = await _orchestrator.MirrorSyncToAzureAsync(watchedFolder, progress, _operationCts!.Token);
+
+            ProgressTab.CompleteOperation(result.FilesTransferred, result.FilesErrored, 0, result.BytesTransferred);
+
+            AddLog($"Mirror sync to Azure complete: {result.FilesTransferred} backed up, " +
+                   $"{result.FilesDeleted} marked deleted, {result.FilesUnchanged} unchanged" +
+                   (result.FilesErrored > 0 ? $", {result.FilesErrored} errors" : ""));
+
+            foreach (var error in result.Errors.Take(10))
+            {
+                AddLog($"  Error: {error}");
+            }
+
+            await RefreshBothFilePanesAsync();
+            RefreshStatistics();
+        }
+        catch (OperationCanceledException)
+        {
+            AddLog("Mirror sync to Azure cancelled");
+            ProgressTab.MarkCancelled();
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Mirror sync to Azure failed: {ex.Message}");
+        }
+        finally
+        {
+            IsOperationInProgress = false;
+            StopProgressTracking();
+        }
+    }
+
+    /// <summary>
     /// Notifies that selection-related properties may have changed.
     /// </summary>
     private void NotifyLocalSelectionChanged()
@@ -280,6 +369,7 @@ public partial class MainWindowViewModel
         OnPropertyChanged(nameof(SelectedLocalFilesCount));
         OnPropertyChanged(nameof(SelectedLocalFilesText));
         OnPropertyChanged(nameof(CanRemoveSelectedLocalFolder));
+        OnPropertyChanged(nameof(CanMirrorSyncToAzure));
     }
 
     /// <summary>
