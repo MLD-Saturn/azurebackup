@@ -8,7 +8,29 @@
              x:DataType="vm:MainWindowViewModel">
 
     <ScrollViewer>
-        <StackPanel Spacing="16" MaxWidth="600">
+        <StackPanel Spacing="16">
+            <!-- Zoom controls -->
+            <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Right" MaxWidth="600">
+                <TextBlock Text="Zoom:" VerticalAlignment="Center" FontSize="11" Opacity="0.6"/>
+                <Button Content="−" Command="{Binding DecreaseSettingsScaleCommand}"
+                        Padding="6,2" MinWidth="28" HorizontalContentAlignment="Center"
+                        ToolTip.Tip="Decrease text size"/>
+                <Button Content="{Binding SettingsScale, StringFormat='{}{0:P0}'}"
+                        Command="{Binding ResetSettingsScaleCommand}"
+                        Padding="6,2" MinWidth="48" HorizontalContentAlignment="Center"
+                        ToolTip.Tip="Reset to 100%"/>
+                <Button Content="+" Command="{Binding IncreaseSettingsScaleCommand}"
+                        Padding="6,2" MinWidth="28" HorizontalContentAlignment="Center"
+                        ToolTip.Tip="Increase text size"/>
+            </StackPanel>
+
+            <!-- Scaled settings content (LayoutTransformControl participates in layout,
+                 so ScrollViewer sees the true scaled size and centering works correctly) -->
+            <LayoutTransformControl HorizontalAlignment="Center">
+                <LayoutTransformControl.LayoutTransform>
+                    <ScaleTransform ScaleX="{Binding SettingsScale}" ScaleY="{Binding SettingsScale}"/>
+                </LayoutTransformControl.LayoutTransform>
+            <StackPanel Spacing="16" MaxWidth="600">
             <!-- Authentication Method Selection -->
             <Border Classes="card">
                 <StackPanel Spacing="12">
@@ -255,6 +277,39 @@
                 </StackPanel>
             </Border>
 
+            <!-- Memory Limit -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Memory Usage" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock Text="Limit memory used during backup and restore operations." 
+                               FontSize="12" Opacity="0.8" TextWrapping="Wrap"/>
+
+                    <CheckBox Content="Limit memory usage" 
+                              IsChecked="{Binding MemoryLimitEnabled}"/>
+
+                    <StackPanel Spacing="8" IsVisible="{Binding MemoryLimitEnabled}">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <TextBlock Text="{Binding MemoryLimitSteps[0], StringFormat='{}{0} MB'}" 
+                                       FontSize="11" Opacity="0.6" VerticalAlignment="Center"/>
+                            <Slider Grid.Column="1" 
+                                    Minimum="0" 
+                                    Maximum="{Binding MemoryLimitSteps.Length, Converter={x:Static vm:SliderMaxConverter.Instance}}"
+                                    Value="{Binding MemoryLimitSliderIndex}"
+                                    IsSnapToTickEnabled="True" TickFrequency="1"
+                                    Margin="8,0"/>
+                            <TextBlock Grid.Column="2" 
+                                       Text="{Binding MemoryLimitDisplayText}" 
+                                       FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                                       Foreground="{Binding MemoryLimitColor, Converter={x:Static vm:NameToBrushConverter.Instance}}"/>
+                        </Grid>
+                        <TextBlock Text="{Binding MemoryLimitStatusText}" 
+                                   FontSize="11"
+                                   Foreground="{Binding MemoryLimitColor, Converter={x:Static vm:NameToBrushConverter.Instance}}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <!-- Unified unlock/initialize and connect button -->
                 <Button Command="{Binding UnlockAndConnectCommand}" Classes="primary"
@@ -293,6 +348,8 @@
                     </StackPanel>
                 </StackPanel>
             </Border>
+            </StackPanel>
+            </LayoutTransformControl>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

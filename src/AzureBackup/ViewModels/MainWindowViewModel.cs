@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using AzureBackup.Core;
 using AzureBackup.Core.Models;
 using AzureBackup.Core.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -247,6 +248,68 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     [ObservableProperty]
     private string _containerName = "backup";
 
+    // Memory limit settings
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitStatusText))]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitColor))]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitDisplayText))]
+    private bool _memoryLimitEnabled;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitStatusText))]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitColor))]
+    [NotifyPropertyChangedFor(nameof(MemoryLimitDisplayText))]
+    private int _memoryLimitSliderIndex;
+
+    /// <summary>
+    /// Stepped detent values (MB) for the memory limit slider.
+    /// Computed from total physical RAM at startup.
+    /// </summary>
+    public int[] MemoryLimitSteps { get; } = SystemMemoryHelper.GetMemorySteps(
+        SystemMemoryHelper.GetTotalPhysicalMemoryBytes());
+
+    /// <summary>
+    /// Total physical RAM in bytes, detected at startup.
+    /// </summary>
+    public long TotalPhysicalMemoryBytes { get; } = SystemMemoryHelper.GetTotalPhysicalMemoryBytes();
+
+    /// <summary>
+    /// The memory limit in MB corresponding to the current slider index.
+    /// </summary>
+    public int MemoryLimitMB => MemoryLimitSteps.Length > 0 && MemoryLimitSliderIndex >= 0 && MemoryLimitSliderIndex < MemoryLimitSteps.Length
+        ? MemoryLimitSteps[MemoryLimitSliderIndex]
+        : 2048;
+
+    /// <summary>
+    /// Display text for the selected memory amount (e.g., "4 GB" or "512 MB").
+    /// </summary>
+    public string MemoryLimitDisplayText => FormatHelper.FormatBytes((long)MemoryLimitMB * 1024 * 1024);
+
+    /// <summary>
+    /// Multi-line status text showing selected amount, total, and estimated available.
+    /// </summary>
+    public string MemoryLimitStatusText
+    {
+        get
+        {
+            var estimated = SystemMemoryHelper.GetEstimatedAvailableMemoryBytes();
+            return $"Selected: {FormatHelper.FormatBytes((long)MemoryLimitMB * 1024 * 1024)}\n" +
+                   $"Total System Memory: {FormatHelper.FormatBytes(TotalPhysicalMemoryBytes)}\n" +
+                   $"Estimated Memory Available: {FormatHelper.FormatBytes(estimated)}";
+        }
+    }
+
+    /// <summary>
+    /// Color name for the memory limit indicator (Green, Orange, or Red).
+    /// </summary>
+    public string MemoryLimitColor => SystemMemoryHelper.GetSeverity(MemoryLimitMB, TotalPhysicalMemoryBytes) switch
+    {
+        MemoryLimitSeverity.Safe => "LimeGreen",
+        MemoryLimitSeverity.Aggressive => "Orange",
+        MemoryLimitSeverity.Dangerous => "Red",
+        _ => "LimeGreen"
+    };
+
     [ObservableProperty]
     private string _currentView = "Sync";
 
@@ -437,6 +500,32 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     /// </summary>
     [ObservableProperty]
     private double _logFontSize = 12;
+
+    /// <summary>
+    /// Uniform scale factor for the Settings page (1.0 = 100%).
+    /// Adjustable via +/- buttons on the Settings tab.
+    /// Clamped to [0.8, 2.0] to keep the page usable.
+    /// </summary>
+    [ObservableProperty]
+    private double _settingsScale = 1.0;
+
+    [RelayCommand]
+    private void IncreaseSettingsScale()
+    {
+        SettingsScale = Math.Min(SettingsScale + 0.1, 2.0);
+    }
+
+    [RelayCommand]
+    private void DecreaseSettingsScale()
+    {
+        SettingsScale = Math.Max(SettingsScale - 0.1, 0.8);
+    }
+
+    [RelayCommand]
+    private void ResetSettingsScale()
+    {
+        SettingsScale = 1.0;
+    }
 
     #region Tree View Properties
 
@@ -727,7 +816,31 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     
     // Flag to track if migration from unencrypted database is needed
     private bool _needsMigration;
-    
+
+    /// <summary>
+    /// Saves memory limit settings to the database when changed.
+    /// </summary>
+    private void SaveMemoryLimitSettings()
+    {
+        if (!_databaseService.IsInitialized)
+            return;
+
+        var config = _databaseService.GetConfiguration();
+        config.MemoryLimitEnabled = MemoryLimitEnabled;
+        config.MemoryLimitMB = MemoryLimitMB;
+        _databaseService.SaveConfiguration(config);
+    }
+
+    partial void OnMemoryLimitEnabledChanged(bool value)
+    {
+        SaveMemoryLimitSettings();
+    }
+
+    partial void OnMemoryLimitSliderIndexChanged(int value)
+    {
+        SaveMemoryLimitSettings();
+    }
+
     /// <summary>
     /// Handles diagnostic log messages from services.
     /// </summary>
@@ -790,7 +903,20 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         }
         
         ContainerName = config.ContainerName ?? "backup";
-        
+
+        // Load memory limit settings
+        MemoryLimitEnabled = config.MemoryLimitEnabled;
+        var targetMB = config.MemoryLimitMB;
+        var steps = MemoryLimitSteps;
+        // Find the closest step index for the stored value
+        var bestIndex = 0;
+        for (var i = 0; i < steps.Length; i++)
+        {
+            if (Math.Abs(steps[i] - targetMB) < Math.Abs(steps[bestIndex] - targetMB))
+                bestIndex = i;
+        }
+        MemoryLimitSliderIndex = bestIndex;
+
         // Update WatchedFolders collection directly
         // LoadConfiguration is called from UI thread (auth commands), so direct update is safe
         var folders = config.WatchedFolders;
@@ -1085,11 +1211,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     /// Event raised when a remap folder picker dialog is needed.
     /// </summary>
     public event EventHandler? RemapFolderPickerRequested;
-
-    /// <summary>
-    /// Event raised when a file picker dialog is needed.
-    /// </summary>
-    public event EventHandler? FilePickerRequested;
 
     /// <summary>
     /// Event raised when a preview dialog is needed.

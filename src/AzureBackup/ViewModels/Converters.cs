@@ -115,3 +115,48 @@ public class PendingToColorConverter : IValueConverter
     }
 }
 
+/// <summary>
+/// Converts an array length to a slider maximum (length - 1).
+/// Used to bind Slider.Maximum to MemoryLimitSteps.Length.
+/// </summary>
+public class SliderMaxConverter : IValueConverter
+{
+    public static readonly SliderMaxConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is int length && length > 0)
+            return length - 1;
+        return 0;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        throw new NotImplementedException();
+    }
+}
+
+/// <summary>
+/// Converts a color name string (e.g., "LimeGreen", "Orange", "Red") to an Avalonia <see cref="IBrush"/>.
+/// </summary>
+public class NameToBrushConverter : IValueConverter
+{
+    public static readonly NameToBrushConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        return value?.ToString() switch
+        {
+            "LimeGreen" => Brushes.LimeGreen,
+            "Orange" => Brushes.Orange,
+            "Red" => Brushes.Red,
+            _ => Brushes.Gray
+        };
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        throw new NotImplementedException();
+    }
+}
+

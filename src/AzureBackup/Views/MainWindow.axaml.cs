@@ -193,7 +193,6 @@ public partial class MainWindow : Window
         {
             _currentViewModel.FolderPickerRequested -= OnFolderPickerRequested;
             _currentViewModel.RestoreFolderPickerRequested -= OnRestoreFolderPickerRequested;
-            _currentViewModel.FilePickerRequested -= OnFilePickerRequested;
             _currentViewModel.PreviewDialogRequested -= OnPreviewDialogRequested;
         }
 
@@ -203,7 +202,6 @@ public partial class MainWindow : Window
             _currentViewModel = vm;
             vm.FolderPickerRequested += OnFolderPickerRequested;
             vm.RestoreFolderPickerRequested += OnRestoreFolderPickerRequested;
-            vm.FilePickerRequested += OnFilePickerRequested;
             vm.PreviewDialogRequested += OnPreviewDialogRequested;
         }
         else
@@ -219,7 +217,6 @@ public partial class MainWindow : Window
         {
             _currentViewModel.FolderPickerRequested -= OnFolderPickerRequested;
             _currentViewModel.RestoreFolderPickerRequested -= OnRestoreFolderPickerRequested;
-            _currentViewModel.FilePickerRequested -= OnFilePickerRequested;
             _currentViewModel.PreviewDialogRequested -= OnPreviewDialogRequested;
             _currentViewModel = null;
         }
@@ -297,42 +294,6 @@ public partial class MainWindow : Window
             if (DataContext is MainWindowViewModel vm)
             {
                 vm.AddLogMessage($"Error selecting restore folder: {ex.Message}");
-            }
-        }
-    }
-
-    private async void OnFilePickerRequested(object? sender, EventArgs e)
-    {
-        try
-        {
-            if (DataContext is not MainWindowViewModel vm) return;
-
-            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "Select Files to Backup",
-                AllowMultiple = true
-            });
-
-            if (files.Count > 0)
-            {
-                // Handle both local paths and URI paths
-                var filePaths = files
-                    .Select(f => f.TryGetLocalPath() ?? f.Path.ToString())
-                    .Where(p => !string.IsNullOrEmpty(p))
-                    .ToArray();
-                
-                if (filePaths.Length > 0)
-                {
-                    await vm.BackupFilePathsAsync(filePaths);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"Error in file picker: {ex}");
-            if (DataContext is MainWindowViewModel vm)
-            {
-                vm.AddLogMessage($"Error selecting files: {ex.Message}");
             }
         }
     }

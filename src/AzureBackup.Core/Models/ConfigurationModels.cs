@@ -137,6 +137,19 @@ public class BackupConfiguration
     /// Configuration format version for migration support.
     /// </summary>
     public int ConfigVersion { get; set; } = 3; // Bumped for hybrid auth
+
+    /// <summary>
+    /// Whether the user has enabled a manual memory limit for backup/restore operations.
+    /// When false, the application uses automatic memory management.
+    /// </summary>
+    public bool MemoryLimitEnabled { get; set; }
+
+    /// <summary>
+    /// The user-selected memory limit in megabytes for backup/restore operations.
+    /// Only used when <see cref="MemoryLimitEnabled"/> is true.
+    /// Stored as a stepped value (512, 1024, 2048, 4096, 8192, 16384, 32768).
+    /// </summary>
+    public int MemoryLimitMB { get; set; } = 2048;
 }
 
 /// <summary>
