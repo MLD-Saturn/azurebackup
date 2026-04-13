@@ -213,11 +213,7 @@ public class EncryptionService : IDisposable
     public byte[] Encrypt(ReadOnlySpan<byte> plaintext)
     {
         Span<byte> keyCopy = stackalloc byte[KeySize];
-        lock (_keyLock)
-        {
-            EnsureInitialized();
-            _derivedKey.AsSpan().CopyTo(keyCopy);
-        }
+        CopyKey(keyCopy);
 
         try
         {
@@ -275,11 +271,7 @@ public class EncryptionService : IDisposable
                 nameof(destination));
 
         Span<byte> keyCopy = stackalloc byte[KeySize];
-        lock (_keyLock)
-        {
-            EnsureInitialized();
-            _derivedKey.AsSpan().CopyTo(keyCopy);
-        }
+        CopyKey(keyCopy);
 
         try
         {
@@ -318,65 +310,17 @@ public class EncryptionService : IDisposable
     /// </summary>
     public byte[] Decrypt(ReadOnlySpan<byte> encryptedData)
     {
-        // Minimum: magic(4) + version(1) + nonce(12) + tag(16) + checksum(4) = 37 bytes (empty plaintext)
-        var minLength = MagicHeader.Length + 1 + NonceSize + TagSize + ChecksumSize;
-        if (encryptedData.Length < minLength)
-        {
-            Log($"Decrypt: Data too short ({encryptedData.Length} bytes, min={minLength})");
-            throw new CryptographicException("Encrypted data is too short or corrupted");
-        }
-
-        // Verify checksum first
-        var dataWithoutChecksum = encryptedData[..^ChecksumSize];
-        var storedChecksum = encryptedData[^ChecksumSize..];
-        Span<byte> computedChecksum = stackalloc byte[ChecksumSize];
-        WriteChecksum(dataWithoutChecksum, computedChecksum);
-
-        if (!storedChecksum.SequenceEqual(computedChecksum))
-        {
-            Log($"Decrypt: CRC32 checksum mismatch (data length={encryptedData.Length})");
-            throw new DataIntegrityException("Data integrity check failed - file may be corrupted");
-        }
-
-        // Verify magic header
-        var magic = dataWithoutChecksum[..MagicHeader.Length];
-        if (!magic.SequenceEqual(MagicHeader))
-        {
-            Log($"Decrypt: Invalid magic header (got {Convert.ToHexString(magic)}, expected {Convert.ToHexString(MagicHeader)})");
-            throw new DataIntegrityException("Invalid data format - not encrypted by this application");
-        }
-
-        // Check version
-        var version = dataWithoutChecksum[MagicHeader.Length];
-        if (version > CurrentFormatVersion)
-        {
-            Log($"Decrypt: Unsupported format version {version} (max={CurrentFormatVersion})");
-            throw new DataIntegrityException($"Unsupported encryption format version {version}. Please update the application.");
-        }
+        var env = ValidateAndParseEnvelope(encryptedData, "Decrypt");
 
         Span<byte> keyCopy = stackalloc byte[KeySize];
-        lock (_keyLock)
-        {
-            EnsureInitialized();
-            _derivedKey.AsSpan().CopyTo(keyCopy);
-        }
+        CopyKey(keyCopy);
 
         try
         {
-            var offset = MagicHeader.Length + 1; // Skip magic + version
-            var nonce = dataWithoutChecksum.Slice(offset, NonceSize);
-            offset += NonceSize;
-
-            var ciphertextLength = dataWithoutChecksum.Length - MagicHeader.Length - 1 - NonceSize - TagSize;
-            var ciphertext = dataWithoutChecksum.Slice(offset, ciphertextLength);
-            offset += ciphertextLength;
-
-            var tag = dataWithoutChecksum.Slice(offset, TagSize);
-
-            byte[] plaintext = new byte[ciphertextLength];
+            byte[] plaintext = new byte[env.CiphertextLength];
 
             using AesGcm aes = new(keyCopy, TagSize);
-            aes.Decrypt(nonce, ciphertext, tag, plaintext);
+            aes.Decrypt(env.Nonce, env.Ciphertext, env.Tag, plaintext);
 
             return plaintext;
         }
@@ -400,67 +344,22 @@ public class EncryptionService : IDisposable
     /// <returns>The number of plaintext bytes written to <paramref name="destination"/>.</returns>
     public int DecryptInto(ReadOnlySpan<byte> encryptedData, Span<byte> destination)
     {
-        if (encryptedData.Length < EncryptionOverhead)
-        {
-            Log($"DecryptInto: Data too short ({encryptedData.Length} bytes, min={EncryptionOverhead})");
-            throw new CryptographicException("Encrypted data is too short or corrupted");
-        }
+        var env = ValidateAndParseEnvelope(encryptedData, "DecryptInto");
 
-        var ciphertextLength = encryptedData.Length - EncryptionOverhead;
-        if (destination.Length < ciphertextLength)
+        if (destination.Length < env.CiphertextLength)
             throw new ArgumentException(
-                $"Destination too small: need {ciphertextLength} bytes, got {destination.Length}",
+                $"Destination too small: need {env.CiphertextLength} bytes, got {destination.Length}",
                 nameof(destination));
 
-        // Verify checksum
-        var dataWithoutChecksum = encryptedData[..^ChecksumSize];
-        var storedChecksum = encryptedData[^ChecksumSize..];
-        Span<byte> computedChecksum = stackalloc byte[ChecksumSize];
-        WriteChecksum(dataWithoutChecksum, computedChecksum);
-
-        if (!storedChecksum.SequenceEqual(computedChecksum))
-        {
-            Log($"DecryptInto: CRC32 checksum mismatch (data length={encryptedData.Length})");
-            throw new DataIntegrityException("Data integrity check failed - file may be corrupted");
-        }
-
-        // Verify magic header
-        var magic = dataWithoutChecksum[..MagicHeader.Length];
-        if (!magic.SequenceEqual(MagicHeader))
-        {
-            Log($"DecryptInto: Invalid magic header");
-            throw new DataIntegrityException("Invalid data format - not encrypted by this application");
-        }
-
-        var version = dataWithoutChecksum[MagicHeader.Length];
-        if (version > CurrentFormatVersion)
-        {
-            Log($"DecryptInto: Unsupported format version {version}");
-            throw new DataIntegrityException($"Unsupported encryption format version {version}. Please update the application.");
-        }
-
         Span<byte> keyCopy = stackalloc byte[KeySize];
-        lock (_keyLock)
-        {
-            EnsureInitialized();
-            _derivedKey.AsSpan().CopyTo(keyCopy);
-        }
+        CopyKey(keyCopy);
 
         try
         {
-            var offset = MagicHeader.Length + 1;
-            var nonce = dataWithoutChecksum.Slice(offset, NonceSize);
-            offset += NonceSize;
-
-            var ciphertext = dataWithoutChecksum.Slice(offset, ciphertextLength);
-            offset += ciphertextLength;
-
-            var tag = dataWithoutChecksum.Slice(offset, TagSize);
-
             using AesGcm aes = new(keyCopy, TagSize);
-            aes.Decrypt(nonce, ciphertext, tag, destination[..ciphertextLength]);
+            aes.Decrypt(env.Nonce, env.Ciphertext, env.Tag, destination[..env.CiphertextLength]);
 
-            return ciphertextLength;
+            return env.CiphertextLength;
         }
         catch (CryptographicException ex)
         {
@@ -481,56 +380,20 @@ public class EncryptionService : IDisposable
     /// </summary>
     public byte[]? DecryptBestEffort(ReadOnlySpan<byte> encryptedData)
     {
-        var minLength = MagicHeader.Length + 1 + NonceSize + TagSize + ChecksumSize;
-        if (encryptedData.Length < minLength)
-        {
-            Log($"DecryptBestEffort: Data too short ({encryptedData.Length} bytes, min={minLength})");
+        if (!TryParseEnvelopeUnchecked(encryptedData, "DecryptBestEffort", out var env))
             return null;
-        }
-
-        // Strip checksum but do NOT verify it
-        var dataWithoutChecksum = encryptedData[..^ChecksumSize];
-
-        // Verify magic header (if this is wrong, data is not ours at all)
-        var magic = dataWithoutChecksum[..MagicHeader.Length];
-        if (!magic.SequenceEqual(MagicHeader))
-        {
-            Log($"DecryptBestEffort: Invalid magic header");
-            return null;
-        }
-
-        var version = dataWithoutChecksum[MagicHeader.Length];
-        if (version > CurrentFormatVersion)
-        {
-            Log($"DecryptBestEffort: Unsupported format version {version}");
-            return null;
-        }
 
         Span<byte> keyCopy = stackalloc byte[KeySize];
-        lock (_keyLock)
-        {
-            EnsureInitialized();
-            _derivedKey.AsSpan().CopyTo(keyCopy);
-        }
+        CopyKey(keyCopy);
 
         try
         {
-            var offset = MagicHeader.Length + 1;
-            var nonce = dataWithoutChecksum.Slice(offset, NonceSize);
-            offset += NonceSize;
-
-            var ciphertextLength = dataWithoutChecksum.Length - MagicHeader.Length - 1 - NonceSize - TagSize;
-            var ciphertext = dataWithoutChecksum.Slice(offset, ciphertextLength);
-            offset += ciphertextLength;
-
-            var tag = dataWithoutChecksum.Slice(offset, TagSize);
-
-            byte[] plaintext = new byte[ciphertextLength];
+            byte[] plaintext = new byte[env.CiphertextLength];
 
             using AesGcm aes = new(keyCopy, TagSize);
-            aes.Decrypt(nonce, ciphertext, tag, plaintext);
+            aes.Decrypt(env.Nonce, env.Ciphertext, env.Tag, plaintext);
 
-            Log($"DecryptBestEffort: Decrypted {ciphertextLength} bytes (CRC invalid but AES-GCM tag OK)");
+            Log($"DecryptBestEffort: Decrypted {env.CiphertextLength} bytes (CRC invalid but AES-GCM tag OK)");
             return plaintext;
         }
         catch (CryptographicException ex)
@@ -588,6 +451,144 @@ public class EncryptionService : IDisposable
                $"computed={Convert.ToHexString(computedChecksum)}, " +
                $"dataLen={encryptedData.Length}, " +
                $"last8bytes={lastDataBytes}";
+    }
+
+    /// <summary>
+    /// Parsed fields from an encrypted envelope. Zero-allocation ref struct
+    /// holding <see cref="ReadOnlySpan{T}"/> slices into the original buffer.
+    /// </summary>
+    private ref struct DecryptEnvelope
+    {
+        public ReadOnlySpan<byte> DataWithoutChecksum;
+        public ReadOnlySpan<byte> Nonce;
+        public ReadOnlySpan<byte> Ciphertext;
+        public ReadOnlySpan<byte> Tag;
+        public int CiphertextLength;
+    }
+
+    /// <summary>
+    /// Validates the encrypted envelope (CRC, magic header, version) and parses the
+    /// nonce/ciphertext/tag fields. Shared by <see cref="Decrypt"/> and <see cref="DecryptInto"/>.
+    /// </summary>
+    /// <exception cref="CryptographicException">Data too short.</exception>
+    /// <exception cref="DataIntegrityException">CRC, magic, or version check failed.</exception>
+    private DecryptEnvelope ValidateAndParseEnvelope(ReadOnlySpan<byte> encryptedData, string caller)
+    {
+        var minLength = EncryptionOverhead; // magic + version + nonce + tag + checksum
+        if (encryptedData.Length < minLength)
+        {
+            Log($"{caller}: Data too short ({encryptedData.Length} bytes, min={minLength})");
+            throw new CryptographicException("Encrypted data is too short or corrupted");
+        }
+
+        var dataWithoutChecksum = encryptedData[..^ChecksumSize];
+        var storedChecksum = encryptedData[^ChecksumSize..];
+        Span<byte> computedChecksum = stackalloc byte[ChecksumSize];
+        WriteChecksum(dataWithoutChecksum, computedChecksum);
+
+        if (!storedChecksum.SequenceEqual(computedChecksum))
+        {
+            Log($"{caller}: CRC32 checksum mismatch (data length={encryptedData.Length})");
+            throw new DataIntegrityException("Data integrity check failed - file may be corrupted");
+        }
+
+        return ParseEnvelopeFields(dataWithoutChecksum, caller);
+    }
+
+    /// <summary>
+    /// Parses envelope fields without CRC verification.
+    /// Used by <see cref="DecryptBestEffort"/> which intentionally skips CRC.
+    /// </summary>
+    /// <returns>True if the envelope is valid and <paramref name="envelope"/> is populated; false otherwise.</returns>
+    private bool TryParseEnvelopeUnchecked(ReadOnlySpan<byte> encryptedData, string caller, out DecryptEnvelope envelope)
+    {
+        envelope = default;
+        var minLength = EncryptionOverhead;
+        if (encryptedData.Length < minLength)
+        {
+            Log($"{caller}: Data too short ({encryptedData.Length} bytes, min={minLength})");
+            return false;
+        }
+
+        var dataWithoutChecksum = encryptedData[..^ChecksumSize];
+
+        var magic = dataWithoutChecksum[..MagicHeader.Length];
+        if (!magic.SequenceEqual(MagicHeader))
+        {
+            Log($"{caller}: Invalid magic header");
+            return false;
+        }
+
+        var version = dataWithoutChecksum[MagicHeader.Length];
+        if (version > CurrentFormatVersion)
+        {
+            Log($"{caller}: Unsupported format version {version}");
+            return false;
+        }
+
+        envelope = ExtractFields(dataWithoutChecksum);
+        return true;
+    }
+
+    /// <summary>
+    /// Validates magic header and version, then extracts nonce/ciphertext/tag fields.
+    /// Throws on failure (used by strict decrypt paths).
+    /// </summary>
+    private DecryptEnvelope ParseEnvelopeFields(ReadOnlySpan<byte> dataWithoutChecksum, string caller)
+    {
+        var magic = dataWithoutChecksum[..MagicHeader.Length];
+        if (!magic.SequenceEqual(MagicHeader))
+        {
+            Log($"{caller}: Invalid magic header (got {Convert.ToHexString(magic)}, expected {Convert.ToHexString(MagicHeader)})");
+            throw new DataIntegrityException("Invalid data format - not encrypted by this application");
+        }
+
+        var version = dataWithoutChecksum[MagicHeader.Length];
+        if (version > CurrentFormatVersion)
+        {
+            Log($"{caller}: Unsupported format version {version} (max={CurrentFormatVersion})");
+            throw new DataIntegrityException($"Unsupported encryption format version {version}. Please update the application.");
+        }
+
+        return ExtractFields(dataWithoutChecksum);
+    }
+
+    /// <summary>
+    /// Extracts nonce, ciphertext, and tag spans from a validated envelope.
+    /// </summary>
+    private static DecryptEnvelope ExtractFields(ReadOnlySpan<byte> dataWithoutChecksum)
+    {
+        var offset = MagicHeader.Length + 1; // Skip magic + version
+        var nonce = dataWithoutChecksum.Slice(offset, NonceSize);
+        offset += NonceSize;
+
+        var ciphertextLength = dataWithoutChecksum.Length - MagicHeader.Length - 1 - NonceSize - TagSize;
+        var ciphertext = dataWithoutChecksum.Slice(offset, ciphertextLength);
+        offset += ciphertextLength;
+
+        var tag = dataWithoutChecksum.Slice(offset, TagSize);
+
+        return new DecryptEnvelope
+        {
+            DataWithoutChecksum = dataWithoutChecksum,
+            Nonce = nonce,
+            Ciphertext = ciphertext,
+            Tag = tag,
+            CiphertextLength = ciphertextLength
+        };
+    }
+
+    /// <summary>
+    /// Copies the derived key into a caller-provided stack buffer under lock.
+    /// Shared by all encrypt/decrypt methods to avoid repeating the lock pattern.
+    /// </summary>
+    private void CopyKey(Span<byte> destination)
+    {
+        lock (_keyLock)
+        {
+            EnsureInitialized();
+            _derivedKey.AsSpan().CopyTo(destination);
+        }
     }
 
     /// <summary>

@@ -36,6 +36,9 @@ public partial class RestoreService
     // Large FileStream buffer — reduces syscalls for multi-MB chunk writes
     private const int LargeFileStreamBufferSize = 4 * 1024 * 1024; // 4 MB
 
+    // Memory budget overhead for concurrent FileStream buffers during parallel restores
+    private const long FileStreamOverhead = (long)MaxParallelFileRestores * LargeFileStreamBufferSize;
+
     // Machine-adaptive parallelism for local I/O + CPU operations (e.g., SHA-256 hashing).
     // Uses logical processor count (cores × threads-per-core on hyperthreaded CPUs).
     // Not used for Azure-network-bound operations — those have fixed constants
@@ -310,7 +313,7 @@ public partial class RestoreService
                     Log($"RestoreFileAsync: Downloading chunk {chunk.Index} ({chunk.Length} bytes) blob={chunk.BlobName}");
 
                     // Download with retry for transient Azure failures — same pattern as multi-chunk path.
-                    // Single-chunk files (3,000 small files) are especially vulnerable to transient 503s
+                    // Single-chunk files are especially vulnerable to transient 503s
                     // at high concurrency since they have no other chunks to amortize a failure across.
                     byte[]? chunkData = null;
                     for (var attempt = 0; attempt <= MaxChunkRetries; attempt++)
@@ -711,30 +714,32 @@ public partial class RestoreService
 
             try
             {
+                // Local function: writes one chunk to disk, updates hash + counters,
+                // returns the ArrayPool buffer, and releases the memory budget.
+                // Shared by the direct-write and pending-drain paths.
+                async Task WriteChunkAndReleaseAsync(byte[] chunkData, int chunkLength)
+                {
+                    await outputStream.WriteAsync(chunkData.AsMemory(0, chunkLength), linkedCts.Token);
+                    incrementalHash.AppendData(chunkData.AsSpan(0, chunkLength));
+                    currentBytes += chunkLength;
+                    chunksWritten++;
+                    nextChunkToWrite++;
+                    ArrayPool<byte>.Shared.Return(chunkData, clearArray: true);
+                    // Phase C: Release remaining 1× for plaintext buffer
+                    // (producer already released the encrypted buffer portion in Phase B)
+                    memoryBudget.Release(chunkLength);
+                }
+
                 await foreach (var (index, data, length) in channel.Reader.ReadAllAsync(linkedCts.Token))
                 {
                     if (index == nextChunkToWrite)
                     {
-                        await outputStream.WriteAsync(data.AsMemory(0, length), linkedCts.Token);
-                        incrementalHash.AppendData(data.AsSpan(0, length));
-                        currentBytes += length;
-                        chunksWritten++;
-                        nextChunkToWrite++;
-                        ArrayPool<byte>.Shared.Return(data, clearArray: true);
-                        // Phase C: Release remaining 1× for plaintext buffer
-                        // (producer already released the encrypted buffer portion in Phase B)
-                        memoryBudget.Release(length);
+                        await WriteChunkAndReleaseAsync(data, length);
 
                         while (pendingChunks.TryGetValue(nextChunkToWrite, out var pending))
                         {
                             pendingChunks.Remove(nextChunkToWrite);
-                            await outputStream.WriteAsync(pending.data.AsMemory(0, pending.length), linkedCts.Token);
-                            incrementalHash.AppendData(pending.data.AsSpan(0, pending.length));
-                            currentBytes += pending.length;
-                            chunksWritten++;
-                            nextChunkToWrite++;
-                            ArrayPool<byte>.Shared.Return(pending.data, clearArray: true);
-                            memoryBudget.Release(pending.length);
+                            await WriteChunkAndReleaseAsync(pending.data, pending.length);
                         }
 
                         // Throttled progress reporting to reduce UI thread pressure

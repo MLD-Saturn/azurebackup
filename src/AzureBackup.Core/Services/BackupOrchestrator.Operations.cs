@@ -378,83 +378,20 @@ public partial class BackupOrchestrator
 
             try
             {
-                FileInfo fileInfo = new(filePath);
-                if (!fileInfo.Exists) continue;
+                var action = ClassifyFileForBackupPreview(filePath, azureFilePaths, "PreviewBackupSyncAsync");
+                if (action == null) continue;
 
-                var existingBackup = _databaseService.GetBackedUpFile(filePath);
-                
-                // If we have Azure file list, verify the file actually exists in Azure
-                var actuallyExistsInAzure = azureFilePaths == null || azureFilePaths.Contains(filePath);
-                
-                // If local DB says file exists but Azure says it doesn't, treat as new
-                if (existingBackup != null && !actuallyExistsInAzure)
+                switch (action.Action)
                 {
-                    Log($"PreviewBackupSyncAsync: {Path.GetFileName(filePath)} - local DB has record but not in Azure, treating as new");
-                    existingBackup = null;
-                }
-
-                if (existingBackup == null)
-                {
-                    // New file - never backed up
-                    preview.FilesToCreate.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Create,
-                        Reason = "New file - never backed up"
-                    });
-                }
-                else if (existingBackup.Status == BackupStatus.Completed)
-                {
-                    // File was previously backed up - check if it changed
-                    if (fileInfo.LastWriteTimeUtc > existingBackup.LastModified ||
-                        fileInfo.Length != existingBackup.FileSize)
-                    {
-                        preview.FilesToOverwrite.Add(new PreviewFileAction
-                        {
-                            FilePath = filePath,
-                            FileSize = fileInfo.Length,
-                            LastModified = fileInfo.LastWriteTime,
-                            Action = FileActionType.Update,
-                            Reason = fileInfo.Length != existingBackup.FileSize
-                                ? $"Size changed ({existingBackup.FileSize} ? {fileInfo.Length})"
-                                : "Modified since last backup"
-                        });
-                    }
-                    else
-                    {
-                        preview.FilesToSkip.Add(new PreviewFileAction
-                        {
-                            FilePath = filePath,
-                            FileSize = fileInfo.Length,
-                            LastModified = fileInfo.LastWriteTime,
-                            Action = FileActionType.Skip,
-                            Reason = "Unchanged"
-                        });
-                    }
-                }
-                else if (existingBackup.Status == BackupStatus.Failed)
-                {
-                    preview.FilesToCreate.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Create,
-                        Reason = "Retrying previously failed backup"
-                    });
-                }
-                else
-                {
-                    preview.FilesToSkip.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Skip,
-                        Reason = "Excluded or in-progress"
-                    });
+                    case FileActionType.Create:
+                        preview.FilesToCreate.Add(action);
+                        break;
+                    case FileActionType.Update:
+                        preview.FilesToOverwrite.Add(action);
+                        break;
+                    default:
+                        preview.FilesToSkip.Add(action);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -513,86 +450,24 @@ public partial class BackupOrchestrator
 
             try
             {
-                FileInfo fileInfo = new(filePath);
-                if (!fileInfo.Exists)
+                var action = ClassifyFileForBackupPreview(filePath, azureFilePaths, "PreviewBackupFilesAsync");
+                if (action == null)
                 {
                     Log($"PreviewBackupFilesAsync: File not found: {filePath}");
                     continue;
                 }
 
-                var existingBackup = _databaseService.GetBackedUpFile(filePath);
-                
-                // If we have Azure file list, verify the file actually exists in Azure
-                // This prevents showing "overwrite" for files that were deleted from Azure
-                var actuallyExistsInAzure = azureFilePaths == null || azureFilePaths.Contains(filePath);
-                
-                // If local DB says file exists but Azure says it doesn't, treat as new
-                if (existingBackup != null && !actuallyExistsInAzure)
+                switch (action.Action)
                 {
-                    Log($"PreviewBackupFilesAsync: {filePath} - local DB has record but not in Azure, treating as new");
-                    existingBackup = null; // Treat as if never backed up
-                }
-
-                if (existingBackup == null)
-                {
-                    preview.FilesToCreate.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Create,
-                        Reason = "New file - never backed up"
-                    });
-                }
-                else if (existingBackup.Status == BackupStatus.Completed)
-                {
-                    if (fileInfo.LastWriteTimeUtc > existingBackup.LastModified ||
-                        fileInfo.Length != existingBackup.FileSize)
-                    {
-                        preview.FilesToOverwrite.Add(new PreviewFileAction
-                        {
-                            FilePath = filePath,
-                            FileSize = fileInfo.Length,
-                            LastModified = fileInfo.LastWriteTime,
-                            Action = FileActionType.Update,
-                            Reason = fileInfo.Length != existingBackup.FileSize
-                                ? $"Size changed ({existingBackup.FileSize} ? {fileInfo.Length})"
-                                : "Modified since last backup"
-                        });
-                    }
-                    else
-                    {
-                        preview.FilesToSkip.Add(new PreviewFileAction
-                        {
-                            FilePath = filePath,
-                            FileSize = fileInfo.Length,
-                            LastModified = fileInfo.LastWriteTime,
-                            Action = FileActionType.Skip,
-                            Reason = "Already backed up and unchanged"
-                        });
-                    }
-                }
-                else if (existingBackup.Status == BackupStatus.Failed)
-                {
-                    preview.FilesToCreate.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Create,
-                        Reason = "Retrying previously failed backup"
-                    });
-                }
-                else
-                {
-                    preview.FilesToSkip.Add(new PreviewFileAction
-                    {
-                        FilePath = filePath,
-                        FileSize = fileInfo.Length,
-                        LastModified = fileInfo.LastWriteTime,
-                        Action = FileActionType.Skip,
-                        Reason = "Excluded"
-                    });
+                    case FileActionType.Create:
+                        preview.FilesToCreate.Add(action);
+                        break;
+                    case FileActionType.Update:
+                        preview.FilesToOverwrite.Add(action);
+                        break;
+                    default:
+                        preview.FilesToSkip.Add(action);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -623,8 +498,6 @@ public partial class BackupOrchestrator
         // Create a shared memory budget from the user's config.
         // All concurrent file backups share this single budget so the total
         // in-flight chunk memory stays within the user's limit.
-        // Reserve 128 MB for the CDC buffer (ArrayPool rental in ChunkingService).
-        const long CdcBufferOverhead = 128L * 1024 * 1024;
         var config = _databaseService.GetConfiguration();
         using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
 
@@ -723,5 +596,92 @@ public partial class BackupOrchestrator
 
         StatusChanged?.Invoke(this, $"Backup complete: {totalFiles} files processed");
         Log($"BackupFilesAsync: Complete - {totalFiles} files processed, {Interlocked.Read(ref processedBytes)} bytes");
+    }
+
+    /// <summary>
+    /// Classifies a single local file for a backup preview by comparing it against
+    /// the local DB record and optional Azure file list.
+    /// Shared by <see cref="PreviewBackupSyncAsync"/> and <see cref="PreviewBackupFilesAsync"/>.
+    /// </summary>
+    /// <returns>The preview action, or null if the file doesn't exist or an error occurs.</returns>
+    private PreviewFileAction? ClassifyFileForBackupPreview(
+        string filePath,
+        ISet<string>? azureFilePaths,
+        string caller)
+    {
+        FileInfo fileInfo = new(filePath);
+        if (!fileInfo.Exists) return null;
+
+        var existingBackup = _databaseService.GetBackedUpFile(filePath);
+
+        // If we have Azure file list, verify the file actually exists in Azure.
+        // This prevents showing "overwrite" for files that were deleted from Azure.
+        var actuallyExistsInAzure = azureFilePaths == null || azureFilePaths.Contains(filePath);
+
+        if (existingBackup != null && !actuallyExistsInAzure)
+        {
+            Log($"{caller}: {Path.GetFileName(filePath)} - local DB has record but not in Azure, treating as new");
+            existingBackup = null;
+        }
+
+        if (existingBackup == null)
+        {
+            return new PreviewFileAction
+            {
+                FilePath = filePath,
+                FileSize = fileInfo.Length,
+                LastModified = fileInfo.LastWriteTime,
+                Action = FileActionType.Create,
+                Reason = "New file - never backed up"
+            };
+        }
+
+        if (existingBackup.Status == BackupStatus.Completed)
+        {
+            if (fileInfo.LastWriteTimeUtc > existingBackup.LastModified ||
+                fileInfo.Length != existingBackup.FileSize)
+            {
+                return new PreviewFileAction
+                {
+                    FilePath = filePath,
+                    FileSize = fileInfo.Length,
+                    LastModified = fileInfo.LastWriteTime,
+                    Action = FileActionType.Update,
+                    Reason = fileInfo.Length != existingBackup.FileSize
+                        ? $"Size changed ({existingBackup.FileSize} → {fileInfo.Length})"
+                        : "Modified since last backup"
+                };
+            }
+
+            return new PreviewFileAction
+            {
+                FilePath = filePath,
+                FileSize = fileInfo.Length,
+                LastModified = fileInfo.LastWriteTime,
+                Action = FileActionType.Skip,
+                Reason = "Already backed up and unchanged"
+            };
+        }
+
+        if (existingBackup.Status == BackupStatus.Failed)
+        {
+            return new PreviewFileAction
+            {
+                FilePath = filePath,
+                FileSize = fileInfo.Length,
+                LastModified = fileInfo.LastWriteTime,
+                Action = FileActionType.Create,
+                Reason = "Retrying previously failed backup"
+            };
+        }
+
+        return new PreviewFileAction
+        {
+            FilePath = filePath,
+            FileSize = fileInfo.Length,
+            LastModified = fileInfo.LastWriteTime,
+            Action = FileActionType.Skip,
+            Reason = "Excluded or in-progress"
+        };
     }
 }
