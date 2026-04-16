@@ -102,11 +102,12 @@ public partial class LocalDatabaseService
     /// </summary>
     /// <remarks>
     /// Uses the reverse <c>chunk_file_refs</c> index (Phase 5 / P3): an indexed
-    /// <c>FilePath</c> lookup returns the matching chunk hashes in O(log N), and
-    /// each full <see cref="ChunkIndexEntry"/> is fetched by its indexed
-    /// <see cref="ChunkIndexEntry.ChunkHash"/> key. Falls back to the legacy
-    /// full-scan path only when the reverse index has not yet been built (i.e.
-    /// before the one-time migration has run on an upgraded database).
+    /// <c>FilePath</c> lookup returns the matching chunk hashes, then a single
+    /// <c>Contains</c> query against the <see cref="ChunkIndexEntry.ChunkHash"/>
+    /// index batches all entry fetches into one round trip. This replaces the
+    /// legacy path that did <c>FindAll</c> over every chunk and filtered in
+    /// memory, and replaces the first-cut Phase 5 path that issued one
+    /// <c>FindOne</c> per hash (N round trips for N chunks).
     /// </remarks>
     public List<ChunkIndexEntry> GetChunkEntriesForFile(string filePath)
     {
@@ -115,7 +116,7 @@ public partial class LocalDatabaseService
 
         return InReadLock(() =>
         {
-            // Phase 5 / P3 fast path: indexed reverse lookup.
+            // Step 1: indexed reverse lookup on FilePath.
             var refs = _chunkFileRefsCollection!
                 .Find(x => x.FilePath == filePath)
                 .ToList();
@@ -130,18 +131,18 @@ public partial class LocalDatabaseService
                 return new List<ChunkIndexEntry>();
             }
 
+            // Step 2: batch-fetch the ChunkIndexEntry rows using a single Contains
+            // query over the indexed ChunkHash column. LiteDB translates this to
+            // an index scan plus IN-style row fetches, which is an order of
+            // magnitude faster than calling FindOne per hash on large indexes.
             var hashes = refs
                 .Select(r => r.ChunkHash)
                 .Distinct(StringComparer.Ordinal)
-                .ToList();
+                .ToArray();
 
-            var result = new List<ChunkIndexEntry>(hashes.Count);
-            foreach (var hash in hashes)
-            {
-                var entry = _chunkIndexCollection!.FindOne(x => x.ChunkHash == hash);
-                if (entry != null) result.Add(entry);
-            }
-            return result;
+            return _chunkIndexCollection!
+                .Find(x => hashes.Contains(x.ChunkHash))
+                .ToList();
         });
     }
 
