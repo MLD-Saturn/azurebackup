@@ -471,6 +471,13 @@ public partial class AzureBlobService : IBlobStorageService
     }
 
     /// <summary>
+    /// Default page size hint for blob listings. Azure's default is 5000 blobs per page;
+    /// specifying it explicitly avoids depending on future SDK defaults and lets us tune
+    /// it centrally. At 1M chunks this is 200 round trips; at 10M it is 2000.
+    /// </summary>
+    private const int BlobListingPageSize = 5000;
+
+    /// <summary>
     /// Lists all chunk blobs in the container.
     /// </summary>
     public async Task<List<string>> ListChunkBlobsAsync(CancellationToken cancellationToken = default)
@@ -479,13 +486,17 @@ public partial class AzureBlobService : IBlobStorageService
 
         List<string> chunks = new();
 
-        await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
+        await foreach (var page in _containerClient!
+            .GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken)
+            .AsPages(pageSizeHint: BlobListingPageSize))
         {
-            // Extract the hash from the blob name by stripping the known prefix.
-            // Using an indexed slice avoids the subtle bug where string.Replace would
-            // remove every occurrence of "chunks/" anywhere in the name.
-            var hash = blob.Name["chunks/".Length..];
-            chunks.Add(hash);
+            foreach (var blob in page.Values)
+            {
+                // Extract the hash from the blob name by stripping the known prefix.
+                // Using an indexed slice avoids the subtle bug where string.Replace would
+                // remove every occurrence of "chunks/" anywhere in the name.
+                chunks.Add(blob.Name["chunks/".Length..]);
+            }
         }
 
         TotalOperations++;
@@ -504,18 +515,23 @@ public partial class AzureBlobService : IBlobStorageService
 
         var result = new Dictionary<string, (long, StorageTier)>(StringComparer.Ordinal);
 
-        await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
+        await foreach (var page in _containerClient!
+            .GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken)
+            .AsPages(pageSizeHint: BlobListingPageSize))
         {
-            // Indexed slice — see ListChunkBlobsAsync for rationale.
-            var hash = blob.Name["chunks/".Length..];
-            var tier = blob.Properties.AccessTier?.ToString() switch
+            foreach (var blob in page.Values)
             {
-                "Hot" => StorageTier.Hot,
-                "Cool" => StorageTier.Cool,
-                "Cold" => StorageTier.Cold,
-                _ => StorageTier.Hot
-            };
-            result[hash] = (blob.Properties.ContentLength ?? 0, tier);
+                // Indexed slice — see ListChunkBlobsAsync for rationale.
+                var hash = blob.Name["chunks/".Length..];
+                var tier = blob.Properties.AccessTier?.ToString() switch
+                {
+                    "Hot" => StorageTier.Hot,
+                    "Cool" => StorageTier.Cool,
+                    "Cold" => StorageTier.Cold,
+                    _ => StorageTier.Hot
+                };
+                result[hash] = (blob.Properties.ContentLength ?? 0, tier);
+            }
         }
 
         TotalOperations++;

@@ -53,9 +53,29 @@ public partial class ChunkIndexService
         try
         {
             var data = await _blobService.DownloadBlobAsync(IndexBackupBlobName, cancellationToken);
-            var plaintext = _encryptionService.Decrypt(data);
-            var json = System.Text.Encoding.UTF8.GetString(plaintext);
-            var backup = JsonSerializer.Deserialize<ChunkIndexBackup>(json);
+
+            // Decrypt into a pooled buffer so the plaintext index backup (which can
+            // be tens of megabytes at 1M+ chunks) does not land on the large-object
+            // heap and pin GC memory for the rest of the process lifetime.
+            var plaintextMax = data.Length - EncryptionService.EncryptionOverhead;
+            if (plaintextMax <= 0)
+            {
+                Log("Failed to restore index: backup blob too short to decrypt");
+                return false;
+            }
+
+            var rentedPlaintext = System.Buffers.ArrayPool<byte>.Shared.Rent(plaintextMax);
+            ChunkIndexBackup? backup;
+            try
+            {
+                var plaintextLength = _encryptionService.DecryptInto(data, rentedPlaintext.AsSpan(0, plaintextMax));
+                var json = System.Text.Encoding.UTF8.GetString(rentedPlaintext.AsSpan(0, plaintextLength));
+                backup = JsonSerializer.Deserialize<ChunkIndexBackup>(json);
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(rentedPlaintext, clearArray: true);
+            }
 
             if (backup == null)
             {

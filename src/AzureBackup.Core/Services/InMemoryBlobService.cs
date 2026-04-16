@@ -283,13 +283,36 @@ public class InMemoryBlobService : IBlobStorageService
     public Task<List<string>> ListMetadataBlobsAsync(CancellationToken cancellationToken = default)
     {
         EnsureConnected();
-        
+
         var metadataBlobs = _blobs.Keys
             .Where(k => k.StartsWith("metadata/"))
             .ToList();
-        
+
         Interlocked.Increment(ref _totalOperations);
         return Task.FromResult(metadataBlobs);
+    }
+
+    /// <summary>
+    /// Streaming metadata blob names — snapshots the current keys and yields them
+    /// one at a time so callers can consume via <c>Parallel.ForEachAsync</c>.
+    /// Paging is a no-op for the in-memory store; the snapshot is O(N) memory like
+    /// <see cref="ListMetadataBlobsAsync"/>, but the enumerator contract matches
+    /// the real service.
+    /// </summary>
+    public async IAsyncEnumerable<string> StreamMetadataBlobNamesAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        Interlocked.Increment(ref _totalOperations);
+
+        // Snapshot the keys so we're not observing concurrent mutations through the enumerator.
+        var snapshot = _blobs.Keys.Where(k => k.StartsWith("metadata/")).ToArray();
+        foreach (var name in snapshot)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return name;
+        }
+        await Task.CompletedTask;
     }
 
     public async Task<BackedUpFile?> DownloadFileMetadataAsync(string blobName, CancellationToken cancellationToken = default)

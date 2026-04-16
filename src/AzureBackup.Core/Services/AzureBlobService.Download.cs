@@ -259,14 +259,42 @@ public partial class AzureBlobService
         EnsureConnected();
 
         List<string> blobs = new();
-        
-        await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "metadata/", cancellationToken: cancellationToken))
+
+        await foreach (var page in _containerClient!
+            .GetBlobsAsync(prefix: "metadata/", cancellationToken: cancellationToken)
+            .AsPages(pageSizeHint: 5000))
         {
-            blobs.Add(blob.Name);
+            foreach (var blob in page.Values)
+            {
+                blobs.Add(blob.Name);
+            }
         }
-        
+
         TotalOperations++;
         return blobs;
+    }
+
+    /// <summary>
+    /// Streams metadata blob names without materializing a <see cref="List{T}"/>.
+    /// Preferred by <see cref="BlobStorageExtensions.LoadAllFileMetadataAsync"/> and
+    /// the chunk-index rebuild path, both of which feed the names into
+    /// <c>Parallel.ForEachAsync</c> without needing the full list up front.
+    /// </summary>
+    public async IAsyncEnumerable<string> StreamMetadataBlobNamesAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        TotalOperations++;
+
+        await foreach (var page in _containerClient!
+            .GetBlobsAsync(prefix: "metadata/", cancellationToken: cancellationToken)
+            .AsPages(pageSizeHint: 5000))
+        {
+            foreach (var blob in page.Values)
+            {
+                yield return blob.Name;
+            }
+        }
     }
 
     /// <summary>
@@ -280,18 +308,38 @@ public partial class AzureBlobService
         try
         {
             var blobClient = _containerClient!.GetBlobClient(blobName);
-            
+
             // Single API call to get content (faster than GetProperties + DownloadTo)
             var response = await blobClient.DownloadContentAsync(cancellationToken);
-            
-            var encryptedData = response.Value.Content.ToArray();
+
+            var encryptedMemory = response.Value.Content.ToMemory();
             TotalOperations++;
-            
-            var decryptedData = _encryptionService.Decrypt(encryptedData);
-            var json = System.Text.Encoding.UTF8.GetString(decryptedData);
-            
+
+            // Decrypt into a pooled buffer so the plaintext (which contains file paths
+            // and chunk hashes) does not leave fresh allocations on the managed heap
+            // after this call returns. The UTF-8 string built below is the only
+            // long-lived plaintext artefact; the buffer itself is zeroed-on-return.
+            var plaintextMax = encryptedMemory.Length - EncryptionService.EncryptionOverhead;
+            if (plaintextMax <= 0)
+                throw new DataIntegrityException($"Metadata blob too short to decrypt: {blobName}", blobName);
+
+            var rentedPlaintext = ArrayPool<byte>.Shared.Rent(plaintextMax);
+            string json;
+            try
+            {
+                var plaintextLength = _encryptionService.DecryptInto(
+                    encryptedMemory.Span, rentedPlaintext.AsSpan(0, plaintextMax));
+                json = System.Text.Encoding.UTF8.GetString(rentedPlaintext.AsSpan(0, plaintextLength));
+            }
+            finally
+            {
+                // clearArray: true — sensitive metadata (paths, hashes) must not
+                // linger in pooled buffers for a future consumer to peek at.
+                ArrayPool<byte>.Shared.Return(rentedPlaintext, clearArray: true);
+            }
+
             var metadata = JsonSerializer.Deserialize<MetadataDto>(json);
-            if (metadata == null) 
+            if (metadata == null)
                 throw new DataIntegrityException($"Failed to deserialize metadata for {blobName}", blobName);
 
             // Validate chunk sequence

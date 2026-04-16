@@ -137,6 +137,14 @@ public interface IBlobStorageService : IAsyncDisposable
     Task<List<string>> ListMetadataBlobsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Streams the names of all metadata blobs without materializing the full list.
+    /// Prefer this over <see cref="ListMetadataBlobsAsync"/> for callers that can
+    /// consume results incrementally (e.g. <c>Parallel.ForEachAsync</c>). Memory
+    /// footprint is O(page_size) instead of O(total_blobs).
+    /// </summary>
+    IAsyncEnumerable<string> StreamMetadataBlobNamesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Downloads and decrypts file metadata.
     /// </summary>
     Task<BackedUpFile?> DownloadFileMetadataAsync(string blobName, CancellationToken cancellationToken = default);
