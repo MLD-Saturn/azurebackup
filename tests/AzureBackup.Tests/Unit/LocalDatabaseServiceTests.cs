@@ -427,7 +427,7 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         FileChangeEvent change1 = new() { FilePath = "C:\\first.txt", DetectedAt = DateTime.UtcNow };
         FileChangeEvent change2 = new() { FilePath = "C:\\second.txt", DetectedAt = DateTime.UtcNow.AddMinutes(1) };
         FileChangeEvent change3 = new() { FilePath = "C:\\third.txt", DetectedAt = DateTime.UtcNow.AddMinutes(-1) };
-        
+
         _databaseService.QueueFileChange(change1);
         _databaseService.QueueFileChange(change2);
         _databaseService.QueueFileChange(change3);
@@ -439,6 +439,86 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         Assert.Equal("C:\\third.txt", pending[0].FilePath);
         Assert.Equal("C:\\first.txt", pending[1].FilePath);
         Assert.Equal("C:\\second.txt", pending[2].FilePath);
+    }
+
+    [Fact]
+    public void QueueFileChangesBatch_InsertsAllEntries()
+    {
+        // Arrange
+        var batch = new List<FileChangeEvent>
+        {
+            new() { FilePath = "C:\\batch-a.txt", ChangeType = FileChangeType.Created, DetectedAt = DateTime.UtcNow },
+            new() { FilePath = "C:\\batch-b.txt", ChangeType = FileChangeType.Modified, DetectedAt = DateTime.UtcNow },
+            new() { FilePath = "C:\\batch-c.txt", ChangeType = FileChangeType.Deleted, DetectedAt = DateTime.UtcNow }
+        };
+
+        // Act
+        _databaseService.QueueFileChangesBatch(batch);
+        var pending = _databaseService.GetPendingChanges();
+
+        // Assert
+        Assert.Equal(3, pending.Count);
+        Assert.Contains(pending, p => p.FilePath == "C:\\batch-a.txt" && p.ChangeType == FileChangeType.Created);
+        Assert.Contains(pending, p => p.FilePath == "C:\\batch-b.txt" && p.ChangeType == FileChangeType.Modified);
+        Assert.Contains(pending, p => p.FilePath == "C:\\batch-c.txt" && p.ChangeType == FileChangeType.Deleted);
+    }
+
+    [Fact]
+    public void QueueFileChangesBatch_ReplacesExistingEntriesForSamePath()
+    {
+        // Arrange: seed an existing pending change
+        _databaseService.QueueFileChange(new FileChangeEvent
+        {
+            FilePath = "C:\\reused.txt",
+            ChangeType = FileChangeType.Created,
+            DetectedAt = DateTime.UtcNow.AddMinutes(-5)
+        });
+
+        var batch = new List<FileChangeEvent>
+        {
+            new() { FilePath = "C:\\reused.txt", ChangeType = FileChangeType.Modified, DetectedAt = DateTime.UtcNow },
+            new() { FilePath = "C:\\new.txt", ChangeType = FileChangeType.Created, DetectedAt = DateTime.UtcNow }
+        };
+
+        // Act
+        _databaseService.QueueFileChangesBatch(batch);
+        var pending = _databaseService.GetPendingChanges();
+
+        // Assert: existing row for C:\reused.txt is replaced; second row is added
+        Assert.Equal(2, pending.Count);
+        var reused = Assert.Single(pending.Where(p => p.FilePath == "C:\\reused.txt"));
+        Assert.Equal(FileChangeType.Modified, reused.ChangeType);
+        Assert.Contains(pending, p => p.FilePath == "C:\\new.txt");
+    }
+
+    [Fact]
+    public void QueueFileChangesBatch_LastDuplicateWins()
+    {
+        // Arrange: two entries for the same path in one batch
+        var batch = new List<FileChangeEvent>
+        {
+            new() { FilePath = "C:\\dup.txt", ChangeType = FileChangeType.Created, DetectedAt = DateTime.UtcNow.AddMinutes(-1) },
+            new() { FilePath = "C:\\dup.txt", ChangeType = FileChangeType.Modified, DetectedAt = DateTime.UtcNow }
+        };
+
+        // Act
+        _databaseService.QueueFileChangesBatch(batch);
+        var pending = _databaseService.GetPendingChanges();
+
+        // Assert: only one row, the later-added entry wins
+        var single = Assert.Single(pending);
+        Assert.Equal("C:\\dup.txt", single.FilePath);
+        Assert.Equal(FileChangeType.Modified, single.ChangeType);
+    }
+
+    [Fact]
+    public void QueueFileChangesBatch_EmptyBatch_IsNoOp()
+    {
+        // Act
+        _databaseService.QueueFileChangesBatch(Array.Empty<FileChangeEvent>());
+
+        // Assert
+        Assert.Empty(_databaseService.GetPendingChanges());
     }
 
     [Fact]

@@ -92,6 +92,11 @@ public partial class BackupOrchestrator
         var pendingPaths = _databaseService.GetAllPendingChangePaths();
         Log($"PerformInitialSyncAsync: Loaded {backedUpFiles.Count} backup records and {pendingPaths.Count} pending paths");
 
+        // Accumulate queued changes for a single batched commit at the end of the
+        // loop. At large file counts (tens of thousands) this turns N per-file
+        // transactions into one, shaving several seconds of wall-clock time.
+        var pendingBatch = new List<FileChangeEvent>();
+
         // Phase 3: Compare each file against in-memory lookup tables
         for (var i = 0; i < allFiles.Count; i++)
         {
@@ -116,7 +121,7 @@ public partial class BackupOrchestrator
                 if (existingBackup == null)
                 {
                     // New file - never backed up
-                    _databaseService.QueueFileChange(new FileChangeEvent
+                    pendingBatch.Add(new FileChangeEvent
                     {
                         FilePath = filePath,
                         ChangeType = FileChangeType.Created,
@@ -136,7 +141,7 @@ public partial class BackupOrchestrator
                         fileInfo.Length != existingBackup.FileSize)
                     {
                         // File appears changed - queue for backup (hash will be verified during backup)
-                        _databaseService.QueueFileChange(new FileChangeEvent
+                        pendingBatch.Add(new FileChangeEvent
                         {
                             FilePath = filePath,
                             ChangeType = FileChangeType.Modified,
@@ -156,7 +161,7 @@ public partial class BackupOrchestrator
                 else if (existingBackup.Status == BackupStatus.Failed)
                 {
                     // Retry previously failed file
-                    _databaseService.QueueFileChange(new FileChangeEvent
+                    pendingBatch.Add(new FileChangeEvent
                     {
                         FilePath = filePath,
                         ChangeType = FileChangeType.Modified,
@@ -179,6 +184,13 @@ public partial class BackupOrchestrator
                 result.ErrorFiles++;
                 progress?.Report((i + 1, allFiles.Count, fileName, $"Error: {ex.Message}"));
             }
+        }
+
+        // Flush the accumulated pending changes in a single transaction.
+        if (pendingBatch.Count > 0)
+        {
+            _databaseService.QueueFileChangesBatch(pendingBatch);
+            Log($"PerformInitialSyncAsync: Persisted {pendingBatch.Count} pending changes in one batch");
         }
 
         var queuedCount = result.NewFilesQueued + result.ModifiedFilesQueued + result.RetriedFiles;

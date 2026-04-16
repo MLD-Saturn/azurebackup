@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.FileWatcherBatchBenchmark-20260416-162356</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host] : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  Dry    : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>Job=Dry  IterationCount=1  LaunchCount=1  
+RunStrategy=ColdStart  UnrollFactor=1  WarmupCount=1  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                        </th><th>ChangeCount</th><th>Mean   </th><th>Error</th><th>Ratio</th><th>Gen0   </th><th>Gen1  </th><th>Gen2  </th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>&#39;Legacy: per-change QueueFileChange&#39;</td><td>100</td><td>993.41 ms</td><td>NA</td><td>1.00</td><td>3000.0000</td><td>3000.0000</td><td>3000.0000</td><td>27.42 MB</td><td>1.00</td>
+</tr><tr><td>&#39;Phase4: QueueFileChangesBatch&#39;</td><td>100</td><td>30.08 ms</td><td>NA</td><td>0.03</td><td>-</td><td>-</td><td>-</td><td>1.48 MB</td><td>0.05</td>
+</tr><tr><td>&#39;Legacy: per-change QueueFileChange&#39;</td><td>1000</td><td>11,041.34 ms</td><td>NA</td><td>1.000</td><td>193000.0000</td><td>110000.0000</td><td>105000.0000</td><td>1241.93 MB</td><td>1.00</td>
+</tr><tr><td>&#39;Phase4: QueueFileChangesBatch&#39;</td><td>1000</td><td>75.67 ms</td><td>NA</td><td>0.007</td><td>2000.0000</td><td>-</td><td>-</td><td>15.96 MB</td><td>0.01</td>
+</tr><tr><td>&#39;Legacy: per-change QueueFileChange&#39;</td><td>10000</td><td>164,971.66 ms</td><td>NA</td><td>1.000</td><td>14497000.0000</td><td>6679000.0000</td><td>5494000.0000</td><td>108967.94 MB</td><td>1.000</td>
+</tr><tr><td>&#39;Phase4: QueueFileChangesBatch&#39;</td><td>10000</td><td>499.72 ms</td><td>NA</td><td>0.003</td><td>25000.0000</td><td>1000.0000</td><td>1000.0000</td><td>164.77 MB</td><td>0.002</td>
+</tr></tbody></table>
+</body>
+</html>

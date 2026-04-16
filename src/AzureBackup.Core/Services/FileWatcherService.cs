@@ -296,24 +296,39 @@ public class FileWatcherService : IDisposable
             }
         }
 
+        if (toProcess.Count == 0) return;
+
+        // Build the batch before persisting so the DB transaction is short.
+        // We still need to fire FileChanged per-event afterwards, so keep both.
+        var batch = new List<FileChangeEvent>(toProcess.Count);
         foreach (var filePath in toProcess)
         {
             if (_pendingChanges.TryRemove(filePath, out _))
             {
-                var changeType = File.Exists(filePath) 
-                    ? FileChangeType.Modified 
+                var changeType = File.Exists(filePath)
+                    ? FileChangeType.Modified
                     : FileChangeType.Deleted;
 
-                FileChangeEvent changeEvent = new()
+                batch.Add(new FileChangeEvent
                 {
                     FilePath = filePath,
                     ChangeType = changeType,
                     DetectedAt = DateTime.UtcNow
-                };
-
-                _databaseService.QueueFileChange(changeEvent);
-                FileChanged?.Invoke(this, changeEvent);
+                });
             }
+        }
+
+        if (batch.Count == 0) return;
+
+        // Single transaction instead of one-per-change — dramatic improvement for
+        // bursts of 10k+ changes (IDE rebuild, git checkout, folder sync).
+        _databaseService.QueueFileChangesBatch(batch);
+
+        // Notify subscribers after persistence so the database state is already
+        // consistent when handlers react.
+        foreach (var changeEvent in batch)
+        {
+            FileChanged?.Invoke(this, changeEvent);
         }
     }
 
