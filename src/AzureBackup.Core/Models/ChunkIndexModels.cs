@@ -76,6 +76,32 @@ public class ChunkFileReference
 }
 
 /// <summary>
+/// Denormalised row in the <c>chunk_file_refs</c> collection: one row per
+/// (file, chunk) pair. Populated alongside <see cref="ChunkIndexEntry.ReferencingFiles"/>
+/// so that <c>GetChunkEntriesForFile</c> can satisfy queries with an indexed
+/// <c>FilePath</c> lookup instead of scanning every chunk in the primary
+/// <c>chunk_index</c> collection. The primary collection remains authoritative
+/// for serialization and refcount accounting.
+/// </summary>
+public class ChunkFileRefRow
+{
+    /// <summary>LiteDB surrogate key.</summary>
+    public int Id { get; set; }
+
+    /// <summary>The local file path that references the chunk. Indexed.</summary>
+    public string FilePath { get; set; } = string.Empty;
+
+    /// <summary>The chunk hash (SHA-256 hex). Indexed for removal on chunk delete.</summary>
+    public string ChunkHash { get; set; } = string.Empty;
+
+    /// <summary>0-based index of this chunk within the file.</summary>
+    public int ChunkIndex { get; set; }
+
+    /// <summary>When this reference was recorded.</summary>
+    public DateTime ReferencedAt { get; set; }
+}
+
+/// <summary>
 /// Summary statistics for the chunk index.
 /// </summary>
 public class ChunkIndexSummary

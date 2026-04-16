@@ -20,7 +20,40 @@ public partial class LocalDatabaseService : IDisposable
     private ILiteCollection<FileChangeEvent>? _pendingChangesCollection;
     private ILiteCollection<ChunkIndexEntry>? _chunkIndexCollection;
     private ILiteCollection<IndexMetadata>? _indexMetadataCollection;
-    private readonly object _dbLock = new();
+    private ILiteCollection<ChunkFileRefRow>? _chunkFileRefsCollection;
+
+    /// <summary>
+    /// Reader/writer lock guarding every access to the LiteDB collections.
+    /// Readers proceed in parallel; writers are exclusive. Replaces the
+    /// previous coarse <c>object</c> monitor so that read-heavy paths
+    /// (statistics, chunk-index summary, orphan scan) no longer serialize
+    /// behind each other or behind the backup loop.
+    /// <para>
+    /// <b>Recursion policy:</b> <see cref="LockRecursionPolicy.NoRecursion"/>.
+    /// No public method acquires this lock and then calls another public
+    /// method on the same instance; allowing recursion hides accidental
+    /// nesting that would deadlock under upgradeable-read patterns.
+    /// </para>
+    /// </summary>
+    private readonly ReaderWriterLockSlim _dbLock = new(LockRecursionPolicy.NoRecursion);
+
+    /// <summary>
+    /// Interval between automatic WAL checkpoints. LiteDB would otherwise only
+    /// checkpoint at shutdown or when the <c>-log</c> file crosses its internal
+    /// threshold, which this long-running app rarely reaches because its writes
+    /// are small and sustained. A 1-hour cadence keeps the <c>-log</c> bounded
+    /// without competing with short-lived transactional work.
+    /// </summary>
+    private static readonly TimeSpan CheckpointInterval = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// <summary>
+    /// Timer that invokes <see cref="Checkpoint"/> on the <see cref="CheckpointInterval"/>.
+    /// Started in <see cref="Initialize(string, ReadOnlySpan{char})"/> and disposed
+    /// in <see cref="Dispose"/>.
+    /// </summary>
+    private System.Threading.Timer? _checkpointTimer;
+
     private bool _disposed;
     private string? _databasePath;
 
@@ -131,6 +164,7 @@ public partial class LocalDatabaseService : IDisposable
                 _pendingChangesCollection = _database.GetCollection<FileChangeEvent>("pending_changes");
                 _chunkIndexCollection = _database.GetCollection<ChunkIndexEntry>("chunk_index");
                 _indexMetadataCollection = _database.GetCollection<IndexMetadata>("index_metadata");
+                _chunkFileRefsCollection = _database.GetCollection<ChunkFileRefRow>("chunk_file_refs");
 
                 // Create indexes for faster queries
                 _filesCollection.EnsureIndex(x => x.LocalPath, unique: true);
@@ -141,6 +175,12 @@ public partial class LocalDatabaseService : IDisposable
                 _chunkIndexCollection.EnsureIndex(x => x.ChunkHash, unique: true);
                 _chunkIndexCollection.EnsureIndex(x => x.ReferenceCount);
                 _chunkIndexCollection.EnsureIndex(x => x.CurrentTier);
+
+                // Reverse-index (Phase 5 / P3): indexed on both sides so
+                // GetChunkEntriesForFile (file -> chunks) and chunk deletion
+                // (chunk -> files) are both O(log N) lookups.
+                _chunkFileRefsCollection.EnsureIndex(x => x.FilePath);
+                _chunkFileRefsCollection.EnsureIndex(x => x.ChunkHash);
             }
             catch (LiteException ex) when (ex.Message.Contains("invalid password", StringComparison.OrdinalIgnoreCase) ||
                                             ex.Message.Contains("file is not a valid", StringComparison.OrdinalIgnoreCase) ||
@@ -159,6 +199,11 @@ public partial class LocalDatabaseService : IDisposable
         }
 
         Log("Initialize: Encrypted database initialized successfully with Argon2id-derived key");
+
+        // Start the automatic checkpoint timer. First fire is after CheckpointInterval
+        // so we do not pay the flush cost during the latency-sensitive startup window.
+        _checkpointTimer = new System.Threading.Timer(CheckpointTimerCallback, state: null,
+            dueTime: CheckpointInterval, period: CheckpointInterval);
     }
 
     /// <summary>
@@ -202,7 +247,11 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void Close()
     {
-        lock (_dbLock)
+        // Stop the checkpoint timer first so it cannot fire against a disposed DB.
+        _checkpointTimer?.Dispose();
+        _checkpointTimer = null;
+
+        InWriteLock(() =>
         {
             _database?.Dispose();
             _database = null;
@@ -211,8 +260,9 @@ public partial class LocalDatabaseService : IDisposable
             _pendingChangesCollection = null;
             _chunkIndexCollection = null;
             _indexMetadataCollection = null;
+            _chunkFileRefsCollection = null;
             Log("Close: Database connection closed");
-        }
+        });
     }
 
     #region Configuration
@@ -223,17 +273,24 @@ public partial class LocalDatabaseService : IDisposable
     public BackupConfiguration GetConfiguration()
     {
         EnsureInitialized();
-        
-        lock (_dbLock)
+
+        // First attempt: take a read lock. If the row already exists we skip
+        // the upgrade entirely (the common case after first-run).
+        var existing = InReadLock(() => _configCollection!.FindById(1));
+        if (existing != null) return existing;
+
+        // Row missing - promote to a write lock and insert the default.
+        return InWriteLock(() =>
         {
+            // Re-check under the write lock: another writer may have inserted
+            // the row between our read and write.
             var config = _configCollection!.FindById(1);
-            if (config == null)
-            {
-                config = new BackupConfiguration { Id = 1 };
-                _configCollection.Insert(config);
-            }
+            if (config != null) return config;
+
+            config = new BackupConfiguration { Id = 1 };
+            _configCollection.Insert(config);
             return config;
-        }
+        });
     }
 
     /// <summary>
@@ -243,8 +300,8 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(config);
-        
-        lock (_dbLock)
+
+        InWriteLock(() =>
         {
             _database!.BeginTrans();
             try
@@ -258,7 +315,7 @@ public partial class LocalDatabaseService : IDisposable
                 _database.Rollback();
                 throw;
             }
-        }
+        });
     }
 
     #endregion
@@ -272,11 +329,8 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(localPath);
-        
-        lock (_dbLock)
-        {
-            return _filesCollection!.FindOne(x => x.LocalPath == localPath);
-        }
+
+        return InReadLock(() => _filesCollection!.FindOne(x => x.LocalPath == localPath));
     }
 
     /// <summary>
@@ -286,8 +340,8 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(file);
-        
-        lock (_dbLock)
+
+        InWriteLock(() =>
         {
             _database!.BeginTrans();
             try
@@ -309,7 +363,7 @@ public partial class LocalDatabaseService : IDisposable
                 _database.Rollback();
                 throw;
             }
-        }
+        });
     }
 
     /// <summary>
@@ -318,11 +372,8 @@ public partial class LocalDatabaseService : IDisposable
     public List<BackedUpFile> GetAllBackedUpFiles()
     {
         EnsureInitialized();
-        
-        lock (_dbLock)
-        {
-            return _filesCollection!.FindAll().ToList();
-        }
+
+        return InReadLock(() => _filesCollection!.FindAll().ToList());
     }
 
     #endregion
@@ -337,7 +388,7 @@ public partial class LocalDatabaseService : IDisposable
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(change);
 
-        lock (_dbLock)
+        InWriteLock(() =>
         {
             _database!.BeginTrans();
             try
@@ -352,7 +403,7 @@ public partial class LocalDatabaseService : IDisposable
                 _database.Rollback();
                 throw;
             }
-        }
+        });
     }
 
     /// <summary>
@@ -389,7 +440,7 @@ public partial class LocalDatabaseService : IDisposable
 
         if (byPath.Count == 0) return;
 
-        lock (_dbLock)
+        InWriteLock(() =>
         {
             _database!.BeginTrans();
             try
@@ -412,7 +463,7 @@ public partial class LocalDatabaseService : IDisposable
                 _database.Rollback();
                 throw;
             }
-        }
+        });
     }
 
     /// <summary>
@@ -422,15 +473,13 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         if (batchSize <= 0) batchSize = 100;
-        
-        lock (_dbLock)
-        {
-            return _pendingChangesCollection!
+
+        return InReadLock(() =>
+            _pendingChangesCollection!
                 .FindAll()
                 .OrderBy(x => x.DetectedAt)
                 .Take(batchSize)
-                .ToList();
-        }
+                .ToList());
     }
 
     /// <summary>
@@ -440,11 +489,8 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        
-        lock (_dbLock)
-        {
-            _pendingChangesCollection!.DeleteMany(x => x.FilePath == filePath);
-        }
+
+        InWriteLock(() => _pendingChangesCollection!.DeleteMany(x => x.FilePath == filePath));
     }
 
     /// <summary>
@@ -455,14 +501,12 @@ public partial class LocalDatabaseService : IDisposable
     {
         EnsureInitialized();
 
-        lock (_dbLock)
-        {
-            return _pendingChangesCollection!
+        return InReadLock(() =>
+            _pendingChangesCollection!
                 .Query()
                 .Select(x => x.FilePath)
                 .ToEnumerable()
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
+                .ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -472,12 +516,12 @@ public partial class LocalDatabaseService : IDisposable
     public int CleanupStalePendingChanges()
     {
         EnsureInitialized();
-        
-        lock (_dbLock)
+
+        return InWriteLock(() =>
         {
             var pendingChanges = _pendingChangesCollection!.FindAll().ToList();
             var removedCount = 0;
-            
+
             foreach (var change in pendingChanges)
             {
                 // Check if the file is already backed up
@@ -510,9 +554,9 @@ public partial class LocalDatabaseService : IDisposable
                     }
                 }
             }
-            
+
             return removedCount;
-        }
+        });
     }
 
     #endregion
@@ -529,10 +573,31 @@ public partial class LocalDatabaseService : IDisposable
     {
         if (!_disposed)
         {
+            _checkpointTimer?.Dispose();
+            _checkpointTimer = null;
             _database?.Dispose();
             _database = null;
+            _dbLock.Dispose();
             _disposed = true;
         }
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Timer callback that runs <see cref="Checkpoint"/>. Swallows exceptions so
+    /// a transient checkpoint failure (e.g. during concurrent <see cref="Close"/>)
+    /// does not take the timer thread down.
+    /// </summary>
+    private void CheckpointTimerCallback(object? state)
+    {
+        if (_disposed || _database == null) return;
+        try
+        {
+            Checkpoint();
+        }
+        catch (Exception ex)
+        {
+            Log($"CheckpointTimerCallback: Checkpoint failed: {ex.Message}");
+        }
     }
 }

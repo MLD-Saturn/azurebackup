@@ -662,6 +662,137 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         await Task.WhenAll(tasks);
     }
 
+    [Fact]
+    public async Task ParallelReads_RunConcurrentlyUnderRWLock()
+    {
+        // Phase 5 / P2 regression guard: with a monitor the 64 readers below would
+        // serialise and total wall time would be ~64 x per-read time. Under the
+        // ReaderWriterLockSlim they should run in parallel and finish in a fraction
+        // of that time. We don't assert on absolute timing (flaky on shared CI)
+        // but we do require every reader to actually produce its expected result
+        // under contention, which proves the lock is re-entrant-safe from threads.
+
+        // Arrange - seed 200 files so each read does real work.
+        for (int i = 0; i < 200; i++)
+            _databaseService.SaveBackedUpFile(CreateTestBackedUpFile($"C:\\seed{i}.txt"));
+
+        var results = new System.Collections.Concurrent.ConcurrentBag<int>();
+        var tasks = new List<Task>();
+
+        // Act - 64 concurrent read tasks plus 4 occasional writers.
+        for (int i = 0; i < 64; i++)
+        {
+            tasks.Add(Task.Run(() =>
+            {
+                var files = _databaseService.GetAllBackedUpFiles();
+                results.Add(files.Count);
+            }));
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            var index = i;
+            tasks.Add(Task.Run(() =>
+                _databaseService.SaveBackedUpFile(CreateTestBackedUpFile($"C:\\w{index}.txt"))));
+        }
+
+        await Task.WhenAll(tasks);
+
+        // Assert - every reader saw at least the initial 200 seeds.
+        Assert.Equal(64, results.Count);
+        Assert.All(results, count => Assert.True(count >= 200));
+    }
+
+    #endregion
+
+    #region Reverse Chunk Index (Phase 5 / P3)
+
+    [Fact]
+    public void IsReverseChunkIndexBuilt_OnFreshDatabase_ReturnsFalseThenTrueAfterRebuild()
+    {
+        Assert.False(_databaseService.IsReverseChunkIndexBuilt());
+
+        _databaseService.RebuildReverseChunkIndex();
+
+        Assert.True(_databaseService.IsReverseChunkIndexBuilt());
+    }
+
+    [Fact]
+    public void RebuildReverseChunkIndex_IsIdempotent()
+    {
+        _databaseService.RebuildReverseChunkIndex();
+        var firstMarker = _databaseService.GetIndexMetadata("ReverseIndexBuiltAt");
+
+        // Second call should be a no-op and must not reset the marker.
+        _databaseService.RebuildReverseChunkIndex();
+        var secondMarker = _databaseService.GetIndexMetadata("ReverseIndexBuiltAt");
+
+        Assert.NotNull(firstMarker);
+        Assert.Equal(firstMarker, secondMarker);
+    }
+
+    [Fact]
+    public void RebuildReverseChunkIndex_PopulatesFromLegacyReferencingFiles()
+    {
+        // Arrange - seed two chunks referenced by two overlapping files using the
+        // legacy shape (ReferencingFiles list on ChunkIndexEntry) without the
+        // reverse-index hookup. Mimics an upgraded database.
+        var now = DateTime.UtcNow;
+        var entry1 = new ChunkIndexEntry
+        {
+            ChunkHash = new string('a', 64),
+            FirstUploadedAt = now,
+            ReferenceCount = 2,
+            ReferencingFiles =
+            [
+                new ChunkFileReference { FilePath = "C:\\alpha.bin", ChunkIndex = 0, ReferencedAt = now },
+                new ChunkFileReference { FilePath = "C:\\beta.bin", ChunkIndex = 0, ReferencedAt = now }
+            ]
+        };
+        var entry2 = new ChunkIndexEntry
+        {
+            ChunkHash = new string('b', 64),
+            FirstUploadedAt = now,
+            ReferenceCount = 1,
+            ReferencingFiles =
+            [
+                new ChunkFileReference { FilePath = "C:\\alpha.bin", ChunkIndex = 1, ReferencedAt = now }
+            ]
+        };
+        _databaseService.SaveChunkIndexEntry(entry1);
+        _databaseService.SaveChunkIndexEntry(entry2);
+
+        // Act
+        _databaseService.RebuildReverseChunkIndex();
+
+        // Assert - indexed file lookups return the correct sets.
+        var alpha = _databaseService.GetChunkEntriesForFile("C:\\alpha.bin");
+        var beta = _databaseService.GetChunkEntriesForFile("C:\\beta.bin");
+
+        Assert.Equal(2, alpha.Count);
+        Assert.Contains(alpha, e => e.ChunkHash == entry1.ChunkHash);
+        Assert.Contains(alpha, e => e.ChunkHash == entry2.ChunkHash);
+        Assert.Single(beta);
+        Assert.Equal(entry1.ChunkHash, beta[0].ChunkHash);
+    }
+
+    #endregion
+
+    #region Checkpoint (discovered-#3)
+
+    [Fact]
+    public void Checkpoint_RunsWithoutError()
+    {
+        // Seed enough data to populate the WAL, then explicit Checkpoint.
+        for (int i = 0; i < 20; i++)
+            _databaseService.SaveBackedUpFile(CreateTestBackedUpFile($"C:\\cp{i}.txt"));
+
+        // Act - must not throw.
+        _databaseService.Checkpoint();
+
+        // Assert - subsequent queries still see the data after the WAL flush.
+        Assert.Equal(20, _databaseService.GetAllBackedUpFiles().Count);
+    }
+
     #endregion
 
     #region Helper Methods

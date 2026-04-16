@@ -315,6 +315,20 @@ public partial class ChunkIndexService
         progress?.Report((0, 1, $"Saving {indexEntries.Count} index entries..."));
         _databaseService.BulkInsertChunkIndexEntries(indexEntries.Values);
 
+        // Populate the reverse (file -> chunk) index in lockstep. Flattening
+        // ReferencingFiles -> ChunkFileRefRow is O(total references) and lets
+        // every subsequent GetChunkEntriesForFile lookup hit the indexed path.
+        var reverseRows = indexEntries.Values
+            .SelectMany(e => e.ReferencingFiles.Select(r => new ChunkFileRefRow
+            {
+                FilePath = r.FilePath,
+                ChunkHash = e.ChunkHash,
+                ChunkIndex = r.ChunkIndex,
+                ReferencedAt = r.ReferencedAt
+            }));
+        _databaseService.BulkInsertChunkFileRefs(reverseRows);
+        _databaseService.SetIndexMetadata("ReverseIndexBuiltAt", now);
+
         _databaseService.SetIndexMetadata("LastFullRebuildAt", now);
         Log($"Index rebuild complete: {processed} valid files indexed, " +
             $"{indexEntries.Count} unique chunks, " +

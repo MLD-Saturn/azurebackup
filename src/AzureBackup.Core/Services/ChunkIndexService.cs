@@ -79,6 +79,8 @@ public partial class ChunkIndexService
             r.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase) && 
             r.ChunkIndex == chunkIndex);
 
+        var referencedAt = DateTime.UtcNow;
+
         if (existingRef == null)
         {
             // Add new reference
@@ -86,7 +88,7 @@ public partial class ChunkIndexService
             {
                 FilePath = filePath,
                 ChunkIndex = chunkIndex,
-                ReferencedAt = DateTime.UtcNow
+                ReferencedAt = referencedAt
             });
             entry.ReferenceCount = entry.ReferencingFiles.Count;
             Log($"Added reference: {filePath} -> chunk {chunkHash[..8]}... (ref count: {entry.ReferenceCount})");
@@ -100,6 +102,11 @@ public partial class ChunkIndexService
         }
 
         _databaseService.SaveChunkIndexEntry(entry);
+
+        // Keep the reverse (file -> chunk) index in lockstep with the primary
+        // (chunk -> files) list. UpsertChunkFileRef is idempotent so repeated
+        // AddReference calls for the same triple do not create duplicates.
+        _databaseService.UpsertChunkFileRef(filePath, chunkHash, chunkIndex, referencedAt);
     }
 
     /// <summary>
@@ -134,6 +141,9 @@ public partial class ChunkIndexService
                 {
                     await _blobService.DeleteBlobAsync($"chunks/{entry.ChunkHash}", cancellationToken);
                     _databaseService.DeleteChunkIndexEntry(entry.ChunkHash);
+                    // Clear every reverse-index row for the deleted chunk (defensive -
+                    // some may still reference other files if the graph is inconsistent).
+                    _databaseService.DeleteChunkFileRefsForChunk(entry.ChunkHash);
                     deletedCount++;
                     Log($"Deleted orphaned chunk {entry.ChunkHash[..8]}...");
                 }
@@ -150,6 +160,10 @@ public partial class ChunkIndexService
                 Log($"Updated chunk {entry.ChunkHash[..8]}... ref count to {entry.ReferenceCount}");
             }
         }
+
+        // Remove every reverse-index row that pointed at this file path - covers
+        // both the chunks we deleted above and any that we kept (reference count > 0).
+        _databaseService.DeleteChunkFileRefsForFile(filePath);
 
         return deletedCount;
     }
@@ -195,6 +209,7 @@ public partial class ChunkIndexService
                     {
                         await _blobService.DeleteBlobAsync($"chunks/{hash}", cancellationToken);
                         _databaseService.DeleteChunkIndexEntry(hash);
+                        _databaseService.DeleteChunkFileRefsForChunk(hash);
                         Log($"Deleted orphaned chunk {hash[..8]}... (removed from modified file)");
                     }
                     catch (Exception ex)
@@ -208,6 +223,10 @@ public partial class ChunkIndexService
                     _databaseService.SaveChunkIndexEntry(entry);
                 }
             }
+
+            // Drop the reverse-index rows binding this file to this chunk,
+            // even if the chunk itself still has other referrers.
+            _databaseService.DeleteChunkFileRefsForFileAndChunk(filePath, hash);
         }
 
         // Add references to new chunks

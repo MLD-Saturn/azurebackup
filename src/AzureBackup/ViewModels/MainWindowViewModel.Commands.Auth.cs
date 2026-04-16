@@ -367,6 +367,11 @@ public partial class MainWindowViewModel
                 return;
             }
 
+            // Phase 5 / P3: one-time reverse-chunk-index rebuild if this is an
+            // upgraded database. Blocks the login flow (matches the approved sync
+            // migration UX) but shows incremental progress via AddLog.
+            await EnsureReverseChunkIndexBuiltAsync();
+
             // Step 4: Load configuration from the now-unlocked database
             LoadConfiguration();
 
@@ -596,6 +601,8 @@ public partial class MainWindowViewModel
                 return;
             }
 
+            await EnsureReverseChunkIndexBuiltAsync();
+
             // Step 3: Load configuration from the now-unlocked database
             LoadConfiguration();
 
@@ -815,6 +822,8 @@ public partial class MainWindowViewModel
                 return (false, "Invalid password");
             }
 
+            await EnsureReverseChunkIndexBuiltAsync();
+
             // Step 3: Load configuration from the now-unlocked database
             LoadConfiguration();
 
@@ -888,6 +897,57 @@ public partial class MainWindowViewModel
         finally
         {
             System.Array.Clear(buffer);
+        }
+    }
+
+    #endregion
+
+    #region Reverse Chunk Index Migration (Phase 5 / P3)
+
+    /// <summary>
+    /// Runs the one-time <c>chunk_file_refs</c> rebuild on an upgraded database.
+    /// No-op when already built (common case). Executed on a background thread so
+    /// the UI dispatcher stays responsive; progress is surfaced via
+    /// <c>AddLog</c> at ~every 5% of total so large indexes do not flood the log.
+    /// </summary>
+    /// <remarks>
+    /// This method blocks the caller until the rebuild finishes, which matches
+    /// the approved synchronous migration UX. For a freshly-initialised database
+    /// the rebuild is trivially cheap (0 rows) and returns in microseconds.
+    /// </remarks>
+    private async Task EnsureReverseChunkIndexBuiltAsync()
+    {
+        if (_databaseService.IsReverseChunkIndexBuilt())
+        {
+            return;
+        }
+
+        AddLog("Building reverse chunk index (one-time upgrade)...");
+
+        // Throttle progress reports so we don't spam AddLog at every chunk.
+        var lastReportedPct = -5;
+        var progress = new Progress<(int processed, int total)>(tuple =>
+        {
+            var (processed, total) = tuple;
+            if (total <= 0) return;
+            var pct = (int)((long)processed * 100 / total);
+            if (pct - lastReportedPct >= 5 || processed == total)
+            {
+                lastReportedPct = pct;
+                AddLog($"  Reverse index progress: {processed:N0} / {total:N0} chunks ({pct}%)");
+            }
+        });
+
+        try
+        {
+            await Task.Run(() => _databaseService.RebuildReverseChunkIndex(progress));
+            AddLog("Reverse chunk index built.");
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Reverse chunk index rebuild failed: {ex.Message}");
+            // Let the caller's main flow continue; GetChunkEntriesForFile will
+            // simply return empty until the next successful rebuild attempt.
         }
     }
 
