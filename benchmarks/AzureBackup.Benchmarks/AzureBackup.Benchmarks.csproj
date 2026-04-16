@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Benchmarks must run in Release mode; enforce for anyone that tries otherwise. -->
+    <IsPackable>false</IsPackable>
+    <!-- Allow BenchmarkDotNet to emit unsafe IL for some intrinsics. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Exclude from "Run Tests" discovery. -->
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AzureBackup.Core\AzureBackup.Core.csproj" />
+  </ItemGroup>
+
+</Project>

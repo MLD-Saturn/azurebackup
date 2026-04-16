@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.StripChunksPrefixBenchmark-20260416-153131</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  Job-WRIKEU : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>IterationCount=5  LaunchCount=1  WarmupCount=2  
+</code></pre>
+
+<table>
+<thead><tr><th>Method            </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Ratio</th><th>Gen0</th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>&#39;Legacy: string.Replace&#39;</td><td>33.355 ns</td><td>1.4356 ns</td><td>0.3728 ns</td><td>1.00</td><td>0.0242</td><td>152 B</td><td>1.00</td>
+</tr><tr><td>&#39;Phase1: indexed slice&#39;</td><td>8.599 ns</td><td>0.5071 ns</td><td>0.0785 ns</td><td>0.26</td><td>0.0242</td><td>152 B</td><td>1.00</td>
+</tr></tbody></table>
+</body>
+</html>

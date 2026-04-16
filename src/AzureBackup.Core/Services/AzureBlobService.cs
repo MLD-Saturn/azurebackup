@@ -481,8 +481,10 @@ public partial class AzureBlobService : IBlobStorageService
 
         await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
         {
-            // Extract the hash from the blob name (remove "chunks/" prefix)
-            var hash = blob.Name.Replace("chunks/", "");
+            // Extract the hash from the blob name by stripping the known prefix.
+            // Using an indexed slice avoids the subtle bug where string.Replace would
+            // remove every occurrence of "chunks/" anywhere in the name.
+            var hash = blob.Name["chunks/".Length..];
             chunks.Add(hash);
         }
 
@@ -504,7 +506,8 @@ public partial class AzureBlobService : IBlobStorageService
 
         await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: "chunks/", cancellationToken: cancellationToken))
         {
-            var hash = blob.Name.Replace("chunks/", "");
+            // Indexed slice — see ListChunkBlobsAsync for rationale.
+            var hash = blob.Name["chunks/".Length..];
             var tier = blob.Properties.AccessTier?.ToString() switch
             {
                 "Hot" => StorageTier.Hot,

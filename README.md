@@ -178,3 +178,23 @@ docs/
 
 - [Azure Setup Guide](docs/SETUP.md) -- create a storage account and configure access
 - [User Guide](docs/USER_GUIDE.md) -- daily usage, restore, sync, and troubleshooting
+
+## Benchmarks
+
+Local-developer micro-benchmarks live in `benchmarks/AzureBackup.Benchmarks/` and use
+[BenchmarkDotNet](https://github.com/dotnet/BenchmarkDotNet). They are **not** part of
+the CI pipeline -- CI runners have unreliable performance characteristics for
+micro-benchmarking. Run locally to validate performance changes:
+
+```powershell
+# Run every benchmark in the project (Release config is enforced by BDN):
+dotnet run -c Release --project benchmarks/AzureBackup.Benchmarks
+
+# Run a single benchmark class:
+dotnet run -c Release --project benchmarks/AzureBackup.Benchmarks -- --filter *CdcRollingHash*
+
+# Quick smoke-test run (fewer iterations, ~1 minute total):
+dotnet run -c Release --project benchmarks/AzureBackup.Benchmarks -- --job short --warmupCount 2 --iterationCount 5
+```
+
+Reports are written to `BenchmarkDotNet.Artifacts/results/` as CSV, Markdown, and HTML.

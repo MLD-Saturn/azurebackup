@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.ValidateChunkHashBenchmark-20260416-153152</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  Job-WRIKEU : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>IterationCount=5  LaunchCount=1  WarmupCount=2  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                   </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Ratio</th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>&#39;Legacy: compiled regex&#39;</td><td>31.54 ns</td><td>1.039 ns</td><td>0.161 ns</td><td>1.00</td><td>-</td><td>NA</td>
+</tr><tr><td>&#39;Phase1: manual ASCII-hex scan&#39;</td><td>30.32 ns</td><td>0.324 ns</td><td>0.050 ns</td><td>0.96</td><td>-</td><td>NA</td>
+</tr></tbody></table>
+</body>
+</html>
