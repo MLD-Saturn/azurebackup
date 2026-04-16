@@ -161,7 +161,7 @@ public class ChunkIntegrityVerificationTests : IAsyncLifetime
     {
         // Arrange
         var hash = Convert.ToHexString(SHA256.HashData(new byte[] { 1 })).ToLowerInvariant();
-        
+
         var data1 = new byte[100];
         var data2 = new byte[100];
         var data3 = new byte[100];
@@ -178,6 +178,32 @@ public class ChunkIntegrityVerificationTests : IAsyncLifetime
         Assert.Equal($"chunks/{hash}", blobName1);
         Assert.Equal($"chunks/{hash}_v2", blobName2);
         Assert.Equal($"chunks/{hash}_v3", blobName3);
+    }
+
+    [Fact]
+    public async Task UploadChunkAsync_DuplicateCollisionData_DedupsToExistingVersion()
+    {
+        // Phase 2 / P4 regression: when a chunk with data matching an existing _vN
+        // version is uploaded again, the resolver must dedup to that version rather
+        // than creating yet another _v(N+1) duplicate.
+        // Arrange
+        var hash = Convert.ToHexString(SHA256.HashData(new byte[] { 2 })).ToLowerInvariant();
+        var data1 = new byte[100];
+        var data2 = new byte[100];
+        Random.Shared.NextBytes(data1);
+        Random.Shared.NextBytes(data2);
+
+        // Seed the primary slot and _v2
+        var primaryBlob = await _blobService.UploadChunkAsync(data1, hash, StorageTier.Hot);
+        var v2Blob = await _blobService.UploadChunkAsync(data2, hash, StorageTier.Hot);
+        Assert.Equal($"chunks/{hash}", primaryBlob);
+        Assert.Equal($"chunks/{hash}_v2", v2Blob);
+
+        // Act - re-upload the SAME bytes as _v2
+        var dedupBlob = await _blobService.UploadChunkAsync(data2, hash, StorageTier.Hot);
+
+        // Assert - resolver found the matching _v2 and deduped; did NOT create _v3
+        Assert.Equal($"chunks/{hash}_v2", dedupBlob);
     }
 
     [Fact]

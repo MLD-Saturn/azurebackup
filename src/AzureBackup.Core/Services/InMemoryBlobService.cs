@@ -145,8 +145,16 @@ public class InMemoryBlobService : IBlobStorageService
                 return blobName;
             }
 
-            // Hash collision detected - find next available collision suffix
-            blobName = FindNextCollisionBlobName(chunkHash);
+            // Hash collision on primary slot - find or create the appropriate _vN blob.
+            var (resolvedName, isNewCollision) = ResolveCollisionBlobName(chunkHash, chunkData);
+            if (!isNewCollision)
+            {
+                // An existing collision version matches our data; dedup to it.
+                progress?.Report(chunkData.Length);
+                return resolvedName;
+            }
+
+            blobName = resolvedName;
         }
 
         // Encrypt and store
@@ -501,7 +509,67 @@ public class InMemoryBlobService : IBlobStorageService
     }
 
     /// <summary>
-    /// Finds the next available blob name for a hash collision.
+    /// Resolves the collision blob name for a chunk whose primary slot holds
+    /// different data. Mirrors <c>AzureBlobService.ResolveCollisionBlobNameAsync</c>:
+    /// enumerates existing <c>_v2.._vN</c> entries, dedups to any that matches
+    /// <paramref name="chunkData"/>, otherwise returns the smallest unused suffix.
+    /// </summary>
+    private (string BlobName, bool IsNewCollision) ResolveCollisionBlobName(
+        string chunkHash,
+        ReadOnlyMemory<byte> chunkData)
+    {
+        var prefix = $"chunks/{chunkHash}_v";
+        var existingVersions = new SortedDictionary<int, string>();
+
+        foreach (var key in _blobs.Keys)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            var versionText = key[prefix.Length..];
+            if (int.TryParse(versionText, out var version) && version >= 2)
+            {
+                existingVersions[version] = key;
+            }
+        }
+
+        // Verify each existing version; dedup on match.
+        foreach (var (_, existingName) in existingVersions)
+        {
+            try
+            {
+                // Inline comparison (no async needed in-memory).
+                var storedEncrypted = _blobs[existingName];
+                var stored = _encryptionService.Decrypt(storedEncrypted);
+                if (stored.Length == chunkData.Length &&
+                    CryptographicOperations.FixedTimeEquals(stored, chunkData.Span))
+                {
+                    return (existingName, IsNewCollision: false);
+                }
+            }
+            catch
+            {
+                // Treat any decryption / compare error as a non-match and keep checking.
+            }
+        }
+
+        // No match — pick the smallest unused version >= 2.
+        var nextVersion = 2;
+        foreach (var version in existingVersions.Keys)
+        {
+            if (version != nextVersion) break;
+            nextVersion++;
+        }
+
+        if (nextVersion > 1000)
+        {
+            throw new InvalidOperationException(
+                $"Exceeded maximum collision versions (1000) for hash {chunkHash}.");
+        }
+
+        return ($"chunks/{chunkHash}_v{nextVersion}", IsNewCollision: true);
+    }
+
+    /// <summary>
+    /// Legacy helper retained for reference; superseded by <see cref="ResolveCollisionBlobName"/>.
     /// </summary>
     private string FindNextCollisionBlobName(string chunkHash)
     {
@@ -513,7 +581,7 @@ public class InMemoryBlobService : IBlobStorageService
                 return candidateName;
             }
         }
-        
+
         throw new InvalidOperationException(
             $"Exceeded maximum collision versions (1000) for hash {chunkHash}.");
     }

@@ -590,10 +590,17 @@ public partial class AzureBlobService : IBlobStorageService
     /// Resolves which blob name to use for a chunk whose primary hash slot is
     /// occupied by a different payload (a genuine collision, corruption, or tampering).
     /// <para>
-    /// Walks the collision suffix chain <c>chunks/{hash}_v2</c>, <c>_v3</c>, …
-    /// and verifies each entry against <paramref name="chunkData"/>. When an existing
-    /// version matches, its blob name is returned as a dedup target. Otherwise the
-    /// first unused suffix is returned for a new upload.
+    /// Lists all existing collision versions (<c>chunks/{hash}_v2</c>, <c>_v3</c>, …)
+    /// in a single <c>GetBlobsAsync</c> call, then verifies each against
+    /// <paramref name="chunkData"/> in ascending order. When an existing version
+    /// matches, its blob name is returned as a dedup target. Otherwise the smallest
+    /// unused suffix is returned for a new upload.
+    /// </para>
+    /// <para>
+    /// This replaces the previous linear <c>ExistsAsync</c> probe, which cost
+    /// one round trip per existing version before a free slot could be found.
+    /// Collisions are astronomically rare for SHA-256 but when they happen the
+    /// linear probe can dominate upload latency.
     /// </para>
     /// </summary>
     /// <returns>A tuple of (blobName, isNewCollision). When isNewCollision is false,
@@ -603,40 +610,62 @@ public partial class AzureBlobService : IBlobStorageService
         ReadOnlyMemory<byte> chunkData,
         CancellationToken cancellationToken)
     {
-        for (int version = 2; version <= 1000; version++)
+        // Single listing call — returns all existing collision versions in one request.
+        // The prefix `chunks/{hash}_v` unambiguously matches only this hash's collision
+        // chain (the primary slot is `chunks/{hash}` with no `_v` suffix).
+        var prefix = $"chunks/{chunkHash}_v";
+        var existingVersions = new SortedDictionary<int, string>();
+
+        await foreach (var blob in _containerClient!.GetBlobsAsync(prefix: prefix, cancellationToken: cancellationToken))
         {
-            var candidateName = $"chunks/{chunkHash}_v{version}";
-            var blobClient = _containerClient!.GetBlobClient(candidateName);
-
-            if (!await blobClient.ExistsAsync(cancellationToken))
+            // Extract the numeric version from names like "chunks/{hash}_v{N}".
+            var versionText = blob.Name[prefix.Length..];
+            if (int.TryParse(versionText, out var version) && version >= 2)
             {
-                Log($"ResolveCollisionBlobNameAsync: Found available collision slot: {candidateName}");
-                TotalOperations++;
-                return (candidateName, IsNewCollision: true);
+                existingVersions[version] = blob.Name;
             }
+        }
 
-            TotalOperations++;
+        TotalOperations++;
+        Log($"ResolveCollisionBlobNameAsync: Found {existingVersions.Count} existing collision version(s) for {chunkHash[..8]}...");
 
-            // An existing collision version exists — check whether it matches our data.
-            // If yes, dedup to it. If the stored content differs (hash-and-size collision
-            // collision, i.e. another distinct payload on the same version), keep probing.
+        // Verify each existing version against our data, in ascending order.
+        // If any match, dedup. If none match, pick the smallest unused suffix (>=2).
+        foreach (var (_, blobName) in existingVersions)
+        {
             try
             {
-                await VerifyChunkIntegrityAsync(candidateName["chunks/".Length..], chunkData, cancellationToken);
-                Log($"ResolveCollisionBlobNameAsync: Existing {candidateName} matches, deduping");
-                return (candidateName, IsNewCollision: false);
+                await VerifyChunkIntegrityAsync(blobName["chunks/".Length..], chunkData, cancellationToken);
+                Log($"ResolveCollisionBlobNameAsync: Existing {blobName} matches, deduping");
+                return (blobName, IsNewCollision: false);
             }
             catch (HashCollisionException)
             {
-                // Different content at this version — keep probing.
+                // Different content at this version — keep checking the next.
                 continue;
             }
         }
 
-        // This should never happen — 1000 collisions for the same hash is beyond impossible
-        throw new InvalidOperationException(
-            $"Exceeded maximum collision versions (1000) for hash {chunkHash}. " +
-            "This indicates a serious system error.");
+        // No existing version matched. Find the smallest unused version >= 2.
+        var nextVersion = 2;
+        foreach (var version in existingVersions.Keys)
+        {
+            if (version != nextVersion) break;
+            nextVersion++;
+        }
+
+        // Guard against an impossibly large chain (1000 collisions for one hash
+        // would indicate systemic corruption or attack, not a real collision).
+        if (nextVersion > 1000)
+        {
+            throw new InvalidOperationException(
+                $"Exceeded maximum collision versions (1000) for hash {chunkHash}. " +
+                "This indicates a serious system error.");
+        }
+
+        var newName = $"chunks/{chunkHash}_v{nextVersion}";
+        Log($"ResolveCollisionBlobNameAsync: No existing version matched, using new slot {newName}");
+        return (newName, IsNewCollision: true);
     }
 
     /// <summary>
