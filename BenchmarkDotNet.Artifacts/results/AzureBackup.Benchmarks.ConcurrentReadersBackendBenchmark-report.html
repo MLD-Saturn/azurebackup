@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.ConcurrentReadersBackendBenchmark-20260418-012204</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  DefaultJob : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code></code></pre>
+
+<table>
+<thead><tr><th>Method</th><th>Backend   </th><th>ConcurrentReaders</th><th>Mean    </th><th>Error </th><th>StdDev</th><th>Median  </th><th>Gen0 </th><th>Gen1 </th><th>Gen2 </th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>Concurrent</td><td>LiteDB</td><td>1</td><td>330,750.0 &mu;s</td><td>4,329.53 &mu;s</td><td>3,838.01 &mu;s</td><td>331,105.7 &mu;s</td><td>16000.0000</td><td>16000.0000</td><td>16000.0000</td><td>65542.61 KB</td>
+</tr><tr><td>Concurrent</td><td>LiteDB</td><td>4</td><td>1,428,535.1 &mu;s</td><td>11,148.75 &mu;s</td><td>9,309.71 &mu;s</td><td>1,427,914.0 &mu;s</td><td>65000.0000</td><td>65000.0000</td><td>65000.0000</td><td>263681.29 KB</td>
+</tr><tr><td>Concurrent</td><td>LiteDB</td><td>16</td><td>5,820,614.8 &mu;s</td><td>14,599.59 &mu;s</td><td>12,191.32 &mu;s</td><td>5,820,893.8 &mu;s</td><td>261000.0000</td><td>261000.0000</td><td>261000.0000</td><td>1054033.2 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLitePooled</td><td>1</td><td>308.5 &mu;s</td><td>6.05 &mu;s</td><td>6.21 &mu;s</td><td>307.7 &mu;s</td><td>6.8359</td><td>0.4883</td><td>-</td><td>44.3 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLitePooled</td><td>4</td><td>387.8 &mu;s</td><td>7.73 &mu;s</td><td>9.78 &mu;s</td><td>391.1 &mu;s</td><td>28.8086</td><td>5.8594</td><td>-</td><td>176.77 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLitePooled</td><td>16</td><td>800.0 &mu;s</td><td>15.93 &mu;s</td><td>41.13 &mu;s</td><td>781.4 &mu;s</td><td>116.2109</td><td>36.1328</td><td>-</td><td>706.64 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLiteSingleConn</td><td>1</td><td>312.9 &mu;s</td><td>6.17 &mu;s</td><td>5.77 &mu;s</td><td>314.7 &mu;s</td><td>6.8359</td><td>0.4883</td><td>-</td><td>44.3 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLiteSingleConn</td><td>4</td><td>1,373.0 &mu;s</td><td>7.80 &mu;s</td><td>6.51 &mu;s</td><td>1,374.1 &mu;s</td><td>27.3438</td><td>1.9531</td><td>-</td><td>176.77 KB</td>
+</tr><tr><td>Concurrent</td><td>SQLiteSingleConn</td><td>16</td><td>52,461.1 &mu;s</td><td>1,033.74 &mu;s</td><td>1,061.57 &mu;s</td><td>51,968.8 &mu;s</td><td>100.0000</td><td>-</td><td>-</td><td>706.64 KB</td>
+</tr></tbody></table>
+</body>
+</html>
