@@ -23,7 +23,7 @@ namespace AzureBackup.Core.Services.Backends;
 /// already done the stronger Argon2id KDF on the way in.
 /// </para>
 /// </summary>
-internal sealed class SqliteBackend : IDisposable
+internal sealed class SqliteBackend : IDatabaseBackend
 {
     // Argon2id parameters - identical to LocalDatabaseService so the same
     // password derives the same key during migration.
@@ -77,6 +77,71 @@ internal sealed class SqliteBackend : IDisposable
         {
             CryptographicOperations.ZeroMemory(derivedKey);
         }
+    }
+
+    /// <summary>
+    /// Forces any deferred writes (WAL pages) to be persisted into the main
+    /// database file. Idempotent. Safe to call from any thread under the
+    /// LocalDatabaseService write lock.
+    /// </summary>
+    public void Checkpoint()
+    {
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        cmd.ExecuteNonQuery();
+    }
+
+    // ---- IndexMetadata ------------------------------------------------------
+
+    /// <summary>
+    /// Reads a timestamp value from the <c>index_metadata</c> key/value table.
+    /// Values are persisted as ISO-8601 strings (round-trippable, sortable,
+    /// and human-readable when poking at the DB with the sqlite3 CLI).
+    /// </summary>
+    public DateTime? GetIndexMetadata(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT value FROM index_metadata WHERE key = $key;";
+        cmd.Parameters.AddWithValue("$key", key);
+        var raw = cmd.ExecuteScalar() as string;
+        if (raw == null) return null;
+
+        // Round-trip via O so DateTimeKind.Utc survives. We always write UTC
+        // values in SetIndexMetadata so this is safe.
+        return DateTime.Parse(raw, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind);
+    }
+
+    /// <summary>
+    /// Upserts a timestamp value under <paramref name="key"/>.
+    /// Always normalises to UTC before persisting so reads via
+    /// <see cref="GetIndexMetadata"/> are deterministic regardless of the
+    /// caller's local time zone.
+    /// </summary>
+    public void SetIndexMetadata(string key, DateTime value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        var utc = value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO index_metadata (key, value) VALUES ($key, $value)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """;
+        cmd.Parameters.AddWithValue("$key", key);
+        cmd.Parameters.AddWithValue("$value",
+            utc.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>
