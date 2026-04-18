@@ -271,116 +271,187 @@ public class ChunkingService
             return (chunks, FinalizeFileHash(fileHasher));
         }
 
-        // Single-pass CDC: read sequentially, dispatch each chunk to the channel
-        // the moment its boundary is found. The buffer must be large enough to
-        // hold one full max-sized chunk plus the rolling-hash window.
-        var cdcBufferSize = (int)Math.Min((long)config.MaxChunkSize + WindowSize, fileLength);
-        var buffer = ArrayPool<byte>.Shared.Rent(cdcBufferSize);
+        // Single-pass streaming CDC (Phase 6.1 / discovered-#5).
+        //
+        // Design: read the file through a small fixed scratch buffer and copy
+        // bytes one at a time into a per-chunk accumulator that doubles as the
+        // dispatch payload. There is no re-seek and no
+        // (MaxChunkSize + WindowSize)-sized scan buffer; the scratch buffer is
+        // always 64 KB regardless of the configured chunk size, so the giant
+        // chunk profiles (up to 128 MB max) no longer rent enormous arrays.
+        //
+        // For each chunk:
+        //   1. Rent a payload buffer sized to config.MaxChunkSize.
+        //   2. Stream bytes into it through the scratch buffer; update the
+        //      rolling hash and the file-level SHA-256 inline.
+        //   3. When (rollingHash & ChunkMask) == 0 above MinChunkSize, OR when
+        //      the chunk reaches MaxChunkSize, OR at EOF, finalise the chunk.
+        //   4. If the chunk hash is in existingHashes, return its payload
+        //      buffer to the pool. Otherwise dispatch it on the channel; the
+        //      consumer is responsible for returning the buffer.
+        //
+        // Reading via a small scratch buffer rather than directly into the
+        // payload buffer keeps the accumulator's tail untouched until we're
+        // sure those bytes belong to this chunk - which lets us hand the
+        // payload buffer off to a consumer immediately when a boundary fires
+        // without copying.
+        const int ScratchSize = 64 * 1024;
+        var scratch = ArrayPool<byte>.Shared.Rent(ScratchSize);
+        byte[]? payloadBuffer = null;
         try
         {
             var chunkStart = 0L;
+            var chunkLength = 0;
             var chunkIndex = 0;
             var rollingHash = 0u;
             byte[] window = new byte[WindowSize];
             var windowPos = 0;
             var windowFilled = false;
 
-            while (chunkStart < fileLength)
+            // Scratch state: bytes [scratchPos .. scratchLen) are loaded but
+            // not yet copied into the chunk accumulator.
+            var scratchPos = 0;
+            var scratchLen = 0;
+
+            // Rent the first chunk's payload buffer.
+            payloadBuffer = ArrayPool<byte>.Shared.Rent(config.MaxChunkSize);
+
+            while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var bytesToRead = (int)Math.Min(buffer.Length, fileLength - chunkStart);
-                stream.Position = chunkStart;
-                var bytesRead = await stream.ReadAsync(buffer.AsMemory(0, bytesToRead), cancellationToken);
-                if (bytesRead == 0) break;
-
-                var chunkLength = 0;
-
-                for (var i = 0; i < bytesRead; i++)
+                // Refill scratch when we have consumed everything in it.
+                if (scratchPos >= scratchLen)
                 {
-                    var b = buffer[i];
-                    chunkLength++;
-
-                    if (windowFilled)
+                    cancellationToken.ThrowIfCancellationRequested();
+                    scratchLen = await stream.ReadAsync(scratch.AsMemory(0, ScratchSize), cancellationToken);
+                    scratchPos = 0;
+                    if (scratchLen == 0)
                     {
-                        var outByte = window[windowPos];
-                        rollingHash = (rollingHash - outByte * HashPrimePower) * HashPrime + b;
-                    }
-                    else
-                    {
-                        rollingHash = rollingHash * HashPrime + b;
-                    }
-
-                    window[windowPos] = b;
-                    // Branchless-friendly wrap (~5-10% faster than modulo on x64
-                    // because WindowSize=48 is not a power of two, so the JIT
-                    // cannot lower `% WindowSize` to an AND). Keeping
-                    // WindowSize=48 avoids changing CDC chunk boundaries for
-                    // existing backups.
-                    if (++windowPos == WindowSize)
-                    {
-                        windowPos = 0;
-                        windowFilled = true;
-                    }
-
-                    var isChunkBoundary = chunkLength >= config.MinChunkSize &&
-                                          ((rollingHash & config.ChunkMask) == 0 || chunkLength >= config.MaxChunkSize);
-
-                    var isEndOfFile = chunkStart + chunkLength >= fileLength;
-
-                    if (isChunkBoundary || isEndOfFile)
-                    {
-                        var chunkSpan = buffer.AsSpan(0, chunkLength);
-                        fileHasher.AppendData(chunkSpan);
-
-                        var chunk = new ChunkInfo
+                        // EOF mid-chunk. Emit whatever is accumulated, if any.
+                        if (chunkLength > 0)
                         {
-                            Index = chunkIndex++,
-                            Offset = chunkStart,
-                            Length = chunkLength,
-                            Hash = ComputeChunkHash(chunkSpan)
-                        };
-                        chunks.Add(chunk);
-
-                        if (existingHashes.Contains(chunk.Hash))
-                        {
-                            // Already stored - mark for the metadata writer and skip the upload path.
-                            chunk.BlobName = $"chunks/{chunk.Hash}";
+                            var span = payloadBuffer.AsSpan(0, chunkLength);
+                            fileHasher.AppendData(span);
+                            var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
+                                ComputeChunkHash(span));
+                            await DispatchChunkAsync(chunk, payloadBuffer, chunks, existingHashes,
+                                channel, cdcProgress, fileLength, cancellationToken);
+                            // Ownership transferred (or returned to pool inside DispatchChunkAsync)
+                            payloadBuffer = null;
                         }
-                        else
-                        {
-                            // Hand the chunk's bytes to a consumer immediately. We
-                            // must copy because the next chunk will reuse `buffer`.
-                            var payloadBuffer = ArrayPool<byte>.Shared.Rent(chunkLength);
-                            chunkSpan.CopyTo(payloadBuffer);
-                            await channel.WriteAsync(
-                                new ChunkPayload(chunk, payloadBuffer, chunkLength),
-                                cancellationToken);
-                        }
-
-                        chunkStart += chunkLength;
-                        rollingHash = 0;
-                        windowFilled = false;
-                        windowPos = 0;
-                        Array.Clear(window);
-
-                        cdcProgress?.Report((chunkStart, fileLength, chunks.Count));
-
-                        // Break out of the inner loop so we re-seek to chunkStart
-                        // and refill the buffer with the next chunk's bytes.
                         break;
                     }
                 }
 
-                if (chunkStart >= fileLength) break;
+                var b = scratch[scratchPos++];
+                payloadBuffer[chunkLength++] = b;
+
+                if (windowFilled)
+                {
+                    var outByte = window[windowPos];
+                    rollingHash = (rollingHash - outByte * HashPrimePower) * HashPrime + b;
+                }
+                else
+                {
+                    rollingHash = rollingHash * HashPrime + b;
+                }
+
+                window[windowPos] = b;
+                // Branchless-friendly wrap (~5-10% faster than modulo on x64
+                // because WindowSize=48 is not a power of two, so the JIT
+                // cannot lower `% WindowSize` to an AND).
+                if (++windowPos == WindowSize)
+                {
+                    windowPos = 0;
+                    windowFilled = true;
+                }
+
+                var atMaxChunkSize = chunkLength >= config.MaxChunkSize;
+                var isChunkBoundary = chunkLength >= config.MinChunkSize &&
+                                      ((rollingHash & config.ChunkMask) == 0 || atMaxChunkSize);
+
+                if (isChunkBoundary)
+                {
+                    var span = payloadBuffer.AsSpan(0, chunkLength);
+                    fileHasher.AppendData(span);
+                    var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
+                        ComputeChunkHash(span));
+                    await DispatchChunkAsync(chunk, payloadBuffer, chunks, existingHashes,
+                        channel, cdcProgress, fileLength, cancellationToken);
+
+                    // Ownership of the buffer was transferred to the consumer
+                    // (or returned to the pool inside EmitChunkAsync). Reset
+                    // for the next chunk.
+                    chunkStart += chunkLength;
+                    chunkLength = 0;
+                    rollingHash = 0;
+                    windowFilled = false;
+                    windowPos = 0;
+                    Array.Clear(window);
+
+                    if (chunkStart >= fileLength)
+                    {
+                        payloadBuffer = null;
+                        break;
+                    }
+
+                    payloadBuffer = ArrayPool<byte>.Shared.Rent(config.MaxChunkSize);
+                }
             }
 
             return (chunks, FinalizeFileHash(fileHasher));
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            ArrayPool<byte>.Shared.Return(scratch);
+            // payloadBuffer is null here on success (ownership transferred)
+            // and non-null only if we threw mid-chunk before emitting.
+            if (payloadBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(payloadBuffer);
+            }
         }
+    }
+
+    /// <summary>
+    /// Builds a <see cref="ChunkInfo"/> record without dispatching it. Kept as a
+    /// separate helper so the streaming loop reads top-down without inline
+    /// object initializers cluttering the boundary-handling logic.
+    /// </summary>
+    private static ChunkInfo BuildChunkInfo(int index, long offset, int length, string hash)
+        => new() { Index = index, Offset = offset, Length = length, Hash = hash };
+
+    /// <summary>
+    /// Records the chunk metadata in the result list and either dispatches the
+    /// payload to the channel or returns its buffer to the pool when the chunk
+    /// is already deduplicated. The synchronous file-hash + chunk-hash work has
+    /// already been done by the caller; this helper is async only because the
+    /// channel write may block on backpressure.
+    /// </summary>
+    private static async Task DispatchChunkAsync(
+        ChunkInfo chunk,
+        byte[] payloadBuffer,
+        List<ChunkInfo> chunks,
+        HashSet<string> existingHashes,
+        ChannelWriter<ChunkPayload> channel,
+        IProgress<(long bytesProcessed, long totalBytes, int chunksFound)>? cdcProgress,
+        long fileLength,
+        CancellationToken cancellationToken)
+    {
+        chunks.Add(chunk);
+
+        if (existingHashes.Contains(chunk.Hash))
+        {
+            chunk.BlobName = $"chunks/{chunk.Hash}";
+            ArrayPool<byte>.Shared.Return(payloadBuffer);
+        }
+        else
+        {
+            await channel.WriteAsync(
+                new ChunkPayload(chunk, payloadBuffer, chunk.Length),
+                cancellationToken);
+        }
+
+        cdcProgress?.Report((chunk.Offset + chunk.Length, fileLength, chunks.Count));
     }
 
     /// <summary>
