@@ -35,9 +35,19 @@ namespace AzureBackup.Benchmarks;
 /// otherwise run hundreds of invocations and the seed time would
 /// dominate the wall clock.
 /// </para>
+///
+/// <para>
+/// <b>C-3 (3c-3) - BI1.</b> Switched from RunStrategy.Monitoring to
+/// RunStrategy.Throughput with iterationCount = 5. Monitoring is meant
+/// for VERY long-running workloads and uses few iterations; the wide
+/// confidence intervals in the C-3 (3b) result (e.g. 853 ms error on a
+/// 412 ms LiteDB measurement) reflected that. Throughput with 5
+/// iterations gives BDN enough samples to compute tighter error bars
+/// without piling on excessive wall-clock cost.
+/// </para>
 /// </summary>
 [MemoryDiagnoser]
-[SimpleJob(RunStrategy.Monitoring, warmupCount: 1, iterationCount: 3, invocationCount: 1)]
+[SimpleJob(RunStrategy.Throughput, warmupCount: 1, iterationCount: 5, invocationCount: 1)]
 public class RebuildReverseChunkIndexBackendBenchmark
 {
     private const string Password = "BenchmarkPassword123!";

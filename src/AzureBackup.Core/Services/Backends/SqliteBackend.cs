@@ -772,22 +772,36 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
-        using (var cmd = _connection.CreateCommand())
+        using (var tx = _connection.BeginTransaction())
         {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM chunk_file_refs;";
-            cmd.ExecuteNonQuery();
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "DELETE FROM chunk_file_refs;";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                // Match the constant ReverseIndexSentinelKey used by
+                // RebuildReverseChunkIndex / IsReverseChunkIndexBuilt.
+                cmd.CommandText = "DELETE FROM index_metadata WHERE key = 'ReverseIndexBuiltAt';";
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
         }
-        using (var cmd = _connection.CreateCommand())
+
+        // C-3 (3c-3) - BI2: explicit WAL checkpoint after the wipe so
+        // the subsequent rebuild benchmark starts from a CLEAN WAL state.
+        // Without this, the DELETE-of-N-rows above leaves dirty WAL pages
+        // that the rebuild measurement would then have to compete with -
+        // adding noise that biases the SQLite numbers downward.
+        // TRUNCATE leaves the WAL file zero-sized.
+        using (var checkpointCmd = _connection.CreateCommand())
         {
-            cmd.Transaction = tx;
-            // Match the constant ReverseIndexSentinelKey used by
-            // RebuildReverseChunkIndex / IsReverseChunkIndexBuilt.
-            cmd.CommandText = "DELETE FROM index_metadata WHERE key = 'ReverseIndexBuiltAt';";
-            cmd.ExecuteNonQuery();
+            checkpointCmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            checkpointCmd.ExecuteNonQuery();
         }
-        tx.Commit();
     }
 
     private List<ChunkInfo> LoadChunksForFile(long fileId)
