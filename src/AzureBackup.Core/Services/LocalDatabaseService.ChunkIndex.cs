@@ -131,18 +131,28 @@ public partial class LocalDatabaseService
                 return new List<ChunkIndexEntry>();
             }
 
-            // Step 2: batch-fetch the ChunkIndexEntry rows using a single Contains
-            // query over the indexed ChunkHash column. LiteDB translates this to
-            // an index scan plus IN-style row fetches, which is an order of
-            // magnitude faster than calling FindOne per hash on large indexes.
+            // Step 2: fetch the matching ChunkIndexEntry rows. We loop FindOne
+            // per hash rather than expressing this as a single
+            // `Find(x => hashes.Contains(x.ChunkHash))` LINQ query because
+            // LiteDB's expression visitor cannot translate
+            // <see cref="System.Linq.Enumerable.Contains{T}(System.Collections.Generic.IEnumerable{T}, T)"/>
+            // to a BSON expression and throws <c>NotSupportedException</c> at
+            // runtime. Each FindOne is an indexed seek on the unique
+            // <c>ChunkHash</c> index so the per-call cost is O(log N); the
+            // total stays well under the legacy full-scan cost for any
+            // realistic chunks-per-file count.
             var hashes = refs
                 .Select(r => r.ChunkHash)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
 
-            return _chunkIndexCollection!
-                .Find(x => hashes.Contains(x.ChunkHash))
-                .ToList();
+            var result = new List<ChunkIndexEntry>(hashes.Length);
+            foreach (var hash in hashes)
+            {
+                var entry = _chunkIndexCollection!.FindOne(x => x.ChunkHash == hash);
+                if (entry != null) result.Add(entry);
+            }
+            return result;
         });
     }
 
