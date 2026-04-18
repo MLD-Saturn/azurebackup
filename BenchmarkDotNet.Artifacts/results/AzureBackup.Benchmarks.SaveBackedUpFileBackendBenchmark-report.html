@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.SaveBackedUpFileBackendBenchmark-20260418-015010</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  Job-CARYJT : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>InvocationCount=1  IterationCount=5  RunStrategy=Throughput  
+UnrollFactor=1  WarmupCount=2  
+</code></pre>
+
+<table>
+<thead><tr><th>Method</th><th>Backend</th><th>ChunkCount</th><th>Mean </th><th>Error</th><th>StdDev</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>FirstSave</td><td>LiteDB</td><td>1</td><td>9,082.9 &mu;s</td><td>835.9 &mu;s</td><td>129.35 &mu;s</td><td>235.95 KB</td>
+</tr><tr><td>ReSave</td><td>LiteDB</td><td>1</td><td>9,156.8 &mu;s</td><td>3,500.4 &mu;s</td><td>541.69 &mu;s</td><td>220.5 KB</td>
+</tr><tr><td>FirstSave</td><td>LiteDB</td><td>10</td><td>9,903.7 &mu;s</td><td>1,652.9 &mu;s</td><td>429.25 &mu;s</td><td>246.61 KB</td>
+</tr><tr><td>ReSave</td><td>LiteDB</td><td>10</td><td>9,169.4 &mu;s</td><td>1,480.2 &mu;s</td><td>384.40 &mu;s</td><td>242.32 KB</td>
+</tr><tr><td>FirstSave</td><td>LiteDB</td><td>100</td><td>10,151.1 &mu;s</td><td>670.2 &mu;s</td><td>103.72 &mu;s</td><td>350.64 KB</td>
+</tr><tr><td>ReSave</td><td>LiteDB</td><td>100</td><td>9,876.0 &mu;s</td><td>1,537.7 &mu;s</td><td>237.96 &mu;s</td><td>879.55 KB</td>
+</tr><tr><td>FirstSave</td><td>SQLite</td><td>1</td><td>657.3 &mu;s</td><td>365.9 &mu;s</td><td>95.03 &mu;s</td><td>9.63 KB</td>
+</tr><tr><td>ReSave</td><td>SQLite</td><td>1</td><td>555.7 &mu;s</td><td>182.1 &mu;s</td><td>47.28 &mu;s</td><td>9.63 KB</td>
+</tr><tr><td>FirstSave</td><td>SQLite</td><td>10</td><td>697.9 &mu;s</td><td>231.5 &mu;s</td><td>60.13 &mu;s</td><td>24.04 KB</td>
+</tr><tr><td>ReSave</td><td>SQLite</td><td>10</td><td>679.1 &mu;s</td><td>313.4 &mu;s</td><td>81.39 &mu;s</td><td>24.04 KB</td>
+</tr><tr><td>FirstSave</td><td>SQLite</td><td>100</td><td>1,914.2 &mu;s</td><td>120.3 &mu;s</td><td>18.61 &mu;s</td><td>168.18 KB</td>
+</tr><tr><td>ReSave</td><td>SQLite</td><td>100</td><td>2,047.5 &mu;s</td><td>304.9 &mu;s</td><td>79.18 &mu;s</td><td>168.18 KB</td>
+</tr></tbody></table>
+</body>
+</html>
