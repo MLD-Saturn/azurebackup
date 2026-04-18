@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.GetChunkEntriesForFileBackendBenchmark-20260417-233004</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2)
+Intel Core i7-9700K CPU 3.60GHz (Coffee Lake), 1 CPU, 8 logical and 8 physical cores
+.NET SDK 10.0.202
+  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+  DefaultJob : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code></code></pre>
+
+<table>
+<thead><tr><th>Method                          </th><th>TotalChunks</th><th>ChunksPerFile</th><th>Mean    </th><th>Error </th><th>StdDev</th><th>Ratio</th><th>RatioSD</th><th>Gen0 </th><th>Gen1 </th><th>Gen2 </th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>10000</td><td>100</td><td>336,554.9 &mu;s</td><td>6,367.44 &mu;s</td><td>8,279.48 &mu;s</td><td>1.001</td><td>0.03</td><td>15000.0000</td><td>15000.0000</td><td>15000.0000</td><td>58261.33 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>10000</td><td>100</td><td>239.6 &mu;s</td><td>1.59 &mu;s</td><td>1.41 &mu;s</td><td>0.001</td><td>0.00</td><td>6.8359</td><td>0.4883</td><td>-</td><td>43.97 KB</td><td>0.001</td>
+</tr><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>10000</td><td>1000</td><td>3,102,313.8 &mu;s</td><td>19,010.46 &mu;s</td><td>16,852.27 &mu;s</td><td>1.000</td><td>0.01</td><td>149000.0000</td><td>149000.0000</td><td>149000.0000</td><td>577784.77 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>10000</td><td>1000</td><td>2,511.3 &mu;s</td><td>28.22 &mu;s</td><td>26.40 &mu;s</td><td>0.001</td><td>0.00</td><td>66.4063</td><td>23.4375</td><td>-</td><td>423.66 KB</td><td>0.001</td>
+</tr><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>100000</td><td>100</td><td>338,492.7 &mu;s</td><td>6,768.04 &mu;s</td><td>8,311.76 &mu;s</td><td>1.001</td><td>0.03</td><td>16000.0000</td><td>16000.0000</td><td>16000.0000</td><td>65534.42 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>100000</td><td>100</td><td>265.4 &mu;s</td><td>0.90 &mu;s</td><td>0.71 &mu;s</td><td>0.001</td><td>0.00</td><td>6.8359</td><td>0.4883</td><td>-</td><td>43.97 KB</td><td>0.001</td>
+</tr><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>100000</td><td>1000</td><td>3,184,750.2 &mu;s</td><td>38,025.35 &mu;s</td><td>35,568.93 &mu;s</td><td>1.000</td><td>0.02</td><td>154000.0000</td><td>154000.0000</td><td>154000.0000</td><td>609302.36 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>100000</td><td>1000</td><td>2,664.4 &mu;s</td><td>20.03 &mu;s</td><td>16.72 &mu;s</td><td>0.001</td><td>0.00</td><td>66.4063</td><td>23.4375</td><td>-</td><td>423.66 KB</td><td>0.001</td>
+</tr><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>500000</td><td>100</td><td>337,615.4 &mu;s</td><td>4,902.51 &mu;s</td><td>4,585.81 &mu;s</td><td>1.000</td><td>0.02</td><td>16000.0000</td><td>16000.0000</td><td>16000.0000</td><td>66211.91 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>500000</td><td>100</td><td>263.9 &mu;s</td><td>2.30 &mu;s</td><td>2.15 &mu;s</td><td>0.001</td><td>0.00</td><td>6.8359</td><td>0.4883</td><td>-</td><td>43.97 KB</td><td>0.001</td>
+</tr><tr><td>&#39;LiteDB: reverse-index + FindOne loop&#39;</td><td>500000</td><td>1000</td><td>3,205,134.4 &mu;s</td><td>27,180.77 &mu;s</td><td>24,095.05 &mu;s</td><td>1.00</td><td>0.01</td><td>152000.0000</td><td>152000.0000</td><td>152000.0000</td><td>621297.27 KB</td><td>1.000</td>
+</tr><tr><td>&#39;SQLite: indexed JOIN&#39;</td><td>500000</td><td>1000</td><td>56,341.4 &mu;s</td><td>405.92 &mu;s</td><td>359.84 &mu;s</td><td>0.02</td><td>0.00</td><td>-</td><td>-</td><td>-</td><td>423.66 KB</td><td>0.001</td>
+</tr></tbody></table>
+</body>
+</html>
