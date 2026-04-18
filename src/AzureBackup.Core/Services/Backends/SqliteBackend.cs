@@ -651,6 +651,108 @@ internal sealed class SqliteBackend : IDatabaseBackend
         tx.Commit();
     }
 
+    /// <summary>
+    /// Benchmark-only: bulk-loads many <see cref="BackedUpFile"/> rows
+    /// (with their nested chunk lists and matching chunk_file_refs rows)
+    /// in a single transaction. Tens of thousands of files via the
+    /// public <see cref="SaveBackedUpFile"/> would open one transaction
+    /// per file and dominate setup time at C-3 scale.
+    ///
+    /// <para>
+    /// <b>Not</b> exposed via <see cref="IDatabaseBackend"/> on purpose -
+    /// production callers always go through <see cref="SaveBackedUpFile"/>
+    /// which is the canonical writer of the (file, chunk) relationship.
+    /// </para>
+    /// </summary>
+    internal void BulkInsertFilesForBenchmark(IEnumerable<BackedUpFile> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        using var tx = _connection.BeginTransaction();
+
+        using var fileInsert = _connection.CreateCommand();
+        fileInsert.Transaction = tx;
+        fileInsert.CommandText = """
+            INSERT INTO files (local_path, blob_name, file_size, last_modified,
+                               file_hash, status, backed_up_at, metadata_version)
+            VALUES ($local_path, $blob_name, $file_size, $last_modified,
+                    $file_hash, $status, $backed_up_at, $metadata_version)
+            RETURNING id;
+            """;
+        var fp_path = fileInsert.Parameters.Add("$local_path", SqliteType.Text);
+        var fp_blob = fileInsert.Parameters.Add("$blob_name", SqliteType.Text);
+        var fp_size = fileInsert.Parameters.Add("$file_size", SqliteType.Integer);
+        var fp_modified = fileInsert.Parameters.Add("$last_modified", SqliteType.Text);
+        var fp_hash = fileInsert.Parameters.Add("$file_hash", SqliteType.Text);
+        var fp_status = fileInsert.Parameters.Add("$status", SqliteType.Integer);
+        var fp_backed = fileInsert.Parameters.Add("$backed_up_at", SqliteType.Text);
+        var fp_meta = fileInsert.Parameters.Add("$metadata_version", SqliteType.Integer);
+
+        using var chunkInsert = _connection.CreateCommand();
+        chunkInsert.Transaction = tx;
+        chunkInsert.CommandText = """
+            INSERT INTO file_chunks
+                (file_id, chunk_order, chunk_index, offset, length, hash, blob_name)
+            VALUES ($file_id, $chunk_order, $chunk_index, $offset, $length, $hash, $blob_name);
+            """;
+        var cp_fileId = chunkInsert.Parameters.Add("$file_id", SqliteType.Integer);
+        var cp_order = chunkInsert.Parameters.Add("$chunk_order", SqliteType.Integer);
+        var cp_index = chunkInsert.Parameters.Add("$chunk_index", SqliteType.Integer);
+        var cp_offset = chunkInsert.Parameters.Add("$offset", SqliteType.Integer);
+        var cp_length = chunkInsert.Parameters.Add("$length", SqliteType.Integer);
+        var cp_hash = chunkInsert.Parameters.Add("$hash", SqliteType.Text);
+        var cp_blob = chunkInsert.Parameters.Add("$blob_name", SqliteType.Text);
+
+        using var refInsert = _connection.CreateCommand();
+        refInsert.Transaction = tx;
+        refInsert.CommandText = """
+            INSERT INTO chunk_file_refs
+                (file_path, chunk_hash, chunk_index, referenced_at)
+            VALUES ($file_path, $chunk_hash, $chunk_index, $referenced_at);
+            """;
+        var rp_path = refInsert.Parameters.Add("$file_path", SqliteType.Text);
+        var rp_hash = refInsert.Parameters.Add("$chunk_hash", SqliteType.Text);
+        var rp_index = refInsert.Parameters.Add("$chunk_index", SqliteType.Integer);
+        var rp_referenced = refInsert.Parameters.Add("$referenced_at", SqliteType.Text);
+
+        foreach (var file in files)
+        {
+            fp_path.Value = file.LocalPath;
+            fp_blob.Value = file.BlobName ?? string.Empty;
+            fp_size.Value = file.FileSize;
+            fp_modified.Value = FormatUtc(file.LastModified);
+            fp_hash.Value = file.FileHash ?? string.Empty;
+            fp_status.Value = (int)file.Status;
+            fp_backed.Value = FormatUtc(file.BackedUpAt);
+            fp_meta.Value = file.MetadataVersion;
+
+            var fileId = (long)fileInsert.ExecuteScalar()!;
+            cp_fileId.Value = fileId;
+            rp_path.Value = file.LocalPath;
+            rp_referenced.Value = FormatUtc(file.BackedUpAt);
+
+            for (var i = 0; i < file.Chunks.Count; i++)
+            {
+                var chunk = file.Chunks[i];
+                cp_order.Value = i;
+                cp_index.Value = chunk.Index;
+                cp_offset.Value = chunk.Offset;
+                cp_length.Value = chunk.Length;
+                cp_hash.Value = chunk.Hash ?? string.Empty;
+                cp_blob.Value = (object?)chunk.BlobName ?? string.Empty;
+                chunkInsert.ExecuteNonQuery();
+
+                rp_hash.Value = chunk.Hash ?? string.Empty;
+                rp_index.Value = chunk.Index;
+                refInsert.ExecuteNonQuery();
+            }
+        }
+
+        tx.Commit();
+    }
+
     private List<ChunkInfo> LoadChunksForFile(long fileId)
     {
         if (_connection == null)

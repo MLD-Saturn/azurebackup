@@ -15,8 +15,12 @@
     <!--
       Lets AzureBackup.Tests reach internal types - currently the SqliteBackend
       and other Option C backend code that is not part of the public surface.
+      AzureBackup.Benchmarks uses the same bridge so C-3 benchmarks can target
+      both backends without the LocalDatabaseService refactor (deferred to
+      after the C-3 decision gate).
     -->
     <InternalsVisibleTo Include="AzureBackup.Tests" />
+    <InternalsVisibleTo Include="AzureBackup.Benchmarks" />
   </ItemGroup>
 
   <ItemGroup>
