@@ -245,4 +245,14 @@ internal interface IDatabaseBackend : IDisposable
     /// callers can answer "is X pending?" without one round-trip per check.
     /// </summary>
     HashSet<string> GetAllPendingChangePaths();
+
+    // ---- Aggregate statistics ----------------------------------------------
+
+    /// <summary>
+    /// Returns aggregate counts and sizes across the files, pending_changes,
+    /// and config tables in a single round-trip-friendly call. Used by the
+    /// status pane and by maintenance commands that need to display counts
+    /// without materialising row collections.
+    /// </summary>
+    BackupStatistics GetStatistics();
 }
