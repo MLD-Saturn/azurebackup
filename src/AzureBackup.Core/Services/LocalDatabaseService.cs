@@ -124,6 +124,52 @@ public partial class LocalDatabaseService : IDisposable
         if (password.IsEmpty)
             throw new ArgumentException("Password cannot be empty", nameof(password));
 
+        // C-2 defence-in-depth: detect re-entrant Initialize on the SAME
+        // instance. Migration flows are:
+        //   outer Initialize on instance A
+        //     -> MigrateFromLiteDb
+        //       -> new LocalDatabaseService instance B
+        //         -> Initialize on instance B (legitimate; different instance)
+        // That is fine; the counter is per-instance so instance B's
+        // counter starts fresh. The bad pattern this catches is:
+        //   outer Initialize on instance A
+        //     -> something on instance A
+        //       -> Initialize on instance A (BAD; would self-recurse)
+        // which would happen if a future caller forgets to clear the
+        // feature-flag switches before recursing. Without this guard a
+        // bug like that blows the whole test host's stack; with it,
+        // we get a clear InvalidOperationException with stack trace.
+        if (_initializeInProgress)
+        {
+            throw new InvalidOperationException(
+                "LocalDatabaseService.Initialize called re-entrantly on the same instance. " +
+                "This indicates a code path that re-enters Initialize on a service that is " +
+                "already initializing (e.g. the C-2 migration helper InitializeLiteDbOnly " +
+                "forgot to clear the AZBK_USE_SQLITE switch on this instance). See " +
+                "LocalDatabaseService.Migration.Sqlite.cs#InitializeLiteDbOnly.");
+        }
+
+        _initializeInProgress = true;
+        try
+        {
+            InitializeCore(databasePath, password);
+        }
+        finally
+        {
+            _initializeInProgress = false;
+        }
+    }
+
+    /// <summary>
+    /// Per-instance re-entry guard for <see cref="Initialize"/>. See
+    /// the guard comment in Initialize for why this exists. Per-instance
+    /// (not [ThreadStatic]) because the legitimate migration flow
+    /// recurses on a DIFFERENT LocalDatabaseService instance.
+    /// </summary>
+    private bool _initializeInProgress;
+
+    private void InitializeCore(string databasePath, ReadOnlySpan<char> password)
+    {
         // Option C / C-1 final step b: feature-flag branch. Read the
         // env var ONCE here so flipping it mid-session is a no-op. When
         // set, we instantiate SqliteBackend and skip ALL LiteDB setup;

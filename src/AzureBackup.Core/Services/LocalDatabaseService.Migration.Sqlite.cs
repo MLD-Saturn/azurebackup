@@ -285,34 +285,46 @@ public partial class LocalDatabaseService
 
     /// <summary>
     /// Private escape hatch used by <see cref="MigrateFromLiteDb"/>:
-    /// runs the LiteDB branch of Initialize REGARDLESS of the
-    /// <c>AZBK_USE_SQLITE</c> env var. Needed because migration by
-    /// definition runs with the flag ON, but must open the source DB
-    /// as LiteDB.
+    /// runs the LiteDB branch of Initialize REGARDLESS of any feature
+    /// flag (env var OR the per-async-flow AsyncLocal override).
+    /// Needed because migration by definition runs with the flag ON,
+    /// but must open the source DB as LiteDB.
     /// </summary>
     /// <remarks>
-    /// We implement this by calling the main Initialize but first
-    /// snapshotting and clearing the env var, then restoring. That is
-    /// brittle because of process-wide state; preferable is to push
-    /// the LiteDB-open logic into a private method that both
-    /// Initialize and this helper call. That refactor belongs in C-5
-    /// when LocalDatabaseService gets its broader cleanup.
+    /// We snapshot+clear BOTH the env var and the
+    /// <see cref="DatabaseBackendFactory"/> AsyncLocal override before
+    /// calling Initialize, then restore them on exit. Missing either
+    /// one would cause Initialize to recurse back into MigrateFromLiteDb
+    /// (the AsyncLocal override takes precedence over the env var, so
+    /// clearing only the env var is insufficient when tests have set
+    /// the override).
+    ///
+    /// <para>
+    /// This is brittle process-wide-state-juggling. The right long-term
+    /// fix is to push the LiteDB-open logic into a private method that
+    /// both Initialize and this helper call without ever consulting the
+    /// flag. Tracked for C-5.
+    /// </para>
     /// </remarks>
     private void InitializeLiteDbOnly(string databasePath, ReadOnlySpan<char> password)
     {
-        // Snapshot + clear the env var so Initialize falls through the
-        // LiteDB branch. Restore on exit.
-        var previous = Environment.GetEnvironmentVariable(DatabaseBackendFactory.EnvironmentVariableName);
+        // Snapshot + clear BOTH switches so Initialize falls through
+        // the LiteDB branch.
+        var previousEnvVar = Environment.GetEnvironmentVariable(
+            DatabaseBackendFactory.EnvironmentVariableName);
+        var previousOverride = DatabaseBackendFactory.GetAsyncLocalOverride();
         try
         {
             Environment.SetEnvironmentVariable(
                 DatabaseBackendFactory.EnvironmentVariableName, null);
+            DatabaseBackendFactory.SetAsyncLocalOverride(false);
             Initialize(databasePath, password);
         }
         finally
         {
             Environment.SetEnvironmentVariable(
-                DatabaseBackendFactory.EnvironmentVariableName, previous);
+                DatabaseBackendFactory.EnvironmentVariableName, previousEnvVar);
+            DatabaseBackendFactory.SetAsyncLocalOverride(previousOverride);
         }
     }
 }

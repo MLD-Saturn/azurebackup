@@ -238,4 +238,53 @@ public class LocalDatabaseServiceMigrationTests : IDisposable
         Assert.NotNull(retry.GetIndexMetadata("WrongPasswordProbe"));
     }
 
+    /// <summary>
+    /// Regression: under <see cref="BackendOverrideScope"/>(useSqlite: true)
+    /// the migration's internal <c>InitializeLiteDbOnly</c> helper used
+    /// to clear ONLY the env var, not the AsyncLocal override. Result:
+    /// the inner Initialize re-evaluated <c>ShouldUseSqlite</c>, saw
+    /// the override still pinned to true, re-detected the LiteDB file
+    /// at the target path, and called <c>MigrateFromLiteDb</c> again -
+    /// infinite recursion until the test host stack-overflowed and
+    /// aborted the entire test run (with xUnit reporting a misleading
+    /// passing aggregate count from before the crash).
+    ///
+    /// <para>
+    /// Without the fix this test stack-overflows the test host. With
+    /// the fix it migrates the seeded LiteDB into SQLite cleanly. The
+    /// defence-in-depth per-instance re-entry guard in
+    /// <see cref="LocalDatabaseService.Initialize"/> converts any
+    /// future regression into a fast-failing
+    /// <see cref="InvalidOperationException"/> instead of a stack
+    /// overflow.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Migration_DoesNotRecurseUnderAsyncLocalOverride()
+    {
+        // Arrange: seed LiteDB.
+        using (var _flagOff = new BackendOverrideScope(useSqlite: false))
+        using (var seed = new LocalDatabaseService())
+        {
+            seed.Initialize(_dbPath, Password.AsSpan());
+            seed.SetIndexMetadata("RecursionProbe", DateTime.UtcNow);
+        }
+
+        // Act: open with the AsyncLocal override pinned to true. Migration
+        // must complete WITHOUT recursing back into MigrateFromLiteDb via
+        // its own InitializeLiteDbOnly helper.
+        using var _flagOn = new BackendOverrideScope(useSqlite: true);
+        using var migrated = new LocalDatabaseService();
+
+        // If the bug is back this call recurses until stack overflow.
+        // The defence-in-depth guard converts that into a fast-failing
+        // InvalidOperationException; either way the test catches the
+        // regression.
+        migrated.Initialize(_dbPath, Password.AsSpan());
+
+        // Assert: migration completed normally.
+        Assert.True(File.Exists(_dbPath + ".litedb-backup"),
+            "Migration should have run and renamed LiteDB to .litedb-backup");
+        Assert.NotNull(migrated.GetIndexMetadata("RecursionProbe"));
     }
+}
