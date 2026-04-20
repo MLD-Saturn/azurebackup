@@ -9,12 +9,13 @@ namespace AzureBackup.Tests;
 /// exactly which env-var values enable SQLite.
 ///
 /// <para>
-/// ShouldUseSqlite itself reads process environment, which is shared
-/// across tests in the same AppDomain. xUnit runs test classes in
-/// isolated collections so a per-test env-var flip is safe as long
-/// as we restore the value on teardown.
+/// <see cref="DatabaseBackendFactory.ShouldUseSqlite"/> reads the
+/// process-wide environment variable; the three tests that flip that
+/// variable belong to the <c>EnvVarMutating</c> xUnit collection so
+/// they run sequentially with no other env-var-mutating test alongside.
 /// </para>
 /// </summary>
+[Collection("EnvVarMutating")]
 public class DatabaseBackendFactoryTests
 {
     [Theory]

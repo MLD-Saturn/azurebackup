@@ -160,7 +160,7 @@ public class GetChunkEntriesForFileBackendBenchmark
         Mark("LiteDB: populated");
 
         // ---- Populate SQLite ----
-        // BulkInsertFilesForBenchmark is a benchmark-only helper that writes
+        // BulkInsertFiles is an internal helper that writes
         // files + file_chunks + chunk_file_refs in ONE transaction, sidestepping
         // the per-file transaction overhead of SaveBackedUpFile. At C-3 scale
         // (50K other files) that's the difference between ~5 seconds and
@@ -176,8 +176,8 @@ public class GetChunkEntriesForFileBackendBenchmark
         {
             allFiles.Add(NewFile(path, chunks, now));
         }
-        Mark($"SQLite: BulkInsertFilesForBenchmark ({allFiles.Count} files)");
-        _sqlite.BulkInsertFilesForBenchmark(allFiles);
+        Mark($"SQLite: BulkInsertFiles ({allFiles.Count} files)");
+        _sqlite.BulkInsertFiles(allFiles);
         Mark("SQLite: populated");
 
         // Sanity smoke: both backends return the same count for the target.

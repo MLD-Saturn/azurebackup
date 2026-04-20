@@ -5,23 +5,23 @@ using Xunit;
 namespace AzureBackup.Tests;
 
 /// <summary>
-/// Option C / C-1 final step b: end-to-end proof that setting the
-/// <c>AZBK_USE_SQLITE</c> environment variable routes
+/// Option C / C-1 final step b: end-to-end proof that
+/// <see cref="DatabaseBackendFactory"/> routes
 /// <see cref="LocalDatabaseService"/> through the SQLite backend instead
-/// of LiteDB.
+/// of LiteDB when configured to do so.
 ///
 /// <para>
 /// We do NOT re-test SQLite correctness here - that's covered by the
 /// contract tests + direct-SqliteBackend tests from C-1 and C-3. This
-/// file verifies ONLY the routing: that with the flag set every call
-/// hits the backend and the LiteDB collections stay null.
+/// file verifies ONLY the routing: that with the override set every
+/// call hits the backend and the LiteDB collections stay null.
 /// </para>
 ///
 /// <para>
-/// xUnit runs each test class on its own thread but the process
-/// environment is shared. Every test uses the <c>EnvVarScope</c>
-/// helper to snapshot+restore on dispose so a test that flips the flag
-/// cannot leak into later tests.
+/// Uses <see cref="BackendOverrideScope"/> (an <see cref="AsyncLocal{T}"/>
+/// override) instead of an <c>AZBK_USE_SQLITE</c> env-var flip so
+/// xUnit's parallel test execution does not cross-contaminate sibling
+/// tests in other classes.
 /// </para>
 /// </summary>
 public class LocalDatabaseServiceSqliteRoutingTests : IDisposable
@@ -42,9 +42,9 @@ public class LocalDatabaseServiceSqliteRoutingTests : IDisposable
     }
 
     [Fact]
-    public void Initialize_WithFlagSet_RoundTripsThroughSqliteBackend()
+    public void Initialize_WithOverrideSet_RoundTripsThroughSqliteBackend()
     {
-        using var _flag = new EnvVarScope(DatabaseBackendFactory.EnvironmentVariableName, "1");
+        using var _flag = new BackendOverrideScope(useSqlite: true);
 
         using var service = new LocalDatabaseService();
         service.Initialize(_dbPath, "RoutingTestPassword!".AsSpan());
@@ -67,9 +67,9 @@ public class LocalDatabaseServiceSqliteRoutingTests : IDisposable
     }
 
     [Fact]
-    public void Initialize_WithoutFlag_UsesLiteDbPath()
+    public void Initialize_WithoutOverride_UsesLiteDbPath()
     {
-        using var _flag = new EnvVarScope(DatabaseBackendFactory.EnvironmentVariableName, null);
+        using var _flag = new BackendOverrideScope(useSqlite: false);
 
         using var service = new LocalDatabaseService();
         service.Initialize(_dbPath, "RoutingTestPassword!".AsSpan());
@@ -87,7 +87,7 @@ public class LocalDatabaseServiceSqliteRoutingTests : IDisposable
     [Fact]
     public void FullBackedUpFileRoundTrip_ViaSqliteBackend()
     {
-        using var _flag = new EnvVarScope(DatabaseBackendFactory.EnvironmentVariableName, "1");
+        using var _flag = new BackendOverrideScope(useSqlite: true);
 
         using var service = new LocalDatabaseService();
         service.Initialize(_dbPath, "RoutingTestPassword!".AsSpan());
@@ -119,27 +119,5 @@ public class LocalDatabaseServiceSqliteRoutingTests : IDisposable
         Assert.Equal("ROUTEHASH", readBack!.FileHash);
         Assert.Single(readBack.Chunks);
         Assert.Equal("CHUNK-000", readBack.Chunks[0].Hash);
-    }
-
-    /// <summary>
-    /// Snapshot-and-restore helper identical to the one in
-    /// <c>DatabaseBackendFactoryTests</c>. Kept as a duplicate (one per
-    /// test file) because xUnit discourages shared mutable infrastructure
-    /// and 8 lines is not worth a shared fixture.
-    /// </summary>
-    private sealed class EnvVarScope : IDisposable
-    {
-        private readonly string _name;
-        private readonly string? _previousValue;
-
-        public EnvVarScope(string name, string? newValue)
-        {
-            _name = name;
-            _previousValue = Environment.GetEnvironmentVariable(name);
-            Environment.SetEnvironmentVariable(name, newValue);
-        }
-
-        public void Dispose()
-            => Environment.SetEnvironmentVariable(_name, _previousValue);
     }
 }

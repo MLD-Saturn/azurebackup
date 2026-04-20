@@ -5,7 +5,7 @@ using Xunit;
 namespace AzureBackup.Tests;
 
 /// <summary>
-/// Tests the benchmark-only <c>BulkInsertFilesForBenchmark</c> helper on
+/// Tests the internal <c>BulkInsertFiles</c> helper on
 /// <see cref="SqliteBackend"/> at miniature scale. The helper exists to
 /// keep C-3 setup time reasonable; if it diverges from the canonical
 /// SaveBackedUpFile path the benchmark numbers become misleading. These
@@ -60,7 +60,7 @@ public class SqliteBackendBulkInsertHelperTests : IDisposable
     }
 
     [Fact]
-    public void BulkInsertFilesForBenchmark_RoundTripsLikeSaveBackedUpFile()
+    public void BulkInsertFiles_RoundTripsLikeSaveBackedUpFile()
     {
         // Arrange: seed chunk_index so reverse-index reads can join.
         var when = new DateTime(2026, 4, 17, 21, 30, 45, DateTimeKind.Utc);
@@ -81,7 +81,7 @@ public class SqliteBackendBulkInsertHelperTests : IDisposable
         };
 
         // Act
-        _backend.BulkInsertFilesForBenchmark(files);
+        _backend.BulkInsertFiles(files);
 
         // Assert: every file readable, each chunk list correct.
         var one = _backend.GetBackedUpFile(@"C:\bulk\one.bin");
@@ -108,17 +108,17 @@ public class SqliteBackendBulkInsertHelperTests : IDisposable
     }
 
     [Fact]
-    public void BulkInsertFilesForBenchmark_EmptySequence_NoOp()
+    public void BulkInsertFiles_EmptySequence_NoOp()
     {
-        _backend.BulkInsertFilesForBenchmark(Array.Empty<BackedUpFile>());
+        _backend.BulkInsertFiles(Array.Empty<BackedUpFile>());
         Assert.Empty(_backend.GetAllBackedUpFiles());
     }
 
     [Fact]
-    public void BulkInsertFilesForBenchmark_NullArgument_Throws()
+    public void BulkInsertFiles_NullArgument_Throws()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            _backend.BulkInsertFilesForBenchmark(null!));
+            _backend.BulkInsertFiles(null!));
     }
 
     [Fact]
@@ -132,7 +132,7 @@ public class SqliteBackendBulkInsertHelperTests : IDisposable
             ChunkHash = "AAAA", FirstUploadedAt = when,
             SizeBytes = 1024, ReferenceCount = 1, LastVerifiedAt = when,
         });
-        _backend.BulkInsertFilesForBenchmark(new[] { MakeFile(@"C:\clear.bin", "AAAA") });
+        _backend.BulkInsertFiles(new[] { MakeFile(@"C:\clear.bin", "AAAA") });
         _backend.SetIndexMetadata("ReverseIndexBuiltAt", DateTime.UtcNow);
         Assert.True(_backend.IsReverseChunkIndexBuilt());
         Assert.Single(_backend.GetChunkEntriesForFile(@"C:\clear.bin"));

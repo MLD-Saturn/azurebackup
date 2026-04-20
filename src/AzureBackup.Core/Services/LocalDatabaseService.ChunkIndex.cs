@@ -189,6 +189,7 @@ public partial class LocalDatabaseService
     /// </summary>
     internal void UpsertChunkFileRef(string filePath, string chunkHash, int chunkIndex, DateTime referencedAt)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.UpsertChunkFileRef(filePath, chunkHash, chunkIndex, referencedAt); return; }
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
@@ -222,6 +223,7 @@ public partial class LocalDatabaseService
     /// </summary>
     internal void BulkInsertChunkFileRefs(IEnumerable<ChunkFileRefRow> rows)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.BulkInsertChunkFileRefs(rows); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(rows);
 
@@ -234,6 +236,7 @@ public partial class LocalDatabaseService
     /// </summary>
     internal int DeleteChunkFileRefsForFile(string filePath)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.DeleteChunkFileRefsForFile(filePath);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
@@ -247,6 +250,7 @@ public partial class LocalDatabaseService
     /// </summary>
     internal int DeleteChunkFileRefsForChunk(string chunkHash)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.DeleteChunkFileRefsForChunk(chunkHash);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
 
@@ -261,6 +265,7 @@ public partial class LocalDatabaseService
     /// </summary>
     internal int DeleteChunkFileRefsForFileAndChunk(string filePath, string chunkHash)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.DeleteChunkFileRefsForFileAndChunk(filePath, chunkHash);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
@@ -453,6 +458,28 @@ public partial class LocalDatabaseService
             {
                 _indexMetadataCollection.Insert(new IndexMetadata { Key = key, Value = value });
             }
+        });
+    }
+
+    /// <summary>
+    /// Returns every (key, value) row in the index_metadata collection.
+    /// Used by the C-2 LiteDB-to-SQLite migration to copy the whole
+    /// metadata table. Production consumers use the single-key
+    /// <see cref="GetIndexMetadata"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, DateTime> GetAllIndexMetadata()
+    {
+        if (_sqliteBackend != null) return _sqliteBackend.GetAllIndexMetadata();
+        EnsureInitialized();
+
+        return InReadLock(() =>
+        {
+            var result = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+            foreach (var row in _indexMetadataCollection!.FindAll())
+            {
+                result[row.Key] = row.Value;
+            }
+            return (IReadOnlyDictionary<string, DateTime>)result;
         });
     }
 

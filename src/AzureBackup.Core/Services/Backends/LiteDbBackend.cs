@@ -60,6 +60,14 @@ internal sealed class LiteDbBackend : IDatabaseBackend
     public void SetIndexMetadata(string key, DateTime value)
         => _service.SetIndexMetadata(key, value);
 
+    /// <summary>
+    /// Delegates to <see cref="LocalDatabaseService.GetAllIndexMetadata"/>
+    /// on the wrapped service. Used by C-2 migration to snapshot every
+    /// metadata key before writing them into the SQLite target.
+    /// </summary>
+    public IReadOnlyDictionary<string, DateTime> GetAllIndexMetadata()
+        => _service.GetAllIndexMetadata();
+
     // ---- Configuration ------------------------------------------------------
 
     public BackupConfiguration GetConfiguration() => _service.GetConfiguration();

@@ -41,11 +41,55 @@ internal static class DatabaseBackendFactory
     public const string EnvironmentVariableName = "AZBK_USE_SQLITE";
 
     /// <summary>
+    /// Optional per-async-flow override that bypasses the process-wide
+    /// <see cref="EnvironmentVariableName"/> env var. <c>null</c> means
+    /// "fall back to the env var"; a non-null value pins the backend
+    /// choice for the current async context only.
+    ///
+    /// <para>
+    /// <b>Why <see cref="AsyncLocal{T}"/>:</b> the env-var path is a
+    /// process-wide global that xUnit's parallel test runner cannot
+    /// safely share. Two test classes that flip the env var in parallel
+    /// would race; one test would see the other's value mid-call. The
+    /// <see cref="AsyncLocal{T}"/> field is per-logical-thread (and
+    /// inherited by tasks spawned within), so each test that opts in
+    /// gets its own pinned choice without affecting siblings.
+    /// </para>
+    ///
+    /// <para>
+    /// Production code never sets this. Tests use the
+    /// <c>BackendOverrideScope</c> helper which sets and clears the
+    /// value via <c>using</c>.
+    /// </para>
+    /// </summary>
+    private static readonly AsyncLocal<bool?> _asyncLocalOverride = new();
+
+    /// <summary>
+    /// Test hook: pins <see cref="ShouldUseSqlite"/> to a fixed value
+    /// for the current async flow. Pass <c>null</c> to clear the
+    /// override and fall back to the env var.
+    /// </summary>
+    /// <remarks>
+    /// Internal-only on purpose - production must not depend on
+    /// per-async-flow backend choices. Tests reach this via
+    /// <c>InternalsVisibleTo</c> on AzureBackup.Tests.
+    /// </remarks>
+    internal static void SetAsyncLocalOverride(bool? value)
+    {
+        _asyncLocalOverride.Value = value;
+    }
+
+    /// <summary>
     /// Returns <c>true</c> if the current process environment is
-    /// configured to use the SQLite backend.
+    /// configured to use the SQLite backend. The
+    /// <see cref="AsyncLocal{T}"/> override (if set) takes precedence
+    /// over the env var.
     /// </summary>
     public static bool ShouldUseSqlite()
     {
+        var pinned = _asyncLocalOverride.Value;
+        if (pinned.HasValue) return pinned.Value;
+
         var raw = Environment.GetEnvironmentVariable(EnvironmentVariableName);
         return IsTruthy(raw);
     }

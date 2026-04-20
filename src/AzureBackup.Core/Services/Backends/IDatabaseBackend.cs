@@ -73,6 +73,15 @@ internal interface IDatabaseBackend : IDisposable
     /// </summary>
     void SetIndexMetadata(string key, DateTime value);
 
+    /// <summary>
+    /// Returns every (key, value) row in the <c>index_metadata</c> table.
+    /// Used by the C-2 LiteDB-to-SQLite migration to copy the whole
+    /// metadata table without having to know every key the source side
+    /// had written. Key comparison is ordinal (case-sensitive) to match
+    /// the single-key accessors.
+    /// </summary>
+    IReadOnlyDictionary<string, DateTime> GetAllIndexMetadata();
+
     // ---- Configuration ------------------------------------------------------
 
     /// <summary>

@@ -154,7 +154,7 @@ public class ConcurrentReadersBackendBenchmark
                     MetadataVersion = 1,
                     Chunks = kv.Value,
                 }).ToList();
-                _sqlite.BulkInsertFilesForBenchmark(allFiles);
+                _sqlite.BulkInsertFiles(allFiles);
 
                 if (Backend == "SQLitePooled")
                 {

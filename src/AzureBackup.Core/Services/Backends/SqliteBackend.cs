@@ -38,6 +38,57 @@ internal sealed class SqliteBackend : IDatabaseBackend
     private string? _databasePath;
 
     /// <summary>
+    /// Single-writer reader-writer lock used by every method that begins
+    /// a SQLite transaction. <see cref="SqliteConnection"/> does not
+    /// support nested transactions, so two concurrent writers on the
+    /// same connection throw "SqliteConnection does not support nested
+    /// transactions". Wrapping every write in this lock matches the
+    /// LiteDB-side <c>InWriteLock</c> contract that
+    /// <see cref="LocalDatabaseService"/>'s consumers (e.g.
+    /// <c>BackupOrchestrator</c>'s parallel backup loop and
+    /// <c>ChunkIndexService</c>) rely on.
+    ///
+    /// <para>
+    /// <b>Recursion policy:</b> <see cref="LockRecursionPolicy.NoRecursion"/>.
+    /// No public method on <see cref="SqliteBackend"/> takes the write
+    /// lock and then re-enters another method that takes it.
+    /// </para>
+    ///
+    /// <para>
+    /// Reads are NOT lock-protected: SQLite WAL allows concurrent readers
+    /// against an in-flight writer, and most read methods on this class
+    /// touch nothing more than a single SELECT that is internally
+    /// thread-safe via the underlying SqliteCommand pipeline. The
+    /// _writeLock guards only the write side.
+    /// </para>
+    /// </summary>
+    private readonly System.Threading.ReaderWriterLockSlim _writeLock
+        = new(System.Threading.LockRecursionPolicy.NoRecursion);
+
+    /// <summary>
+    /// Helper that acquires <see cref="_writeLock"/>, runs the action,
+    /// and releases the lock - including on exceptions. Centralises the
+    /// try/finally pattern so individual writers stay readable.
+    /// </summary>
+    private void InWriteLock(Action action)
+    {
+        _writeLock.EnterWriteLock();
+        try { action(); }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Generic variant of <see cref="InWriteLock(Action)"/> for writers
+    /// that need to return a value (e.g. row counts from DELETE).
+    /// </summary>
+    private T InWriteLock<T>(Func<T> action)
+    {
+        _writeLock.EnterWriteLock();
+        try { return action(); }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
     /// Salt file lives next to the database, identical convention to the
     /// LiteDB backend so an upgrading user's existing salt continues to work.
     /// </summary>
@@ -134,15 +185,52 @@ internal sealed class SqliteBackend : IDatabaseBackend
 
         var utc = value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
 
+        InWriteLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO index_metadata (key, value) VALUES ($key, $value)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """;
+            cmd.Parameters.AddWithValue("$key", key);
+            cmd.Parameters.AddWithValue("$value",
+                utc.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+            cmd.ExecuteNonQuery();
+        });
+    }
+
+    /// <summary>
+    /// Returns every (key, value) row in the <c>index_metadata</c> table.
+    /// Implements <see cref="IDatabaseBackend.GetAllIndexMetadata"/> for the
+    /// SQLite backend. Used by C-2 migration; production consumers have no
+    /// need to enumerate metadata because they know their keys up front.
+    /// </summary>
+    public IReadOnlyDictionary<string, DateTime> GetAllIndexMetadata()
+    {
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        var result = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO index_metadata (key, value) VALUES ($key, $value)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-            """;
-        cmd.Parameters.AddWithValue("$key", key);
-        cmd.Parameters.AddWithValue("$value",
-            utc.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
-        cmd.ExecuteNonQuery();
+        cmd.CommandText = "SELECT key, value FROM index_metadata;";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var key = reader.GetString(0);
+            var raw = reader.GetString(1);
+            // Stored as ISO-8601 "O" format per SetIndexMetadata.
+            if (DateTime.TryParse(raw,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out var parsed))
+            {
+                result[key] = parsed;
+            }
+            // Silently skip unparseable rows. In practice this is never
+            // hit because SetIndexMetadata is the only writer; if a
+            // foreign tool ever writes here we prefer not to crash.
+        }
+        return result;
     }
 
     // ---- Configuration ------------------------------------------------------
@@ -265,7 +353,9 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
+        InWriteLock(() =>
+        {
+            using var tx = _connection.BeginTransaction();
 
         // --- config row ---------------------------------------------------
         using (var cmd = _connection.CreateCommand())
@@ -370,6 +460,7 @@ internal sealed class SqliteBackend : IDatabaseBackend
         }
 
         tx.Commit();
+        });
     }
 
     private void InsertExcludes(SqliteTransaction tx, long folderId,
@@ -537,7 +628,9 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
+        InWriteLock(() =>
+        {
+            using var tx = _connection.BeginTransaction();
 
         long fileId;
         using (var upsert = _connection.CreateCommand())
@@ -649,30 +742,43 @@ internal sealed class SqliteBackend : IDatabaseBackend
         }
 
         tx.Commit();
+        });
     }
 
     /// <summary>
-    /// Benchmark-only: bulk-loads many <see cref="BackedUpFile"/> rows
-    /// (with their nested chunk lists and matching chunk_file_refs rows)
-    /// in a single transaction. Tens of thousands of files via the
-    /// public <see cref="SaveBackedUpFile"/> would open one transaction
-    /// per file and dominate setup time at C-3 scale.
+    /// Bulk-loads many <see cref="BackedUpFile"/> rows (with their nested
+    /// chunk lists and matching chunk_file_refs rows) in a single
+    /// transaction. Tens of thousands of files via the public
+    /// <see cref="SaveBackedUpFile"/> would open one transaction per file
+    /// and dominate setup time at C-3 scale.
+    ///
+    /// <para>
+    /// Used by two callers in the same assembly:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>The C-3 head-to-head benchmarks (staging test data).</item>
+    ///   <item>C-2 migration in <c>LocalDatabaseService.Migration.Sqlite.cs</c>
+    ///     (copying LiteDB file + chunk rows into fresh SQLite).</item>
+    /// </list>
     ///
     /// <para>
     /// <b>Not</b> exposed via <see cref="IDatabaseBackend"/> on purpose -
-    /// production callers always go through <see cref="SaveBackedUpFile"/>
-    /// which is the canonical writer of the (file, chunk) relationship.
+    /// production consumers of the backend contract always go through
+    /// <see cref="SaveBackedUpFile"/>, which is the canonical writer of
+    /// the (file, chunk) relationship.
     /// </para>
     /// </summary>
-    internal void BulkInsertFilesForBenchmark(IEnumerable<BackedUpFile> files)
+    internal void BulkInsertFiles(IEnumerable<BackedUpFile> files)
     {
         ArgumentNullException.ThrowIfNull(files);
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
+        InWriteLock(() =>
+        {
+            using var tx = _connection.BeginTransaction();
 
-        using var fileInsert = _connection.CreateCommand();
+            using var fileInsert = _connection.CreateCommand();
         fileInsert.Transaction = tx;
         fileInsert.CommandText = """
             INSERT INTO files (local_path, blob_name, file_size, last_modified,
@@ -751,6 +857,7 @@ internal sealed class SqliteBackend : IDatabaseBackend
         }
 
         tx.Commit();
+        });
     }
 
     /// <summary>
@@ -758,7 +865,7 @@ internal sealed class SqliteBackend : IDatabaseBackend
     /// clears the <c>ReverseIndexBuiltAt</c> sentinel so a subsequent
     /// <see cref="RebuildReverseChunkIndex"/> call has work to do.
     /// Used by the C-3 (3/N) head-to-head where the SQLite leg is seeded
-    /// via <see cref="BulkInsertFilesForBenchmark"/> (which writes
+    /// via <see cref="BulkInsertFiles"/> (which writes
     /// chunk_file_refs as a side-effect) and we need to wipe the reverse
     /// index between iterations to measure the rebuild cost in isolation.
     ///
@@ -772,36 +879,215 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using (var tx = _connection.BeginTransaction())
+        InWriteLock(() =>
         {
-            using (var cmd = _connection.CreateCommand())
+            using (var tx = _connection.BeginTransaction())
             {
-                cmd.Transaction = tx;
-                cmd.CommandText = "DELETE FROM chunk_file_refs;";
-                cmd.ExecuteNonQuery();
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = "DELETE FROM chunk_file_refs;";
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    // Match the constant ReverseIndexSentinelKey used by
+                    // RebuildReverseChunkIndex / IsReverseChunkIndexBuilt.
+                    cmd.CommandText = "DELETE FROM index_metadata WHERE key = 'ReverseIndexBuiltAt';";
+                    cmd.ExecuteNonQuery();
+                }
+                tx.Commit();
             }
-            using (var cmd = _connection.CreateCommand())
+
+            // C-3 (3c-3) - BI2: explicit WAL checkpoint after the wipe so
+            // the subsequent rebuild benchmark starts from a CLEAN WAL state.
+            // Without this, the DELETE-of-N-rows above leaves dirty WAL pages
+            // that the rebuild measurement would then have to compete with -
+            // adding noise that biases the SQLite numbers downward.
+            // TRUNCATE leaves the WAL file zero-sized.
+            using (var checkpointCmd = _connection.CreateCommand())
             {
-                cmd.Transaction = tx;
-                // Match the constant ReverseIndexSentinelKey used by
-                // RebuildReverseChunkIndex / IsReverseChunkIndexBuilt.
-                cmd.CommandText = "DELETE FROM index_metadata WHERE key = 'ReverseIndexBuiltAt';";
-                cmd.ExecuteNonQuery();
+                checkpointCmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+                checkpointCmd.ExecuteNonQuery();
+            }
+        });
+    }
+
+    // ---- chunk_file_refs internal helpers ----------------------------------
+    //
+    // These five methods exist as internal counterparts to the same-named
+    // helpers on LocalDatabaseService. They are NOT on IDatabaseBackend
+    // because they are an implementation detail of the chunk-tracking layer
+    // (ChunkIndexService.AddReference / RemoveReference). LocalDatabaseService
+    // delegates to these when its _sqliteBackend field is set; benchmark
+    // and contract code never touches them.
+    //
+    // Acquire the write lock on every call to mirror LiteDB's
+    // InWriteLock semantics: ChunkIndexService runs from parallel
+    // backup-loop tasks, and SqliteConnection has no internal write
+    // serialization.
+
+    /// <summary>
+    /// Idempotent insert of a single (file_path, chunk_hash, chunk_index)
+    /// reverse-index row. If the triple already exists, only the
+    /// referenced_at timestamp is updated. Mirrors
+    /// <c>LocalDatabaseService.UpsertChunkFileRef</c>.
+    /// </summary>
+    internal void UpsertChunkFileRef(string filePath, string chunkHash, int chunkIndex, DateTime referencedAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        _writeLock.EnterWriteLock();
+        try
+        {
+            // Manual upsert: chunk_file_refs has no UNIQUE constraint over
+            // (file_path, chunk_hash, chunk_index) so ON CONFLICT does not
+            // apply. The DELETE-then-INSERT pair runs in a transaction so
+            // a reader never sees a missing row. The DELETE uses the
+            // (file_path) index and is cheap.
+            using var tx = _connection.BeginTransaction();
+            using (var del = _connection.CreateCommand())
+            {
+                del.Transaction = tx;
+                del.CommandText = """
+                    DELETE FROM chunk_file_refs
+                    WHERE file_path = $file_path
+                      AND chunk_hash = $chunk_hash
+                      AND chunk_index = $chunk_index;
+                    """;
+                del.Parameters.AddWithValue("$file_path", filePath);
+                del.Parameters.AddWithValue("$chunk_hash", chunkHash);
+                del.Parameters.AddWithValue("$chunk_index", chunkIndex);
+                del.ExecuteNonQuery();
+            }
+            using (var ins = _connection.CreateCommand())
+            {
+                ins.Transaction = tx;
+                ins.CommandText = """
+                    INSERT INTO chunk_file_refs (file_path, chunk_hash, chunk_index, referenced_at)
+                    VALUES ($file_path, $chunk_hash, $chunk_index, $referenced_at);
+                    """;
+                ins.Parameters.AddWithValue("$file_path", filePath);
+                ins.Parameters.AddWithValue("$chunk_hash", chunkHash);
+                ins.Parameters.AddWithValue("$chunk_index", chunkIndex);
+                ins.Parameters.AddWithValue("$referenced_at", FormatUtc(referencedAt));
+                ins.ExecuteNonQuery();
             }
             tx.Commit();
         }
+        finally { _writeLock.ExitWriteLock(); }
+    }
 
-        // C-3 (3c-3) - BI2: explicit WAL checkpoint after the wipe so
-        // the subsequent rebuild benchmark starts from a CLEAN WAL state.
-        // Without this, the DELETE-of-N-rows above leaves dirty WAL pages
-        // that the rebuild measurement would then have to compete with -
-        // adding noise that biases the SQLite numbers downward.
-        // TRUNCATE leaves the WAL file zero-sized.
-        using (var checkpointCmd = _connection.CreateCommand())
+    /// <summary>
+    /// Bulk-insert reverse-index rows in a single transaction. Mirrors
+    /// <c>LocalDatabaseService.BulkInsertChunkFileRefs</c>.
+    /// </summary>
+    internal void BulkInsertChunkFileRefs(IEnumerable<ChunkFileRefRow> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        _writeLock.EnterWriteLock();
+        try
         {
-            checkpointCmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-            checkpointCmd.ExecuteNonQuery();
+            using var tx = _connection.BeginTransaction();
+            using var ins = _connection.CreateCommand();
+            ins.Transaction = tx;
+            ins.CommandText = """
+                INSERT INTO chunk_file_refs (file_path, chunk_hash, chunk_index, referenced_at)
+                VALUES ($file_path, $chunk_hash, $chunk_index, $referenced_at);
+                """;
+            var p_path = ins.Parameters.Add("$file_path", SqliteType.Text);
+            var p_hash = ins.Parameters.Add("$chunk_hash", SqliteType.Text);
+            var p_index = ins.Parameters.Add("$chunk_index", SqliteType.Integer);
+            var p_time = ins.Parameters.Add("$referenced_at", SqliteType.Text);
+            foreach (var row in rows)
+            {
+                p_path.Value = row.FilePath;
+                p_hash.Value = row.ChunkHash;
+                p_index.Value = row.ChunkIndex;
+                p_time.Value = FormatUtc(row.ReferencedAt);
+                ins.ExecuteNonQuery();
+            }
+            tx.Commit();
         }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Deletes every reverse-index row for a single file path. Returns
+    /// the number of rows deleted. Mirrors
+    /// <c>LocalDatabaseService.DeleteChunkFileRefsForFile</c>.
+    /// </summary>
+    internal int DeleteChunkFileRefsForFile(string filePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        _writeLock.EnterWriteLock();
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM chunk_file_refs WHERE file_path = $file_path;";
+            cmd.Parameters.AddWithValue("$file_path", filePath);
+            return cmd.ExecuteNonQuery();
+        }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Deletes every reverse-index row for a single chunk hash. Returns
+    /// the number of rows deleted. Mirrors
+    /// <c>LocalDatabaseService.DeleteChunkFileRefsForChunk</c>.
+    /// </summary>
+    internal int DeleteChunkFileRefsForChunk(string chunkHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        _writeLock.EnterWriteLock();
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM chunk_file_refs WHERE chunk_hash = $chunk_hash;";
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            return cmd.ExecuteNonQuery();
+        }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Deletes reverse-index rows binding a specific file path to a
+    /// specific chunk hash. Returns the number of rows deleted. Mirrors
+    /// <c>LocalDatabaseService.DeleteChunkFileRefsForFileAndChunk</c>.
+    /// </summary>
+    internal int DeleteChunkFileRefsForFileAndChunk(string filePath, string chunkHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        _writeLock.EnterWriteLock();
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                DELETE FROM chunk_file_refs
+                WHERE file_path = $file_path AND chunk_hash = $chunk_hash;
+                """;
+            cmd.Parameters.AddWithValue("$file_path", filePath);
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            return cmd.ExecuteNonQuery();
+        }
+        finally { _writeLock.ExitWriteLock(); }
     }
 
     private List<ChunkInfo> LoadChunksForFile(long fileId)
@@ -868,10 +1154,13 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = ChunkIndexUpsertSql;
-        BindChunkEntry(cmd, entry);
-        cmd.ExecuteNonQuery();
+        InWriteLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = ChunkIndexUpsertSql;
+            BindChunkEntry(cmd, entry);
+            cmd.ExecuteNonQuery();
+        });
     }
 
     /// <summary>
@@ -887,34 +1176,37 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
-        using var cmd = _connection.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = ChunkIndexUpsertSql;
-
-        // Pre-add parameters so we can rebind values per row without
-        // re-creating SqliteParameter instances.
-        var p_hash = cmd.Parameters.Add("$chunk_hash", SqliteType.Text);
-        var p_uploaded = cmd.Parameters.Add("$first_uploaded_at", SqliteType.Text);
-        var p_uploader = cmd.Parameters.Add("$original_uploader_path", SqliteType.Text);
-        var p_size = cmd.Parameters.Add("$size_bytes", SqliteType.Integer);
-        var p_refcount = cmd.Parameters.Add("$reference_count", SqliteType.Integer);
-        var p_tier = cmd.Parameters.Add("$current_tier", SqliteType.Integer);
-        var p_verified = cmd.Parameters.Add("$last_verified_at", SqliteType.Text);
-
-        foreach (var e in entries)
+        InWriteLock(() =>
         {
-            p_hash.Value = e.ChunkHash;
-            p_uploaded.Value = FormatUtc(e.FirstUploadedAt);
-            p_uploader.Value = e.OriginalUploaderPath ?? string.Empty;
-            p_size.Value = e.SizeBytes;
-            p_refcount.Value = e.ReferenceCount;
-            p_tier.Value = (int)e.CurrentTier;
-            p_verified.Value = FormatUtc(e.LastVerifiedAt);
-            cmd.ExecuteNonQuery();
-        }
+            using var tx = _connection.BeginTransaction();
+            using var cmd = _connection.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = ChunkIndexUpsertSql;
 
-        tx.Commit();
+            // Pre-add parameters so we can rebind values per row without
+            // re-creating SqliteParameter instances.
+            var p_hash = cmd.Parameters.Add("$chunk_hash", SqliteType.Text);
+            var p_uploaded = cmd.Parameters.Add("$first_uploaded_at", SqliteType.Text);
+            var p_uploader = cmd.Parameters.Add("$original_uploader_path", SqliteType.Text);
+            var p_size = cmd.Parameters.Add("$size_bytes", SqliteType.Integer);
+            var p_refcount = cmd.Parameters.Add("$reference_count", SqliteType.Integer);
+            var p_tier = cmd.Parameters.Add("$current_tier", SqliteType.Integer);
+            var p_verified = cmd.Parameters.Add("$last_verified_at", SqliteType.Text);
+
+            foreach (var e in entries)
+            {
+                p_hash.Value = e.ChunkHash;
+                p_uploaded.Value = FormatUtc(e.FirstUploadedAt);
+                p_uploader.Value = e.OriginalUploaderPath ?? string.Empty;
+                p_size.Value = e.SizeBytes;
+                p_refcount.Value = e.ReferenceCount;
+                p_tier.Value = (int)e.CurrentTier;
+                p_verified.Value = FormatUtc(e.LastVerifiedAt);
+                cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        });
     }
 
     /// <summary>
@@ -927,10 +1219,13 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM chunk_index WHERE chunk_hash = $chunk_hash;";
-        cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
-        cmd.ExecuteNonQuery();
+        InWriteLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM chunk_index WHERE chunk_hash = $chunk_hash;";
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            cmd.ExecuteNonQuery();
+        });
     }
 
     /// <summary>
@@ -1011,20 +1306,23 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
-        using (var cmd = _connection.CreateCommand())
+        InWriteLock(() =>
         {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM chunk_index;";
-            cmd.ExecuteNonQuery();
-        }
-        using (var cmd = _connection.CreateCommand())
-        {
-            cmd.Transaction = tx;
-            cmd.CommandText = "DELETE FROM chunk_file_refs;";
-            cmd.ExecuteNonQuery();
-        }
-        tx.Commit();
+            using var tx = _connection.BeginTransaction();
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "DELETE FROM chunk_index;";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "DELETE FROM chunk_file_refs;";
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        });
     }
 
     /// <summary>
@@ -1169,7 +1467,13 @@ internal sealed class SqliteBackend : IDatabaseBackend
             return;
         }
 
-        // Snapshot the work list ONCE up front so the IProgress<>
+        InWriteLock(() => RebuildReverseChunkIndexCore(progress, cancellationToken));
+    }
+
+    private void RebuildReverseChunkIndexCore(
+        IProgress<(int processed, int total)>? progress,
+        CancellationToken cancellationToken)
+    {        // Snapshot the work list ONCE up front so the IProgress<>
         // contract has a real total to report against. The actual
         // rebuild then fires as a single INSERT...SELECT - the engine
         // does the JOIN, filtering, and bulk write entirely inside
@@ -1296,8 +1600,20 @@ internal sealed class SqliteBackend : IDatabaseBackend
         // Mark complete so future calls short-circuit. Done LAST so a
         // failure during checkpoint (very unlikely - WAL checkpoint with
         // no concurrent writer cannot fail) leaves the rebuild repeatable
-        // rather than falsely marked done.
-        SetIndexMetadata(ReverseIndexSentinelKey, DateTime.UtcNow);
+        // rather than falsely marked done. Inline UPSERT (rather than the
+        // public SetIndexMetadata) because we already hold the write lock
+        // and SetIndexMetadata would re-enter it.
+        using (var sentinelCmd = _connection!.CreateCommand())
+        {
+            sentinelCmd.CommandText = """
+                INSERT INTO index_metadata (key, value) VALUES ($key, $value)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """;
+            sentinelCmd.Parameters.AddWithValue("$key", ReverseIndexSentinelKey);
+            sentinelCmd.Parameters.AddWithValue("$value",
+                DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+            sentinelCmd.ExecuteNonQuery();
+        }
     }
 
     // ---- Pending changes queue ---------------------------------------------
@@ -1314,30 +1630,33 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var tx = _connection.BeginTransaction();
-
-        using (var clear = _connection.CreateCommand())
+        InWriteLock(() =>
         {
-            clear.Transaction = tx;
-            clear.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
-            clear.Parameters.AddWithValue("$file_path", change.FilePath);
-            clear.ExecuteNonQuery();
-        }
+            using var tx = _connection.BeginTransaction();
 
-        using (var insert = _connection.CreateCommand())
-        {
-            insert.Transaction = tx;
-            insert.CommandText = """
-                INSERT INTO pending_changes (file_path, change_type, detected_at)
-                VALUES ($file_path, $change_type, $detected_at);
-                """;
-            insert.Parameters.AddWithValue("$file_path", change.FilePath);
-            insert.Parameters.AddWithValue("$change_type", (int)change.ChangeType);
-            insert.Parameters.AddWithValue("$detected_at", FormatUtc(change.DetectedAt));
-            insert.ExecuteNonQuery();
-        }
+            using (var clear = _connection.CreateCommand())
+            {
+                clear.Transaction = tx;
+                clear.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
+                clear.Parameters.AddWithValue("$file_path", change.FilePath);
+                clear.ExecuteNonQuery();
+            }
 
-        tx.Commit();
+            using (var insert = _connection.CreateCommand())
+            {
+                insert.Transaction = tx;
+                insert.CommandText = """
+                    INSERT INTO pending_changes (file_path, change_type, detected_at)
+                    VALUES ($file_path, $change_type, $detected_at);
+                    """;
+                insert.Parameters.AddWithValue("$file_path", change.FilePath);
+                insert.Parameters.AddWithValue("$change_type", (int)change.ChangeType);
+                insert.Parameters.AddWithValue("$detected_at", FormatUtc(change.DetectedAt));
+                insert.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        });
     }
 
     /// <summary>
@@ -1366,46 +1685,49 @@ internal sealed class SqliteBackend : IDatabaseBackend
         }
         if (byPath.Count == 0) return;
 
-        using var tx = _connection.BeginTransaction();
-
-        // DELETE per affected path. SQLite's expression engine has no
-        // equivalent of LiteDB's "Contains not supported" pitfall, so we
-        // could batch this with `WHERE file_path IN (?, ?, ...)` instead.
-        // For now the per-path loop matches the LiteDB code path and runs
-        // off the indexed file_path column - O(log N) per DELETE.
-        using (var del = _connection.CreateCommand())
+        InWriteLock(() =>
         {
-            del.Transaction = tx;
-            del.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
-            var pPath = del.Parameters.Add("$file_path", SqliteType.Text);
-            foreach (var path in byPath.Keys)
+            using var tx = _connection.BeginTransaction();
+
+            // DELETE per affected path. SQLite's expression engine has no
+            // equivalent of LiteDB's "Contains not supported" pitfall, so we
+            // could batch this with `WHERE file_path IN (?, ?, ...)` instead.
+            // For now the per-path loop matches the LiteDB code path and runs
+            // off the indexed file_path column - O(log N) per DELETE.
+            using (var del = _connection.CreateCommand())
             {
-                pPath.Value = path;
-                del.ExecuteNonQuery();
+                del.Transaction = tx;
+                del.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
+                var pPath = del.Parameters.Add("$file_path", SqliteType.Text);
+                foreach (var path in byPath.Keys)
+                {
+                    pPath.Value = path;
+                    del.ExecuteNonQuery();
+                }
             }
-        }
 
-        using (var insert = _connection.CreateCommand())
-        {
-            insert.Transaction = tx;
-            insert.CommandText = """
-                INSERT INTO pending_changes (file_path, change_type, detected_at)
-                VALUES ($file_path, $change_type, $detected_at);
-                """;
-            var pPath = insert.Parameters.Add("$file_path", SqliteType.Text);
-            var pType = insert.Parameters.Add("$change_type", SqliteType.Integer);
-            var pTime = insert.Parameters.Add("$detected_at", SqliteType.Text);
-
-            foreach (var c in byPath.Values)
+            using (var insert = _connection.CreateCommand())
             {
-                pPath.Value = c.FilePath;
-                pType.Value = (int)c.ChangeType;
-                pTime.Value = FormatUtc(c.DetectedAt);
-                insert.ExecuteNonQuery();
-            }
-        }
+                insert.Transaction = tx;
+                insert.CommandText = """
+                    INSERT INTO pending_changes (file_path, change_type, detected_at)
+                    VALUES ($file_path, $change_type, $detected_at);
+                    """;
+                var pPath = insert.Parameters.Add("$file_path", SqliteType.Text);
+                var pType = insert.Parameters.Add("$change_type", SqliteType.Integer);
+                var pTime = insert.Parameters.Add("$detected_at", SqliteType.Text);
 
-        tx.Commit();
+                foreach (var c in byPath.Values)
+                {
+                    pPath.Value = c.FilePath;
+                    pType.Value = (int)c.ChangeType;
+                    pTime.Value = FormatUtc(c.DetectedAt);
+                    insert.ExecuteNonQuery();
+                }
+            }
+
+            tx.Commit();
+        });
     }
 
     /// <summary>
@@ -1451,10 +1773,13 @@ internal sealed class SqliteBackend : IDatabaseBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
-        cmd.Parameters.AddWithValue("$file_path", filePath);
-        cmd.ExecuteNonQuery();
+        InWriteLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM pending_changes WHERE file_path = $file_path;";
+            cmd.Parameters.AddWithValue("$file_path", filePath);
+            cmd.ExecuteNonQuery();
+        });
     }
 
     /// <summary>
@@ -1578,7 +1903,13 @@ internal sealed class SqliteBackend : IDatabaseBackend
         }
     }
 
-    public void Dispose() => Close();
+    public void Dispose()
+    {
+        Close();
+        // Dispose the lock once; harmless if Dispose was called more than
+        // once because ReaderWriterLockSlim.Dispose is idempotent.
+        try { _writeLock.Dispose(); } catch { /* terminal best-effort */ }
+    }
 
     /// <summary>
     /// Zeroes sensitive config fields, closes the connection, and deletes
@@ -1605,19 +1936,22 @@ internal sealed class SqliteBackend : IDatabaseBackend
         {
             try
             {
-                using var cmd = _connection.CreateCommand();
-                // The config table holds encrypted_connection_string,
-                // password_salt, and password_verification_hash - the
-                // three fields LocalDatabaseService overwrites in
-                // OverwriteSensitiveData. NULL them out in one statement.
-                cmd.CommandText = """
-                    UPDATE config
-                    SET encrypted_connection_string = NULL,
-                        password_salt = NULL,
-                        password_verification_hash = NULL
-                    WHERE id = 1;
-                    """;
-                cmd.ExecuteNonQuery();
+                InWriteLock(() =>
+                {
+                    using var cmd = _connection.CreateCommand();
+                    // The config table holds encrypted_connection_string,
+                    // password_salt, and password_verification_hash - the
+                    // three fields LocalDatabaseService overwrites in
+                    // OverwriteSensitiveData. NULL them out in one statement.
+                    cmd.CommandText = """
+                        UPDATE config
+                        SET encrypted_connection_string = NULL,
+                            password_salt = NULL,
+                            password_verification_hash = NULL
+                        WHERE id = 1;
+                        """;
+                    cmd.ExecuteNonQuery();
+                });
             }
             catch
             {

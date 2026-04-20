@@ -170,7 +170,7 @@ public class RebuildReverseChunkIndexBackendBenchmark
                 });
             }
             Mark($"SQLite: bulk-inserting {allFiles.Count} files");
-            sqlite.BulkInsertFilesForBenchmark(allFiles);
+            sqlite.BulkInsertFiles(allFiles);
             Mark("SQLite: clearing reverse index to simulate post-migration state");
             sqlite.ClearReverseChunkIndexForBenchmark();
         }
