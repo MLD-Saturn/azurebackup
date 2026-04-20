@@ -255,4 +255,26 @@ internal interface IDatabaseBackend : IDisposable
     /// without materialising row collections.
     /// </summary>
     BackupStatistics GetStatistics();
+
+    // ---- Lifecycle ---------------------------------------------------------
+
+    /// <summary>
+    /// Closes the backend connection and releases resources, leaving the
+    /// backend reinitialisable via <see cref="Initialize"/>. Idempotent.
+    /// The on-disk database file and salt are preserved.
+    /// <para>
+    /// Distinct from <see cref="IDisposable.Dispose"/> in that Close can be
+    /// followed by another Initialize; Dispose is terminal.
+    /// </para>
+    /// </summary>
+    void Close();
+
+    /// <summary>
+    /// Zeroes sensitive configuration fields in the database, closes the
+    /// backend, and deletes the database file, journal/WAL files, and
+    /// salt file. Used on logout and when the user abandons a database.
+    /// After this call the backend is closed and must be reinitialised
+    /// against a (different) path.
+    /// </summary>
+    void SecureReset();
 }

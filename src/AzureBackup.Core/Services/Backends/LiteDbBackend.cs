@@ -134,6 +134,20 @@ internal sealed class LiteDbBackend : IDatabaseBackend
 
     // ---- Lifecycle ---------------------------------------------------------
 
+    /// <summary>
+    /// Closes the underlying <see cref="LocalDatabaseService"/> connection
+    /// without disposing the wrapper - leaves the backend reinitialisable.
+    /// Matches the <see cref="IDatabaseBackend.Close"/> contract.
+    /// </summary>
+    public void Close() => _service.Close();
+
+    /// <summary>
+    /// Delegates to <see cref="LocalDatabaseService.SecureReset"/>, which
+    /// zeroes sensitive config, closes the LiteDB handle, and deletes the
+    /// db / journal / log / salt files.
+    /// </summary>
+    public void SecureReset() => _service.SecureReset();
+
     public void Dispose()
     {
         if (_disposed) return;

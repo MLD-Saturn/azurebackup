@@ -15,6 +15,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public ChunkIndexEntry? GetChunkIndexEntry(string chunkHash)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetChunkIndexEntry(chunkHash);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
 
@@ -26,6 +27,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public void SaveChunkIndexEntry(ChunkIndexEntry entry)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.SaveChunkIndexEntry(entry); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(entry);
 
@@ -49,6 +51,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public void BulkInsertChunkIndexEntries(IEnumerable<ChunkIndexEntry> entries)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.BulkInsertChunkIndexEntries(entries); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(entries);
 
@@ -60,6 +63,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public void DeleteChunkIndexEntry(string chunkHash)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.DeleteChunkIndexEntry(chunkHash); return; }
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
 
@@ -71,6 +75,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public List<ChunkIndexEntry> GetAllChunkIndexEntries()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetAllChunkIndexEntries();
         EnsureInitialized();
 
         return InReadLock(() => _chunkIndexCollection!.FindAll().ToList());
@@ -84,6 +89,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public Dictionary<string, (int ReferenceCount, long SizeBytes, StorageTier Tier)> GetChunkIndexSummaryMap()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetChunkIndexSummaryMap();
         EnsureInitialized();
 
         return InReadLock(() =>
@@ -111,6 +117,7 @@ public partial class LocalDatabaseService
     /// </remarks>
     public List<ChunkIndexEntry> GetChunkEntriesForFile(string filePath)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetChunkEntriesForFile(filePath);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
@@ -269,6 +276,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public bool IsReverseChunkIndexBuilt()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.IsReverseChunkIndexBuilt();
         EnsureInitialized();
         return InReadLock(() =>
             _indexMetadataCollection!.FindOne(x => x.Key == "ReverseIndexBuiltAt") != null);
@@ -293,6 +301,11 @@ public partial class LocalDatabaseService
         IProgress<(int processed, int total)>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (_sqliteBackend != null)
+        {
+            _sqliteBackend.RebuildReverseChunkIndex(progress, cancellationToken);
+            return;
+        }
         EnsureInitialized();
 
         if (IsReverseChunkIndexBuilt())
@@ -371,6 +384,7 @@ public partial class LocalDatabaseService
     /// </remarks>
     public void Checkpoint()
     {
+        if (_sqliteBackend != null) { _sqliteBackend.Checkpoint(); return; }
         EnsureInitialized();
 
         // Checkpoint itself is a write operation on the WAL state, so hold the
@@ -383,6 +397,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public List<ChunkIndexEntry> GetOrphanedChunks()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetOrphanedChunks();
         EnsureInitialized();
 
         return InReadLock(() => _chunkIndexCollection!.Find(x => x.ReferenceCount == 0).ToList());
@@ -393,6 +408,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public void ClearChunkIndex()
     {
+        if (_sqliteBackend != null) { _sqliteBackend.ClearChunkIndex(); return; }
         EnsureInitialized();
 
         InWriteLock(() =>
@@ -409,6 +425,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public DateTime? GetIndexMetadata(string key)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetIndexMetadata(key);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
@@ -420,6 +437,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public void SetIndexMetadata(string key, DateTime value)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.SetIndexMetadata(key, value); return; }
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
@@ -443,6 +461,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public int GetChunkIndexCount()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetChunkIndexCount();
         EnsureInitialized();
 
         return InReadLock(() => _chunkIndexCollection!.Count());
@@ -457,6 +476,7 @@ public partial class LocalDatabaseService
     /// </summary>
     public BackupStatistics GetStatistics()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetStatistics();
         EnsureInitialized();
 
         return InReadLock(() =>
@@ -490,6 +510,14 @@ public partial class LocalDatabaseService
     /// </summary>
     public void SecureReset()
     {
+        if (_sqliteBackend != null)
+        {
+            _sqliteBackend.SecureReset();
+            _sqliteBackend = null;
+            _databasePath = null;
+            return;
+        }
+
         // Stop the checkpoint timer before tearing down the database file; the
         // callback is guarded against _disposed but an in-flight tick could still
         // race with file deletion.

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using AzureBackup.Core.Models;
+using AzureBackup.Core.Services.Backends;
 using Konscious.Security.Cryptography;
 using LiteDB;
 
@@ -11,6 +12,16 @@ namespace AzureBackup.Core.Services;
 /// Uses LiteDB for embedded, portable storage (no installation required).
 /// The database is encrypted using a key derived from the user's password via Argon2id,
 /// providing strong protection against brute force attacks.
+///
+/// <para>
+/// <b>Option C / C-1 final step b:</b> when the environment variable
+/// <c>AZBK_USE_SQLITE</c> is set (see <see cref="DatabaseBackendFactory"/>),
+/// <see cref="Initialize(string, ReadOnlySpan{char})"/> creates a
+/// <see cref="SqliteBackend"/> instead of opening a LiteDB handle, and
+/// every public method short-circuits to the backend via the
+/// <c>_sqliteBackend</c> field at the top of the method. The LiteDB
+/// code path is otherwise untouched.
+/// </para>
 /// </summary>
 public partial class LocalDatabaseService : IDisposable
 {
@@ -21,6 +32,16 @@ public partial class LocalDatabaseService : IDisposable
     private ILiteCollection<ChunkIndexEntry>? _chunkIndexCollection;
     private ILiteCollection<IndexMetadata>? _indexMetadataCollection;
     private ILiteCollection<ChunkFileRefRow>? _chunkFileRefsCollection;
+
+    /// <summary>
+    /// Populated by <see cref="Initialize(string, ReadOnlySpan{char})"/>
+    /// ONLY when <see cref="DatabaseBackendFactory.ShouldUseSqlite"/>
+    /// returns true. When non-null every public method on this class
+    /// delegates to the backend instead of touching the LiteDB fields
+    /// above. When null the service behaves exactly as it did
+    /// pre-feature-flag.
+    /// </summary>
+    private SqliteBackend? _sqliteBackend;
 
     /// <summary>
     /// Reader/writer lock guarding every access to the LiteDB collections.
@@ -64,12 +85,12 @@ public partial class LocalDatabaseService : IDisposable
     private const int SaltSize = 16;
     private const int DerivedKeySize = 32; // 256 bits
 
-    public bool IsInitialized => _database != null;
-    
+    public bool IsInitialized => _sqliteBackend?.IsInitialized ?? (_database != null);
+
     /// <summary>
     /// Gets the current database file path.
     /// </summary>
-    public string? DatabasePath => _databasePath;
+    public string? DatabasePath => _sqliteBackend?.DatabasePath ?? _databasePath;
     
     /// <summary>
     /// Event for detailed debug/diagnostic logging.
@@ -102,6 +123,22 @@ public partial class LocalDatabaseService : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         if (password.IsEmpty)
             throw new ArgumentException("Password cannot be empty", nameof(password));
+
+        // Option C / C-1 final step b: feature-flag branch. Read the
+        // env var ONCE here so flipping it mid-session is a no-op. When
+        // set, we instantiate SqliteBackend and skip ALL LiteDB setup;
+        // every public method on this class checks _sqliteBackend at
+        // its top and delegates if present.
+        if (DatabaseBackendFactory.ShouldUseSqlite())
+        {
+            Log($"Initialize: AZBK_USE_SQLITE flag is set; routing to SqliteBackend");
+            _databasePath = databasePath;
+            _sqliteBackend = DatabaseBackendFactory.CreateAndInitializeSqlite(databasePath, password);
+            // Note: SqliteBackend does its OWN WAL checkpoint lifecycle
+            // via synchronous=NORMAL + internal periodic-checkpoint, so
+            // we do NOT start the LiteDB-oriented _checkpointTimer.
+            return;
+        }
 
         Log($"Initialize: Opening encrypted database at {databasePath}");
 
@@ -247,6 +284,14 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void Close()
     {
+        if (_sqliteBackend != null)
+        {
+            _sqliteBackend.Close();
+            _sqliteBackend = null;
+            _databasePath = null;
+            return;
+        }
+
         // Stop the checkpoint timer first so it cannot fire against a disposed DB.
         _checkpointTimer?.Dispose();
         _checkpointTimer = null;
@@ -272,9 +317,10 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public BackupConfiguration GetConfiguration()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetConfiguration();
         EnsureInitialized();
 
-        // First attempt: take a read lock. If the row already exists we skip
+        // First attempt: take a read lock.
         // the upgrade entirely (the common case after first-run).
         var existing = InReadLock(() => _configCollection!.FindById(1));
         if (existing != null) return existing;
@@ -298,6 +344,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void SaveConfiguration(BackupConfiguration config)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.SaveConfiguration(config); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(config);
 
@@ -327,6 +374,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public BackedUpFile? GetBackedUpFile(string localPath)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetBackedUpFile(localPath);
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(localPath);
 
@@ -338,6 +386,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void SaveBackedUpFile(BackedUpFile file)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.SaveBackedUpFile(file); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(file);
 
@@ -371,6 +420,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public List<BackedUpFile> GetAllBackedUpFiles()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetAllBackedUpFiles();
         EnsureInitialized();
 
         return InReadLock(() => _filesCollection!.FindAll().ToList());
@@ -385,6 +435,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void QueueFileChange(FileChangeEvent change)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.QueueFileChange(change); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(change);
 
@@ -426,10 +477,11 @@ public partial class LocalDatabaseService : IDisposable
     /// </param>
     public void QueueFileChangesBatch(IEnumerable<FileChangeEvent> changes)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.QueueFileChangesBatch(changes); return; }
         EnsureInitialized();
         ArgumentNullException.ThrowIfNull(changes);
 
-        // Materialise once and deduplicate by FilePath (last-write-wins) so we can
+        // Materialise once
         // issue a single DeleteMany covering every affected path before the insert.
         var byPath = new Dictionary<string, FileChangeEvent>(StringComparer.OrdinalIgnoreCase);
         foreach (var change in changes)
@@ -471,6 +523,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public List<FileChangeEvent> GetPendingChanges(int batchSize = 100)
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetPendingChanges(batchSize);
         EnsureInitialized();
         if (batchSize <= 0) batchSize = 100;
 
@@ -487,6 +540,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public void RemovePendingChange(string filePath)
     {
+        if (_sqliteBackend != null) { _sqliteBackend.RemovePendingChange(filePath); return; }
         EnsureInitialized();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
@@ -499,6 +553,7 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public HashSet<string> GetAllPendingChangePaths()
     {
+        if (_sqliteBackend != null) return _sqliteBackend.GetAllPendingChangePaths();
         EnsureInitialized();
 
         return InReadLock(() =>
@@ -515,6 +570,54 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public int CleanupStalePendingChanges()
     {
+        if (_sqliteBackend != null)
+        {
+            // Rewrite of the LiteDB version below using ONLY backend
+            // primitives. Same algorithm: for each pending change, look
+            // up the file row; if the file is completed and on disk and
+            // size-matches, drop the pending row. If the change is a
+            // delete and the file is excluded, drop the pending row.
+            //
+            // We call GetPendingChanges with a large batch so a single
+            // round-trip materialises the work list. RemovePendingChange
+            // uses the backend's own DELETE-by-path primitive, so each
+            // cleanup takes one small transaction on the SQLite side.
+            var backend = _sqliteBackend;
+            var pending = backend.GetPendingChanges(int.MaxValue);
+            var removedCount = 0;
+
+            foreach (var change in pending)
+            {
+                var backedUp = backend.GetBackedUpFile(change.FilePath);
+                if (backedUp != null && backedUp.Status == BackupStatus.Completed)
+                {
+                    try
+                    {
+                        System.IO.FileInfo fileInfo = new(change.FilePath);
+                        if (fileInfo.Exists && fileInfo.Length == backedUp.FileSize)
+                        {
+                            backend.RemovePendingChange(change.FilePath);
+                            removedCount++;
+                        }
+                    }
+                    catch
+                    {
+                        // Can't access file - leave in pending queue
+                    }
+                }
+                else if (change.ChangeType == FileChangeType.Deleted)
+                {
+                    if (backedUp != null && backedUp.Status == BackupStatus.Excluded)
+                    {
+                        backend.RemovePendingChange(change.FilePath);
+                        removedCount++;
+                    }
+                }
+            }
+
+            return removedCount;
+        }
+
         EnsureInitialized();
 
         return InWriteLock(() =>
@@ -571,15 +674,23 @@ public partial class LocalDatabaseService : IDisposable
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed) return;
+
+        if (_sqliteBackend != null)
         {
-            _checkpointTimer?.Dispose();
-            _checkpointTimer = null;
-            _database?.Dispose();
-            _database = null;
-            _dbLock.Dispose();
+            _sqliteBackend.Dispose();
+            _sqliteBackend = null;
             _disposed = true;
+            GC.SuppressFinalize(this);
+            return;
         }
+
+        _checkpointTimer?.Dispose();
+        _checkpointTimer = null;
+        _database?.Dispose();
+        _database = null;
+        _dbLock.Dispose();
+        _disposed = true;
         GC.SuppressFinalize(this);
     }
 

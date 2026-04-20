@@ -1581,6 +1581,76 @@ internal sealed class SqliteBackend : IDatabaseBackend
     public void Dispose() => Close();
 
     /// <summary>
+    /// Zeroes sensitive config fields, closes the connection, and deletes
+    /// every on-disk artefact belonging to this backend's database: the
+    /// main DB file, the -wal and -shm companion files SQLite may have
+    /// left behind, and the salt file produced by
+    /// <see cref="OpenAndUnlockCore"/>.
+    /// </summary>
+    /// <remarks>
+    /// The overwrite+delete pattern mirrors
+    /// <c>LocalDatabaseService.SecureReset</c> semantics so callers that
+    /// switch backends see the same post-condition. Three-pass overwriting
+    /// is intentionally NOT done here - SQLCipher pages are already
+    /// encrypted at rest so raw-data remanence is not a concern; the goal
+    /// is just "file gone" from the user's perspective.
+    /// </remarks>
+    public void SecureReset()
+    {
+        var path = _databasePath;
+
+        // Zero sensitive config BEFORE closing, so the final checkpoint
+        // writes the scrubbed page to disk before we delete the file.
+        if (_connection != null && !string.IsNullOrEmpty(path))
+        {
+            try
+            {
+                using var cmd = _connection.CreateCommand();
+                // The config table holds encrypted_connection_string,
+                // password_salt, and password_verification_hash - the
+                // three fields LocalDatabaseService overwrites in
+                // OverwriteSensitiveData. NULL them out in one statement.
+                cmd.CommandText = """
+                    UPDATE config
+                    SET encrypted_connection_string = NULL,
+                        password_salt = NULL,
+                        password_verification_hash = NULL
+                    WHERE id = 1;
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Best-effort; the subsequent file deletion renders the
+                // scrubbing moot, but we try first so a filesystem error
+                // still leaves the DB with scrubbed config.
+            }
+        }
+
+        Close();
+
+        if (string.IsNullOrEmpty(path))
+            return;
+
+        // Delete every artefact SQLite (and our salt-file convention)
+        // might have written. Missing files are fine; File.Delete on a
+        // non-existent path is a silent no-op.
+        TryDelete(path);
+        TryDelete(path + "-wal");
+        TryDelete(path + "-shm");
+        TryDelete(path + "-journal");
+        TryDelete(GetSaltFilePath(path));
+
+        _databasePath = null;
+
+        static void TryDelete(string filePath)
+        {
+            try { if (File.Exists(filePath)) File.Delete(filePath); }
+            catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
     /// Test hook: returns SQLCipher's reported version, or null if the loaded
     /// SQLite native library is not SQLCipher (i.e. encryption is silently
     /// not happening).
