@@ -287,4 +287,47 @@ public class LocalDatabaseServiceMigrationTests : IDisposable
             "Migration should have run and renamed LiteDB to .litedb-backup");
         Assert.NotNull(migrated.GetIndexMetadata("RecursionProbe"));
     }
+
+    /// <summary>
+    /// Sibling of <c>Migration_IsIdempotent_SecondOpenIsAPlainSqliteOpen</c>
+    /// but more direct: opens a fresh SQLite-only database (no LiteDB at
+    /// the path), confirms zero migration artefacts are produced, and
+    /// confirms the path is still readable as SQLite afterwards. The
+    /// idempotency test covers this implicitly via its second open;
+    /// this test makes the assertion explicit so a regression that
+    /// re-runs migration on every flag-on launch fails here with a
+    /// pointed message instead of an idempotency-test artefact-count
+    /// mismatch.
+    /// </summary>
+    [Fact]
+    public void Initialize_OnExistingSqliteDb_DoesNotRunMigration()
+    {
+        // Arrange: create a SQLite database directly (no LiteDB ever
+        // touched this path).
+        using (var _flagOn = new BackendOverrideScope(useSqlite: true))
+        using (var seed = new LocalDatabaseService())
+        {
+            seed.Initialize(_dbPath, Password.AsSpan());
+            seed.SetIndexMetadata("DirectSqliteSeed", DateTime.UtcNow);
+        }
+
+        Assert.True(File.Exists(_dbPath), "Seed should have produced a SQLite file");
+        Assert.False(File.Exists(_dbPath + ".litedb-backup"),
+            "There should be no .litedb-backup - we never had a LiteDB DB to migrate");
+
+        // Act: re-open with the flag still on. Should hit the
+        // TryProbeAsSqlite -> true short-circuit and skip migration.
+        using var _flagOn2 = new BackendOverrideScope(useSqlite: true);
+        using var reopen = new LocalDatabaseService();
+        reopen.Initialize(_dbPath, Password.AsSpan());
+
+        // Assert: still no migration artefacts.
+        Assert.False(File.Exists(_dbPath + ".litedb-backup"),
+            "Re-opening an existing SQLite DB must NOT trigger migration");
+        Assert.False(File.Exists(_dbPath + ".sqlite-tmp"),
+            "Re-opening an existing SQLite DB must NOT leave a temp file");
+
+        // Assert: the seeded data is still there.
+        Assert.NotNull(reopen.GetIndexMetadata("DirectSqliteSeed"));
+    }
 }

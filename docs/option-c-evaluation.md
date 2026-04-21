@@ -436,9 +436,10 @@ Immediate next work, in order:
    the C-3 (5b) measured topology. Pool lands as a separate commit
    if/when it becomes necessary.
 2. **C-2** — the migration code path with blocking-modal progress UI.
-   **Status: code path landed (`9fda662`).** The migration logic is
-   complete and tested (3 integration tests covering full round-trip,
-   idempotency, and wrong-password safety). Detection happens in
+   **Status: code path landed (`9fda662` + `f319782`).** The migration logic is
+   complete and tested (4 integration tests covering full round-trip,
+   idempotency, wrong-password safety, and a regression test for the
+   AsyncLocal-recursion bug below). Detection happens in
    `LocalDatabaseService.Initialize`: when the flag is on AND the
    target file is not a SQLite database (probed via SqliteBackend
    open + InvalidPasswordException catch), we read every collection
@@ -452,6 +453,18 @@ Immediate next work, in order:
    Concurrent-write safety (the `SqliteBackend` write lock) was
    discovered as a prerequisite while landing this and is part of
    the same commit.
+
+   **Why two commits:** `9fda662` shipped the migration code with a
+   recursion bug — `InitializeLiteDbOnly` cleared only the env var,
+   not the AsyncLocal override added in the same commit, so the
+   inner `Initialize` re-evaluated `ShouldUseSqlite()` to true,
+   re-detected the LiteDB file, and recursed back into
+   `MigrateFromLiteDb` until the test host stack-overflowed. xUnit
+   reported a misleading aggregate pass count from before the crash,
+   masking the failure. `f319782` clears both switches AND adds a
+   per-instance `_initializeInProgress` re-entry guard that converts
+   any future regression into a fast `InvalidOperationException`
+   instead of a stack overflow.
 3. **C-6** — one release in main behind the preview flag before
    forced migration.
 4. **Post-ship calibration re-run** (optional) — scenarios 1, 3, 4

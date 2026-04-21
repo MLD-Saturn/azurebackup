@@ -182,7 +182,7 @@ docs/
 
 ## Experimental: SQLite backend preview
 
-As of commit `088d019` the local database layer can be routed to a SQLite + SQLCipher backend via a feature flag. As of commit `9fda662` (C-2), turning the flag on against an existing LiteDB database **automatically migrates** every collection (config, chunk_index, files + chunks, pending changes, all index metadata) into a fresh SQLite database, then atomically swaps the files. Your LiteDB database is preserved as `<path>.litedb-backup` so you can roll back manually by deleting the new SQLite file and renaming `.litedb-backup` back into place.
+As of commit `088d019` the local database layer can be routed to a SQLite + SQLCipher backend via a feature flag. As of commits `9fda662` + `f319782` (C-2), turning the flag on against an existing LiteDB database **automatically migrates** every collection (config, chunk_index, files + chunks, pending changes, all index metadata) into a fresh SQLite database, then atomically swaps the files. Your LiteDB database is preserved as `<path>.litedb-backup` so you can roll back manually by deleting the new SQLite file and renaming `.litedb-backup` back into place.
 
 This is still a preview gate — see `docs/option-c-evaluation.md` §11.8 for the C-6 soak step before SQLite becomes the default.
 

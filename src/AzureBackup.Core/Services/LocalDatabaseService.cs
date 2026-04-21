@@ -201,6 +201,19 @@ public partial class LocalDatabaseService : IDisposable
             return;
         }
 
+        InitializeLiteDbCore(databasePath, password);
+    }
+
+    /// <summary>
+    /// Opens the database as LiteDB, derives the key with Argon2id, and
+    /// builds every collection + index. This is the LiteDB-side body of
+    /// <see cref="InitializeCore"/>; extracted so the C-2 migration
+    /// helper <c>InitializeLiteDbOnly</c> can call it directly without
+    /// having to mutate the feature-flag switches (env var / AsyncLocal
+    /// override) to force <c>InitializeCore</c> down the LiteDB branch.
+    /// </summary>
+    private void InitializeLiteDbCore(string databasePath, ReadOnlySpan<char> password)
+    {
         Log($"Initialize: Opening encrypted database at {databasePath}");
 
         _databasePath = databasePath;

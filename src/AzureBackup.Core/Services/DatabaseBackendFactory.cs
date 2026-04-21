@@ -80,19 +80,6 @@ internal static class DatabaseBackendFactory
     }
 
     /// <summary>
-    /// Test/migration hook: returns the current value of the
-    /// <see cref="AsyncLocal{T}"/> override for snapshot/restore by
-    /// helpers that need to temporarily clear it (e.g.
-    /// <c>InitializeLiteDbOnly</c> in the C-2 migration path, which
-    /// must open a LiteDB database while the override is otherwise
-    /// pinned to "use SQLite" by an outer scope).
-    /// </summary>
-    internal static bool? GetAsyncLocalOverride()
-    {
-        return _asyncLocalOverride.Value;
-    }
-
-    /// <summary>
     /// Returns <c>true</c> if the current process environment is
     /// configured to use the SQLite backend. The
     /// <see cref="AsyncLocal{T}"/> override (if set) takes precedence
