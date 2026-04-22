@@ -558,6 +558,20 @@ public partial class BackupOrchestrator
 
         Metrics?.RecordContext("backup", config.MemoryLimitEnabled ? config.MemoryLimitMB : 0, config.MemoryLimitEnabled);
 
+        // Decision-point record: justifies the chosen file-level concurrency
+        // for this op so a post-hoc throughput comparison between two runs
+        // can attribute a delta to the choice without re-deriving it from
+        // process counters. Includes the inputs (file count, memory budget)
+        // and the constants (MaxParallelFileBackups) that drove it.
+        Metrics?.RecordDecision("backup-concurrency", new Dictionary<string, object?>
+        {
+            ["files"] = filePaths.Count,
+            ["maxParallelFileBackups"] = MaxParallelFileBackups,
+            ["memoryBudgetMb"] = memoryBudget.IsUnlimited ? "unlimited" : (memoryBudget.TotalBytes / (1024 * 1024)).ToString(),
+            ["memoryBudgetEnabled"] = config.MemoryLimitEnabled,
+            ["processors"] = Environment.ProcessorCount
+        });
+
         int completed = 0, failed = 0;
         long processedBytes = 0;
         try
@@ -590,6 +604,20 @@ public partial class BackupOrchestrator
             CrcFailCount = (int)(_blobService.TotalCrcFailures - crcFailStart),
             CrcRetryCount = (int)(_blobService.TotalCrcRetries - crcRetryStart)
         });
+
+        // Decision-point: emit ONLY when the memory budget actually throttled.
+        // See matching block in RestoreService.RestoreFilesWithRemappingAsync.
+        if (memoryBudget.StallCount > 0)
+        {
+            Metrics?.RecordDecision("memory-budget-clamp", new Dictionary<string, object?>
+            {
+                ["operation"] = "backup",
+                ["stallCount"] = memoryBudget.StallCount,
+                ["budgetMb"] = memoryBudget.TotalBytes / (1024 * 1024),
+                ["files"] = filePaths.Count,
+                ["bytes"] = processedBytes
+            });
+        }
     }
 
     /// <summary>

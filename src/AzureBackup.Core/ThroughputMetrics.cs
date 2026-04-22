@@ -25,7 +25,13 @@ public sealed class ThroughputMetrics : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        // Apply the same naming policy to dictionary keys so the
+        // DecisionMetrics.Context bag stays grep-friendly. Without this,
+        // a context key like "maxParallelFileBackups" would round-trip
+        // unchanged into the JSONL line, breaking the snake_case grep
+        // convention used by every other field in the file.
+        DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower
     };
 
     /// <summary>
@@ -101,6 +107,40 @@ public sealed class ThroughputMetrics : IDisposable
         metrics.Type = "corruption";
         metrics.Timestamp = DateTime.UtcNow;
         _pendingRecords.Enqueue(metrics);
+        Flush();
+    }
+
+    /// <summary>
+    /// Records a runtime decision that affects performance, with a key/value
+    /// context bag. Use this to justify (in post-hoc analysis) WHY a particular
+    /// concurrency / memory-budget / tier-selection / dedup short-circuit
+    /// fired the way it did. Immediately flushed so the record survives a
+    /// process kill that prevents the operation summary from being written.
+    /// </summary>
+    /// <param name="reason">Short label identifying the decision point
+    /// (e.g., <c>"memory-budget-clamp"</c>, <c>"backup-concurrency"</c>).
+    /// Used as a grep target across the daily JSONL file.</param>
+    /// <param name="context">Optional key/value bag describing the decision
+    /// inputs and outcome. Values are serialized via <see cref="object.ToString"/>.</param>
+    /// <remarks>
+    /// Pre-fix: when <c>MemoryBudget.FromConfig</c> clamped parallelism from
+    /// 8 to 4 due to RAM constraints, the only evidence was a log line that
+    /// got rotated out after 7 days. Post-hoc performance analysis could not
+    /// distinguish "ran with 8 workers" from "configured for 8 but clamped
+    /// to 4 mid-run" -- which is the difference between investigating an
+    /// algorithm regression and a config-tuning issue.
+    /// </remarks>
+    public void RecordDecision(string reason, IReadOnlyDictionary<string, object?>? context = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        var record = new DecisionMetrics
+        {
+            Type = "decision",
+            Timestamp = DateTime.UtcNow,
+            Reason = reason,
+            Context = context?.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString() ?? "null")
+        };
+        _pendingRecords.Enqueue(record);
         Flush();
     }
 
@@ -359,4 +399,35 @@ public sealed class CorruptionMetrics : MetricsRecord
 
     /// <summary>File size in bytes.</summary>
     public long FileBytes { get; set; }
+}
+
+/// <summary>
+/// Justification record for a runtime decision that affects performance.
+/// Lets post-hoc analysis attribute throughput differences between two runs
+/// to a specific configuration change instead of an algorithm change.
+/// </summary>
+/// <remarks>
+/// Designed-in callers (commit X3): memory-budget clamps from
+/// <see cref="MemoryBudget.FromConfig"/>; backup/restore concurrency
+/// selection at op start. Future callers should follow the same pattern:
+/// emit one decision record per choice, with the inputs that drove it
+/// in <see cref="Context"/>.
+/// </remarks>
+public sealed class DecisionMetrics : MetricsRecord
+{
+    /// <summary>
+    /// Short label identifying the decision point. Used as a grep target
+    /// across the daily JSONL file. Examples:
+    /// <c>backup-concurrency</c>, <c>restore-concurrency</c>,
+    /// <c>memory-budget-clamp</c>.
+    /// </summary>
+    public string Reason { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Free-form key/value bag describing the inputs and outcome of the
+    /// decision. Stored as <c>string</c> values so the JSONL line stays
+    /// flat and greppable; non-string inputs are stringified by
+    /// <see cref="ThroughputMetrics.RecordDecision"/>.
+    /// </summary>
+    public Dictionary<string, string>? Context { get; set; }
 }

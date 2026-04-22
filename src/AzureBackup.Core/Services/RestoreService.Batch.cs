@@ -723,6 +723,18 @@ public partial class RestoreService
 
         Metrics?.RecordContext("restore", config.MemoryLimitEnabled ? config.MemoryLimitMB : 0, config.MemoryLimitEnabled);
 
+        // Decision-point record (see X3 in commit history). Justifies the
+        // chosen restore concurrency so post-hoc throughput analysis can
+        // distinguish a config-driven slowdown from an algorithm change.
+        Metrics?.RecordDecision("restore-concurrency", new Dictionary<string, object?>
+        {
+            ["files"] = fileList.Count,
+            ["maxParallelFileRestores"] = MaxParallelFileRestores,
+            ["memoryBudgetMb"] = memoryBudget.IsUnlimited ? "unlimited" : (memoryBudget.TotalBytes / (1024 * 1024)).ToString(),
+            ["memoryBudgetEnabled"] = config.MemoryLimitEnabled,
+            ["processors"] = Environment.ProcessorCount
+        });
+
         var result = await RestoreFilesBatchCoreAsync(
             fileList, overwriteExisting, memoryBudget, progress, fileByteProgress, cancellationToken);
 
@@ -748,6 +760,22 @@ public partial class RestoreService
             CrcFailCount = (int)(_blobService.TotalCrcFailures - crcFailStart),
             CrcRetryCount = (int)(_blobService.TotalCrcRetries - crcRetryStart)
         });
+
+        // Decision-point: emit ONLY when the memory budget actually
+        // throttled us (StallCount > 0). A non-zero stall count justifies
+        // raising MemoryLimitMB; a zero count justifies leaving it alone
+        // even if the budget looks tight on paper.
+        if (memoryBudget.StallCount > 0)
+        {
+            Metrics?.RecordDecision("memory-budget-clamp", new Dictionary<string, object?>
+            {
+                ["operation"] = "restore",
+                ["stallCount"] = memoryBudget.StallCount,
+                ["budgetMb"] = memoryBudget.TotalBytes / (1024 * 1024),
+                ["files"] = fileList.Count,
+                ["bytes"] = result.TotalBytesRestored
+            });
+        }
 
         StatusChanged?.Invoke(this, BuildRestoreStatusMessage(result));
         return result;
