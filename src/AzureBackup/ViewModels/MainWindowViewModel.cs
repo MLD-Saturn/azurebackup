@@ -784,8 +784,12 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _orchestrator.ErrorOccurred += (s, msg) => Program.Logger.Log($"[ERROR] {msg}");
             
             Program.Logger.Log($"Services initialized, log file: {Program.Logger.LogFilePath}");
+            // Echo the SessionId into the UI log too so a tester capturing
+            // a screenshot of the Logs tab can quote it back without
+            // hunting through the data directory for the file log.
+            AddLog($"Session: {Program.Logger.SessionId:N}");
         }
-        
+
         AddLog("Application started - diagnostic logging enabled");
 
         // Check database state for returning vs new user
@@ -944,6 +948,15 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         }
         OnPropertyChanged(nameof(FilteredLocalFiles));
         OnPropertyChanged(nameof(LocalFilesSummary));
+
+        // Session-context line: log the runtime config that drives perf
+        // decisions (memory budget + diagnostic-log toggle + watched folder
+        // count). Captured once per LoadConfiguration so a multi-hour test
+        // session can attribute regressions to a config change.
+        Program.Logger?.Log(
+            $"Config loaded: MemoryLimitEnabled={MemoryLimitEnabled}, MemoryLimitMB={config.MemoryLimitMB}, " +
+            $"DiagLogging={EnableDiagnosticLogging}, WatchedFolders={folders.Count}, " +
+            $"WatchedFolderRoots=[{string.Join(", ", folders.Select(f => f.Path))}]");
 
         RefreshStatistics();
     }

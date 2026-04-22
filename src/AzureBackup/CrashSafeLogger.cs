@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace AzureBackup;
@@ -19,6 +21,15 @@ public sealed class CrashSafeLogger : IDisposable
     /// Gets the full path to the current log file.
     /// </summary>
     public string LogFilePath { get; }
+
+    /// <summary>
+    /// Per-process session identifier. Logged in the startup header so that
+    /// multiple app launches sharing a daily log file can be visually
+    /// separated when triaging a multi-run test session. Tester quotes this
+    /// value when filing a bug; <c>grep "$SessionId"</c> on the log file
+    /// returns only the relevant run.
+    /// </summary>
+    public Guid SessionId { get; } = Guid.NewGuid();
 
     public CrashSafeLogger()
     {
@@ -40,7 +51,47 @@ public sealed class CrashSafeLogger : IDisposable
         // Clean up old log files (keep last 7 days)
         CleanOldLogs(logDir, keepDays: 7);
 
+        WriteSessionHeader();
+    }
+
+    /// <summary>
+    /// Emits a multi-line block at the top of every session that captures
+    /// everything needed to attribute subsequent entries:
+    /// <list type="bullet">
+    ///   <item>SessionId (correlate across log + .diag + metrics files)</item>
+    ///   <item>PID (distinguish multiple in-flight runs of the same daily log)</item>
+    ///   <item>Build / runtime / OS version (rule out env mismatch in bug reports)</item>
+    ///   <item>Data directory + log path (so the tester can paste the log header
+    ///     into a bug report and a triager knows where to look for siblings)</item>
+    /// </list>
+    /// </summary>
+    private void WriteSessionHeader()
+    {
+        var asm = Assembly.GetEntryAssembly() ?? typeof(CrashSafeLogger).Assembly;
+        var ver = asm.GetName().Version?.ToString() ?? "?";
+        var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? ver;
+        var pid = Environment.ProcessId;
+        var dotnet = Environment.Version.ToString();
+        var os = Environment.OSVersion.ToString();
+        var arch = RuntimeInformation_ProcessArchitecture();
+        var dataDir = AppMode.DataDirectory;
+        var portable = AppMode.IsPortable;
+
         Log("=== Application started ===", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"SessionId: {SessionId:N}", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"PID: {pid}, .NET: {dotnet}, Arch: {arch}, Portable: {portable}",
+            callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"Build: {info} (asm {ver})", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"OS: {os}", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"DataDir: {dataDir}", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+        Log($"LogFile: {LogFilePath}", callerFile: "CrashSafeLogger", callerMethod: "ctor");
+    }
+
+    private static string RuntimeInformation_ProcessArchitecture()
+    {
+        // Tiny indirection so the field is testable / mockable without
+        // pulling RuntimeInformation in the test project.
+        return System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
     }
 
     /// <summary>

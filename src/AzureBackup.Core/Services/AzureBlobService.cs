@@ -871,10 +871,25 @@ public partial class AzureBlobService : IBlobStorageService
 
         if (!crcValid)
         {
+            // Fingerprint the inputs so we can rule out buffer corruption between
+            // EncryptInto and ValidateCrc. plainMd5 and the envelope head/tail
+            // hex make it possible to triage encrypt-side bugs from logs alone.
+            var plainMd5 = MD5.HashData(plaintext);
+            var headLen = Math.Min(17, encryptedLength); // magic(4) + ver(1) + nonce(12)
+            var tailLen = Math.Min(20, encryptedLength); // tag(16) + crc(4)
+            var headHex = Convert.ToHexString(rentedBuffer.AsSpan(0, headLen));
+            var tailHex = Convert.ToHexString(rentedBuffer.AsSpan(encryptedLength - tailLen, tailLen));
             var diag = _encryptionService.DiagnoseCrcMismatch(rentedBuffer.AsSpan(0, encryptedLength));
-            FileOperationDiagnostics.RecordAmbient($"[CRC FAIL] {caller}: {diag}");
+            var envVer = encryptedLength >= 5 ? rentedBuffer[4].ToString() : "?";
+
+            FileOperationDiagnostics.RecordAmbient(
+                $"[CRC FAIL] {caller}: {diag}, envVer={envVer}, " +
+                $"plainLen={plaintext.Length}, plainMd5[..8]={Convert.ToHexString(plainMd5.AsSpan(0, 4))}, " +
+                $"head17={headHex}, tail20={tailHex}");
             Log($"CRITICAL: {caller}: CRC INVALID immediately after Encrypt! " +
-                $"chunk={chunkHash[..8]}..., plainSize={plaintext.Length}, encSize={encryptedLength}, {diag}");
+                $"chunk={chunkHash[..Math.Min(16, chunkHash.Length)]}, plainSize={plaintext.Length}, " +
+                $"encSize={encryptedLength}, envVer={envVer}, plainMd5[..8]={Convert.ToHexString(plainMd5.AsSpan(0, 4))}, " +
+                $"head17={headHex}, tail20={tailHex}, {diag}");
         }
 
         return encryptedLength;
@@ -956,11 +971,19 @@ public partial class AzureBlobService : IBlobStorageService
 
         if (!crcValid)
         {
+            var headLen = Math.Min(17, encryptedData.Length);
+            var tailLen = Math.Min(20, encryptedData.Length);
+            var headHex = Convert.ToHexString(encryptedData[..headLen]);
+            var tailHex = Convert.ToHexString(encryptedData[(encryptedData.Length - tailLen)..]);
             var diag = _encryptionService.DiagnoseCrcMismatch(encryptedData);
-            FileOperationDiagnostics.RecordAmbient($"[CRC FAIL] {caller}: {diag}");
+            var envVer = encryptedData.Length >= 5 ? encryptedData[4].ToString() : "?";
+
+            FileOperationDiagnostics.RecordAmbient(
+                $"[CRC FAIL] {caller}: {diag}, envVer={envVer}, head17={headHex}, tail20={tailHex}");
             Log($"DIAGNOSTIC: {caller}: CRC INVALID before decrypt! " +
-                $"blob={blobName}, size={encryptedData.Length}, " +
-                $"md5Verified={storedContentHash is { Length: > 0 }}, {diag}");
+                $"blob={blobName}, chunk={chunkHash[..Math.Min(16, chunkHash.Length)]}, size={encryptedData.Length}, " +
+                $"md5Verified={storedContentHash is { Length: > 0 }}, envVer={envVer}, " +
+                $"head17={headHex}, tail20={tailHex}, {diag}");
         }
 
         return crcValid;

@@ -75,6 +75,17 @@ public sealed class FileOperationDiagnostics
     private readonly long _startTicks = Environment.TickCount64;
     private readonly DateTime _startUtc = DateTime.UtcNow;
     private readonly string _diagnosticsDirectory;
+    private int _isFlushed;
+
+    /// <summary>
+    /// Process-wide registry of diagnostics that have not yet been flushed.
+    /// On <see cref="AppDomain.ProcessExit"/> or Ctrl-C, every live entry
+    /// is snapshotted to disk so a hard kill mid-operation does not lose
+    /// its chunk-level evidence (the most valuable signal when triaging
+    /// CRC / corruption bugs).
+    /// </summary>
+    private static readonly ConcurrentDictionary<FileOperationDiagnostics, byte> _live = new();
+    private static int _shutdownHooksInstalled;
 
     /// <summary>
     /// Creates a new per-file diagnostic collector.
@@ -94,6 +105,50 @@ public sealed class FileOperationDiagnostics
         Record($"=== {operation} started for '{filePath}' ===");
         Record($"Machine: {Environment.MachineName}, Processors: {Environment.ProcessorCount}, OS: {Environment.OSVersion}");
         Record($"64-bit process: {Environment.Is64BitProcess}, GC.TotalMemory: {GC.GetTotalMemory(false):N0}");
+
+        // Register in the live set so the shutdown hook can flush us if the
+        // process exits before Flush() runs. Flush() removes us from this set.
+        _live[this] = 0;
+        EnsureShutdownHooksInstalled();
+    }
+
+    /// <summary>
+    /// Installs (once per process) AppDomain.ProcessExit and Ctrl-C handlers
+    /// that snapshot every live <see cref="FileOperationDiagnostics"/> to its
+    /// .diag file before the process tears down. Without these hooks, a Ctrl-C
+    /// or Task Manager "End Task" during a multi-hour backup loses every
+    /// in-flight file's chunk-level diagnostic trail.
+    /// </summary>
+    private static void EnsureShutdownHooksInstalled()
+    {
+        if (Interlocked.CompareExchange(ref _shutdownHooksInstalled, 1, 0) != 0)
+            return;
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => FlushAllLive("ProcessExit");
+        Console.CancelKeyPress += (_, e) =>
+        {
+            FlushAllLive("CancelKeyPress");
+            // Don't set e.Cancel = true; let the host decide whether to
+            // continue. We've already snapshotted; if the host kills the
+            // process the snapshots survive.
+        };
+    }
+
+    private static void FlushAllLive(string reason)
+    {
+        // Snapshot the keys so callers can safely call Flush themselves
+        // concurrently (Flush removes from the dictionary).
+        foreach (var diag in _live.Keys)
+        {
+            try
+            {
+                diag.WriteSnapshot(errorSummary: $"Forced snapshot at {reason}", terminal: false);
+            }
+            catch
+            {
+                // Shutdown path -- swallow everything.
+            }
+        }
     }
 
     /// <summary>
@@ -200,7 +255,57 @@ public sealed class FileOperationDiagnostics
     /// The file name is derived from the original file name + operation + timestamp.
     /// Returns the path to the written diagnostic file, or null if writing failed.
     /// </summary>
+    /// <summary>
+    /// Crash-safe incremental flush: writes the current state of every
+    /// collected entry + chunk record to the .diag/.jsonl files NOW,
+    /// without consuming them. Safe to call repeatedly during a long
+    /// operation (e.g., every N chunks); each call overwrites the .diag
+    /// with the latest snapshot. The final <see cref="Flush"/> at end
+    /// of operation produces the same shape so callers don't need to
+    /// special-case it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Pre-fix: a process crash mid-operation lost EVERY chunk-level
+    /// diagnostic for the file because the queue was only drained by
+    /// <see cref="Flush"/>. Calling FlushNow at chunk-batch boundaries
+    /// keeps disk state at most N chunks behind reality.
+    /// </para>
+    /// <para>
+    /// Snapshot semantics: text entries enumerated via
+    /// <c>ConcurrentQueue.GetEnumerator</c> (moment-in-time snapshot);
+    /// chunk records iterated the same way. Both queues are left intact
+    /// so the final <see cref="Flush"/> sees the complete history. The
+    /// .diag file is opened with <c>append: false</c> -- each snapshot
+    /// is a complete rewrite, so a torn write at worst reverts to the
+    /// previous snapshot.
+    /// </para>
+    /// </remarks>
+    public string? FlushNow(string reason)
+    {
+        Record($"[SNAPSHOT] {reason} -- entries={_entries.Count}, chunks={_chunkRecords.Count}");
+        return WriteSnapshot(errorSummary: null, terminal: false);
+    }
+
+    /// <summary>
+    /// Flushes all collected entries to a per-file .diag log file.
+    /// The file name is derived from the original file name + operation + timestamp.
+    /// Returns the path to the written diagnostic file, or null if writing failed.
+    /// </summary>
     public string? Flush(string? errorSummary = null)
+    {
+        var path = WriteSnapshot(errorSummary, terminal: true);
+        // Deregister so the shutdown hook doesn't write a stale snapshot
+        // over our terminal flush. Idempotent -- multiple Flush calls are
+        // a no-op on the second one.
+        if (Interlocked.Exchange(ref _isFlushed, 1) == 0)
+        {
+            _live.TryRemove(this, out _);
+        }
+        return path;
+    }
+
+    private string? WriteSnapshot(string? errorSummary, bool terminal)
     {
         try
         {
@@ -211,34 +316,42 @@ public sealed class FileOperationDiagnostics
             var diagFileName = $"{safeFileName}_{_operation}_{timestamp}.diag";
             var diagPath = Path.Combine(_diagnosticsDirectory, diagFileName);
 
-            Record($"GC.TotalMemory at flush: {GC.GetTotalMemory(false):N0}");
-            if (errorSummary != null)
+            // Trailing summary record only on the terminal flush -- otherwise
+            // a subsequent snapshot/flush would emit it twice.
+            if (terminal)
             {
-                Record($"[SUMMARY] {errorSummary}");
+                Record($"GC.TotalMemory at flush: {GC.GetTotalMemory(false):N0}");
+                if (errorSummary != null)
+                {
+                    Record($"[SUMMARY] {errorSummary}");
+                }
+                Record($"=== {_operation} diagnostics end -- {_entries.Count} entries ===");
             }
-            Record($"=== {_operation} diagnostics end — {_entries.Count} entries ===");
 
+            // Snapshot enumeration leaves both queues intact so a follow-up
+            // Flush sees the complete history. Critical for crash safety:
+            // a snapshot at chunk N must NOT throw away the records so the
+            // terminal flush can still produce a complete .diag.
             using var writer = new StreamWriter(diagPath, append: false, Encoding.UTF8);
             foreach (var entry in _entries)
             {
                 writer.WriteLine(entry);
             }
 
-            // Write machine-readable companion file with structured chunk data
             if (!_chunkRecords.IsEmpty)
             {
                 var jsonlPath = diagPath + ".jsonl";
                 try
                 {
                     using var jsonWriter = new StreamWriter(jsonlPath, append: false, Encoding.UTF8);
-                    while (_chunkRecords.TryDequeue(out var record))
+                    foreach (var record in _chunkRecords)
                     {
                         jsonWriter.WriteLine(JsonSerializer.Serialize(record, ChunkDiagRecord.JsonOptions));
                     }
                 }
                 catch
                 {
-                    // Best-effort — structured file is a bonus, not critical
+                    // Best-effort -- structured file is a bonus, not critical
                 }
             }
 
