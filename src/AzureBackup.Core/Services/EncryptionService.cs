@@ -270,6 +270,16 @@ public class EncryptionService : IDisposable
 
         // Convert password to bytes and zero after use
         var passwordBytes = PasswordBytes.FromChars(password.Span);
+        // B15: instrument the verification-hash KDF identically to
+        // DeriveKeyAsync. Pre-B15 this call site was silent, so an OOM
+        // here surfaced only as the generic raw exception with no
+        // log breadcrumbs.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var gcMode = System.Runtime.GCSettings.IsServerGC ? "Server" : "Workstation";
+        var workingSetMb = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024);
+        Log($"CreatePasswordVerificationHashAsync: starting Argon2id (memory={Argon2MemorySize / 1024} MB, " +
+            $"lanes={Argon2DegreeOfParallelism}, iterations={Argon2Iterations}, gcMode={gcMode}, " +
+            $"workingSet={workingSetMb} MB)");
         try
         {
             // B11/B12: see DeriveKeyAsync above for full rationale.
@@ -283,11 +293,14 @@ public class EncryptionService : IDisposable
                     MemorySize = Argon2MemorySize,
                     Iterations = Argon2Iterations
                 };
-                return await argon2.GetBytesAsync(32);
+                var result = await argon2.GetBytesAsync(32);
+                Log($"CreatePasswordVerificationHashAsync: completed in {sw.ElapsedMilliseconds} ms");
+                return result;
             }
             catch (OutOfMemoryException ex)
             {
                 lastOom = ex;
+                Log($"CreatePasswordVerificationHashAsync: OutOfMemoryException at {sw.ElapsedMilliseconds} ms -- {ex.Message}");
                 System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
                     System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
                 GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -304,11 +317,14 @@ public class EncryptionService : IDisposable
                     MemorySize = Argon2MemorySize,
                     Iterations = Argon2Iterations
                 };
-                return await argon2.GetBytesAsync(32);
+                var result = await argon2.GetBytesAsync(32);
+                Log($"CreatePasswordVerificationHashAsync: completed (after LOH compaction) in {sw.ElapsedMilliseconds} ms");
+                return result;
             }
             catch (OutOfMemoryException ex)
             {
                 lastOom = ex;
+                Log($"CreatePasswordVerificationHashAsync: OutOfMemoryException AFTER LOH compaction at {sw.ElapsedMilliseconds} ms -- giving up");
             }
 
             throw new InsufficientMemoryForKdfException(

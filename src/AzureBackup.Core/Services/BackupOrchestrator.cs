@@ -171,6 +171,12 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// so the caller can keep the plaintext in a <c>char[]</c> and zero it after use.</param>
     public async Task<bool> InitializeAsync(ReadOnlyMemory<char> password)
     {
+        // B15: emit a synchronous DiagnosticLog event BEFORE any
+        // allocation so a downstream OOM still leaves a "we got here"
+        // breadcrumb in the file log. The Log() helper is gated on
+        // [Conditional("DIAGNOSTICLOG")] so this is free in Release.
+        Log("InitializeAsync: ENTRY");
+
         if (password.IsEmpty)
             throw new ArgumentException("Password cannot be empty", nameof(password));
         Log("InitializeAsync: Starting initialization");

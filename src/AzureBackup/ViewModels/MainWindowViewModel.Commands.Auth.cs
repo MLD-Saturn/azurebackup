@@ -805,6 +805,7 @@ public partial class MainWindowViewModel
             }
 
             // Step 2: Initialize the encrypted database with password
+            AddLog("Unlock step 2: opening encrypted database...");
             try
             {
                 _databaseService.Initialize(AppMode.DatabasePath, passwordMemory.Span);
@@ -813,14 +814,21 @@ public partial class MainWindowViewModel
             {
                 return (false, "Invalid password");
             }
+            AddLog("Unlock step 2: database open OK");
 
+            AddLog("Unlock step 3: ensuring reverse chunk index...");
             await EnsureReverseChunkIndexBuiltAsync();
+            AddLog("Unlock step 3: reverse chunk index OK");
 
             // Step 3: Load configuration from the now-unlocked database
+            AddLog("Unlock step 4: loading configuration...");
             LoadConfiguration();
+            AddLog("Unlock step 4: configuration loaded OK");
 
             // Step 4: Initialize encryption service for backup operations
+            AddLog("Unlock step 5: initializing encryption service (Argon2id verify + derive)...");
             var success = await _orchestrator.InitializeAsync(passwordMemory);
+            AddLog($"Unlock step 5: orchestrator.InitializeAsync returned {success}");
             if (!success)
             {
                 return (false, "Failed to initialize encryption");
@@ -887,7 +895,23 @@ public partial class MainWindowViewModel
             // also runs Argon2id) reaches here as the raw runtime
             // exception. Render with the same "actionable" message
             // shape.
-            AddLog($"Unlock failed (memory pressure): {ex.GetType().Name}: {ex.Message}");
+            // B15: emit FULL exception detail so a tester can pinpoint
+            // which call site OOM'd. Pre-B15 we logged only ex.Message
+            // ("Insufficient memory to continue the execution of the
+            // program.") which gave no clue WHERE in the call chain it
+            // happened. The stack trace will identify the failing
+            // method.
+            AddLog($"Unlock failed (memory pressure): {ex.GetType().FullName}: {ex.Message}");
+            AddLog($"  Stack trace:");
+            foreach (var line in (ex.StackTrace ?? "(no stack trace)")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                AddLog($"    {line.TrimEnd()}");
+            }
+            if (ex.InnerException != null)
+            {
+                AddLog($"  Inner: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
+            }
             return (false, "Insufficient memory for key derivation. Close other applications and try again.");
         }
         catch (System.Exception ex) when (
