@@ -69,6 +69,17 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     [NotifyPropertyChangedFor(nameof(CanRunCheck))]
     [NotifyPropertyChangedFor(nameof(CanCancel))]
     [NotifyPropertyChangedFor(nameof(CanReCheckFailures))]
+    // B20: PropertyChanged on a computed CanXxx is necessary but not
+    // sufficient -- Avalonia's Button only re-queries CanExecute when
+    // the ICommand raises CanExecuteChanged. The source-generated
+    // RelayCommand only fires that event when explicitly told via
+    // these attributes (or a manual NotifyCanExecuteChanged() call).
+    // Without them, Check Now stayed greyed forever even with files
+    // selected; Cancel stayed enabled after a check finished; etc.
+    [NotifyCanExecuteChangedFor(nameof(CheckNowCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ReCheckFailuresOfSelectedCommand))]
+    [NotifyCanExecuteChangedFor(nameof(BackfillLegacyMd5Command))]
     private bool _isOperationInProgress;
 
     [ObservableProperty]
@@ -105,6 +116,11 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasBackfillWork))]
     [NotifyPropertyChangedFor(nameof(BackfillButtonLabel))]
+    // B20: ditto -- the Backfill button stayed at its initial state
+    // (greyed if LegacyChunkCount started at 0, enabled if it started
+    // > 0) across the entire app session, regardless of subsequent
+    // re-scans that updated the count.
+    [NotifyCanExecuteChangedFor(nameof(BackfillLegacyMd5Command))]
     private long _legacyChunkCount;
 
     public bool HasBackfillWork => LegacyChunkCount > 0 && !IsOperationInProgress;
@@ -113,6 +129,10 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     /// <summary>True when at least one file is selected in the tree.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanRunCheck))]
+    // B20: see _isOperationInProgress comment. Without this attribute the
+    // Check Now button would stay greyed even after the user explicitly
+    // checked file rows in the tree.
+    [NotifyCanExecuteChangedFor(nameof(CheckNowCommand))]
     private int _selectedFileCount;
 
     /// <summary>
