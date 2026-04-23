@@ -2422,6 +2422,27 @@ internal sealed class SqliteBackend : IDatabaseBackend
                     }
                     throw;
                 }
+                catch (OverflowException ex)
+                {
+                    // Wrong password where SQLCipher decrypted garbage that
+                    // happened to look like a valid schema header but whose
+                    // page-size or column-length fields parse as huge values.
+                    // SQLite-managed-driver translates these into "Array
+                    // dimensions exceeded supported range" rather than its
+                    // own SqliteException. Without this catch the user sees
+                    // the opaque OverflowException message and assumes the
+                    // app is broken rather than that they typed the wrong
+                    // password (real bug observed by tester).
+                    connection.Dispose();
+                    throw new InvalidPasswordException("Invalid password. Please try again.", ex);
+                }
+                catch (Exception ex) when (ex is ArgumentOutOfRangeException || ex is IndexOutOfRangeException)
+                {
+                    // Same family as OverflowException above: garbage-decrypt
+                    // values fed into array-allocation paths.
+                    connection.Dispose();
+                    throw new InvalidPasswordException("Invalid password. Please try again.", ex);
+                }
             }
 
             return connection;

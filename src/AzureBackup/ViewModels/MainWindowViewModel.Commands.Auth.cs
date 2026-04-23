@@ -862,6 +862,28 @@ public partial class MainWindowViewModel
         {
             return (false, ex.Message);
         }
+        catch (AzureBackup.Core.InvalidPasswordException)
+        {
+            return (false, "Invalid password");
+        }
+        catch (System.Exception ex) when (
+            ex is OverflowException ||
+            ex is ArgumentOutOfRangeException ||
+            ex is IndexOutOfRangeException ||
+            ex is System.Security.Cryptography.CryptographicException)
+        {
+            // Defensive: a wrong password that decrypts the SQLite header
+            // into garbage occasionally slips past SqliteBackend's own
+            // detection (the schema probe sees a row that "looks valid")
+            // and trips a downstream allocation/decrypt path. Without
+            // this branch the user sees an opaque .NET runtime message
+            // (e.g. "Array dimensions exceeded supported range") with
+            // no hint that the actual cause is a typo. Real bug observed
+            // by tester. AddLog the underlying message so a corrupted-
+            // database case is still diagnosable from the log pane.
+            AddLog($"Unlock failed (treated as invalid password): {ex.GetType().Name}: {ex.Message}");
+            return (false, "Invalid password (or database may be corrupted -- see Logs tab for details)");
+        }
         catch (System.Exception ex)
         {
             return (false, $"Unlock failed: {ex.Message}");
