@@ -201,3 +201,29 @@ public readonly record struct IntegrityCheckProgress(
     int T1FailCount,
     int T2FailCount,
     int T3FailCount);
+
+/// <summary>
+/// D10: result of a one-shot legacy-chunk MD5 backfill scan. The
+/// "Promoted" count is the number of chunks whose null
+/// <c>expected_encrypted_md5</c> column is now populated; "Failed"
+/// is the number of chunks whose download or envelope verification
+/// failed (those keep their null MD5 so a future scan can retry).
+/// </summary>
+public sealed class LegacyMd5BackfillResult
+{
+    public long Total { get; init; }
+    public int Promoted { get; init; }
+    public int Failed { get; init; }
+    public IReadOnlyList<string> FailedChunkHashes { get; init; } = [];
+}
+
+/// <summary>
+/// D10: per-chunk progress tick from the backfill scan. Throttled to
+/// every 10 chunks (or the final one) so UI updates stay cheap on
+/// multi-thousand-chunk corpora.
+/// </summary>
+public readonly record struct LegacyMd5BackfillProgress(
+    int Processed,
+    long Total,
+    int Promoted,
+    int Failed);

@@ -82,6 +82,13 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private IntegrityCheckService? _integrityService;
 
     /// <summary>
+    /// I6: background drainer for upload-time MD5 stamping. Created in
+    /// the auth flow once <see cref="_databaseService"/> is initialized;
+    /// disposed in <see cref="DisposeAsync"/> so any buffered MD5s flush.
+    /// </summary>
+    private ExpectedMd5Drain? _expectedMd5Drain;
+
+    /// <summary>
     /// Window title including mode indicator (Portable or Installed).
     /// </summary>
     public string WindowTitle => $"Azure Backup - Encrypted Cloud Backup{AppMode.WindowTitleSuffix}";
@@ -768,19 +775,15 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _integrityService.DiagnosticLog += (_, msg) => Program.Logger.Log(msg);
         }
 
-        // D6: wire the upload-time MD5 capture. Each successful chunk
-        // upload stamps the encrypted-blob MD5 onto the chunk_index row
-        // so the cheap T1 integrity tier can compare against the live
-        // Azure-side ContentHash on a future check. SQLite-only via
-        // LocalDatabaseService.SetChunkExpectedMd5 (no-op on LiteDB).
-        // The callback runs on the upload thread pool but
-        // SetChunkExpectedMd5 takes the SqliteBackend write lock so
-        // concurrent calls serialize cleanly.
-        _blobService.OnChunkUploaded = (chunkHash, md5) =>
-        {
-            try { _databaseService.SetChunkExpectedMd5(chunkHash, md5); }
-            catch { /* best effort -- upload already succeeded */ }
-        };
+        // D6 + I6: wire the upload-time MD5 capture through a background
+        // drain so a slow SetChunkExpectedMd5 (large WAL flush, contended
+        // write lock) does not back-pressure the upload pipeline. The
+        // callback enqueues in O(1) and returns immediately; a single
+        // reader task drains the queue and persists each MD5. The drain
+        // is disposed in DisposeAsync so any buffered MD5s flush during
+        // app shutdown.
+        _expectedMd5Drain = new ExpectedMd5Drain(_databaseService);
+        _blobService.OnChunkUploaded = (chunkHash, md5) => _expectedMd5Drain.Enqueue(chunkHash, md5);
 
         // Initialize Tier Migration ViewModel
         TierMigrationViewModel = new TierMigrationViewModel(_blobService, _chunkIndexService, msg => AddLog(msg));
@@ -1286,6 +1289,16 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         await _orchestrator.DisposeAsync();
         await _blobService.DisposeAsync();
         _encryptionService.Dispose();
+
+        // I6: drain any buffered upload-time MD5s before the database
+        // service goes away. Disposed BEFORE _databaseService for that
+        // reason; otherwise the drain's last few SetChunkExpectedMd5
+        // calls would race against database disposal.
+        if (_expectedMd5Drain != null)
+        {
+            await _expectedMd5Drain.DisposeAsync();
+            _expectedMd5Drain = null;
+        }
 
         // Stop the periodic WAL checkpoint timer before disposing the database so
         // a late-firing callback cannot race against a disposed LiteDB instance.

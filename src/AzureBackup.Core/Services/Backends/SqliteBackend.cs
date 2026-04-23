@@ -1278,6 +1278,45 @@ internal sealed class SqliteBackend : IDatabaseBackend
     }
 
     /// <summary>
+    /// D10: returns chunk hashes whose <c>expected_encrypted_md5</c>
+    /// column is null. Used by the legacy-chunk backfill scan to
+    /// promote chunks uploaded before D6 by running T2 download +
+    /// verify and stamping the MD5 only when the envelope checks out.
+    /// Returns an enumerable rather than a list so the caller can
+    /// stream very large result sets (a multi-million-chunk corpus).
+    /// </summary>
+    public IEnumerable<string> GetChunkHashesWithNullExpectedMd5()
+    {
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        // Buffer the result up front so the connection isn't tied up
+        // by an open reader while the caller does network I/O per
+        // chunk -- the SQLite write lock would deadlock otherwise
+        // when the caller eventually invokes SetChunkExpectedMd5.
+        var hashes = new List<string>();
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT chunk_hash FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) hashes.Add(reader.GetString(0));
+        return hashes;
+    }
+
+    /// <summary>
+    /// D10: count of chunks awaiting MD5 backfill. Cheap COUNT(*) so
+    /// the UI can show the scope of work before the scan starts.
+    /// </summary>
+    public long CountChunksWithNullExpectedMd5()
+    {
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
+        return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    /// <summary>
     /// Bulk upsert in a single transaction with a reused prepared statement.
     /// At the reverse-index rebuild scale (500K chunks measured in Phase 5)
     /// this is dramatically faster than N round-trips - SQLite's bulk

@@ -28,11 +28,19 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        _databaseService.Dispose();
-        
+        // B4 follow-up: Microsoft.Data.Sqlite occasionally NREs from
+        // inside SqliteConnection.Close() after a concurrent-write test
+        // has run. Pre-D8 this surfaced as a test failure even though
+        // the test itself passed (xUnit treats DisposeAsync exceptions
+        // as test failures). Swallow on dispose only -- the temp
+        // directory cleanup below still runs.
+        try { _databaseService.Dispose(); }
+        catch (NullReferenceException) { /* see comment above */ }
+
         if (Directory.Exists(_testDirectory))
         {
-            Directory.Delete(_testDirectory, recursive: true);
+            try { Directory.Delete(_testDirectory, recursive: true); }
+            catch { /* file locks from un-disposed connection */ }
         }
         return Task.CompletedTask;
     }

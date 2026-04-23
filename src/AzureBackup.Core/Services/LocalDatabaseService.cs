@@ -846,27 +846,62 @@ public partial class LocalDatabaseService : IDisposable
     /// <summary>
     /// D6: persists the upload-time encrypted-blob MD5 for a chunk so
     /// the cheap T1 integrity tier can compare against the live
-    /// Azure-side ContentHash. SQLite-only; no-op on the LiteDB legacy
-    /// backend (matches the broader integrity-feature contract).
+    /// Azure-side ContentHash.
     /// </summary>
+    /// <remarks>
+    /// SQLite is the production default since C-5 (see
+    /// <see cref="DatabaseBackendFactory.ShouldUseSqlite"/>) so the
+    /// SQLite backend is always available in real deployments. The
+    /// only way to reach this method without a SQLite backend is the
+    /// test-only AsyncLocal override that pins LiteDB; B5 (post-D6
+    /// audit) confirmed there are no production LiteDB users to
+    /// support. We throw rather than silently no-op so a future
+    /// regression that wires LiteDB into a non-test code path is
+    /// loud rather than silently losing MD5 data.
+    /// </remarks>
     public void SetChunkExpectedMd5(string chunkHash, byte[] md5)
     {
-        if (_sqliteBackend != null)
-        {
-            _sqliteBackend.SetChunkExpectedMd5(chunkHash, md5);
-        }
-        // LiteDB no-op: the integrity feature is unsupported on LiteDB
-        // and the schema has no column for the value.
+        if (_sqliteBackend == null)
+            throw new InvalidOperationException(
+                "SetChunkExpectedMd5 requires the SQLite backend. SQLite is the production default; " +
+                "if you are seeing this in production a launch-time migration was bypassed.");
+        _sqliteBackend.SetChunkExpectedMd5(chunkHash, md5);
     }
 
     /// <summary>
-    /// D6: returns the persisted MD5 for a chunk, or null if not present.
-    /// Null on LiteDB (integrity feature unsupported) and on SQLite when
-    /// the chunk was uploaded before D6.
+    /// D6: returns the persisted MD5 for a chunk, or null if the chunk
+    /// was uploaded before D6 (the column is null until first observation).
     /// </summary>
     public byte[]? GetChunkExpectedMd5(string chunkHash)
     {
-        return _sqliteBackend?.GetChunkExpectedMd5(chunkHash);
+        if (_sqliteBackend == null)
+            throw new InvalidOperationException(
+                "GetChunkExpectedMd5 requires the SQLite backend.");
+        return _sqliteBackend.GetChunkExpectedMd5(chunkHash);
+    }
+
+    /// <summary>
+    /// D10: enumerates chunk hashes whose <c>expected_encrypted_md5</c>
+    /// column is null. The legacy-chunk backfill in
+    /// <see cref="IntegrityCheckService"/> uses this to find chunks
+    /// uploaded before D6.
+    /// </summary>
+    public IEnumerable<string> GetChunkHashesWithNullExpectedMd5()
+    {
+        if (_sqliteBackend == null)
+            throw new InvalidOperationException("GetChunkHashesWithNullExpectedMd5 requires the SQLite backend.");
+        return _sqliteBackend.GetChunkHashesWithNullExpectedMd5();
+    }
+
+    /// <summary>
+    /// D10: count of chunks awaiting MD5 backfill. The Storage Health
+    /// UI shows this number on the "Backfill legacy chunks" button so
+    /// the user knows the scope before triggering a network scan.
+    /// </summary>
+    public long CountChunksWithNullExpectedMd5()
+    {
+        if (_sqliteBackend == null) return 0;
+        return _sqliteBackend.CountChunksWithNullExpectedMd5();
     }
 
     #endregion

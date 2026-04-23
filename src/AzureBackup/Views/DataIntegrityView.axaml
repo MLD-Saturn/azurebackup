@@ -42,6 +42,13 @@
                             Command="{Binding ReCheckFailuresOfSelectedCommand}"
                             ToolTip.Tip="Run a focused integrity check against the failures of the selected History run (or the latest run if none selected). Same operation type; the new run records its lineage via ParentRunId."
                             IsVisible="{Binding HasFailures}"/>
+                    <!-- D10: Backfill MD5 for chunks uploaded before D6 was
+                         shipped. Hidden when there are no legacy chunks
+                         (LegacyChunkCount == 0) to keep the toolbar clean. -->
+                    <Button Content="{Binding BackfillButtonLabel}"
+                            Command="{Binding BackfillLegacyMd5Command}"
+                            ToolTip.Tip="Pre-D6 chunks have no upload-time MD5 stored. This scan downloads each one, verifies the envelope CRC and AES-GCM tag, and stamps the MD5 on success. Closes the trust-on-first-use window where a chunk corrupt before its first integrity check would have its corrupt MD5 captured as 'expected' and pass forever after."
+                            IsVisible="{Binding HasBackfillWork}"/>
                 </WrapPanel>
                 <TextBlock Opacity="0.7" FontSize="12" TextWrapping="Wrap"
                            Text="{Binding SelectedFileCount, StringFormat='{}{0} file(s) selected. Choosing a preset auto-checks matching files; toggling files manually switches the dropdown to (Custom selection).'}"/>
@@ -109,8 +116,25 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="vm:IntegrityFailureGroupViewModel">
                                 <Expander Header="{Binding Header}" IsExpanded="True" Margin="0,2">
-                                    <ItemsControl ItemsSource="{Binding Items}">
-                                        <ItemsControl.ItemTemplate>
+                                    <!-- D9-A (post-D9-C pivot): Avalonia's commercial
+                                         TreeDataGrid would have flattened groups + items
+                                         into a single virtualized surface but requires
+                                         a paid licence. Falling back to ListBox with the
+                                         built-in VirtualizingStackPanel gives item-level
+                                         virtualization (the dominant cost) while
+                                         preserving the per-tier expander UX. Group count
+                                         is bounded (T1/T2/T3/warn) so the outer
+                                         ItemsControl is fine non-virtualized. -->
+                                    <ListBox ItemsSource="{Binding Items}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             MaxHeight="600">
+                                        <ListBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <VirtualizingStackPanel/>
+                                            </ItemsPanelTemplate>
+                                        </ListBox.ItemsPanel>
+                                        <ListBox.ItemTemplate>
                                             <DataTemplate x:DataType="vm:IntegrityFailureItemViewModel">
                                                 <Grid ColumnDefinitions="*,Auto,Auto" Margin="20,2,0,2">
                                                     <Grid.ContextMenu>
@@ -139,8 +163,8 @@
                                                                TextTrimming="CharacterEllipsis"/>
                                                 </Grid>
                                             </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
                                 </Expander>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>

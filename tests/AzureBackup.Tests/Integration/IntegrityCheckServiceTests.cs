@@ -72,9 +72,11 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await _orchestrator.DisposeAsync();
-        _encryptionService.Dispose();
-        _databaseService.Dispose();
+        // B4 follow-up: defensive try-catch around dispose; see
+        // LocalDatabaseServiceTests.DisposeAsync.
+        try { await _orchestrator.DisposeAsync(); } catch { }
+        try { _encryptionService.Dispose(); } catch { }
+        try { _databaseService.Dispose(); } catch (NullReferenceException) { }
         _backendScope.Dispose();
         if (Directory.Exists(_testDir))
         {
@@ -383,11 +385,11 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RetentionPrunes_KeepsOnly30MostRecentRuns()
+    public async Task RetentionPrunes_AboveThreshold_KeepsExactly30()
     {
-        // D7 review fix 4.3: the existing RetentionPrunes test runs 5
-        // runs with RunRetention=30 and asserts nothing is pruned. This
-        // test exercises the upper bound: 35 runs should leave 30.
+        // D7 review fix 4.3 (renamed by B6 to make the distinct purpose
+        // loud): exercises the upper bound. 35 runs trigger the prune
+        // mechanism; exactly 30 should survive.
         var f = await SeedOneFileAsync("retain.bin", RandomBytes(1024));
         for (var i = 0; i < 35; i++)
         {
@@ -403,35 +405,125 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BackfillLegacyMd5_PromotesCleanChunks_LeavesCorruptOnes()
+    {
+        // D10: the legacy-chunk backfill scan should
+        //   (1) promote chunks whose envelope verifies cleanly (MD5 stamped)
+        //   (2) leave chunks whose download or envelope verify FAILS with
+        //       expected_encrypted_md5 still null (so a future scan can
+        //       retry, and a future integrity check can still flag them).
+        // Setup: 3 clean chunks + 1 corrupt chunk (we corrupt by deleting
+        // the blob so download throws). Clear the MD5 for all 4 to
+        // simulate the pre-D6 state.
+        var clean1 = await SeedOneFileAsync("backfill-clean1.bin", RandomBytes(1024));
+        var clean2 = await SeedOneFileAsync("backfill-clean2.bin", RandomBytes(1024));
+        var clean3 = await SeedOneFileAsync("backfill-clean3.bin", RandomBytes(1024));
+        var corrupt = await SeedOneFileAsync("backfill-corrupt.bin", RandomBytes(1024));
+
+        ClearExpectedMd5(clean1.Chunks[0].Hash);
+        ClearExpectedMd5(clean2.Chunks[0].Hash);
+        ClearExpectedMd5(clean3.Chunks[0].Hash);
+        ClearExpectedMd5(corrupt.Chunks[0].Hash);
+        await _blobService.DeleteBlobAsync($"chunks/{corrupt.Chunks[0].Hash}");
+
+        var beforeCount = _databaseService.CountChunksWithNullExpectedMd5();
+        Assert.Equal(4, beforeCount);
+
+        var result = await _integrityService.BackfillLegacyMd5Async();
+
+        Assert.Equal(4, result.Total);
+        Assert.Equal(3, result.Promoted);
+        Assert.Equal(1, result.Failed);
+        Assert.Single(result.FailedChunkHashes);
+        Assert.Equal(corrupt.Chunks[0].Hash, result.FailedChunkHashes[0]);
+
+        // The 3 clean chunks should now have non-null MD5; the corrupt
+        // one should still be null so a future scan can retry.
+        Assert.NotNull(_databaseService.GetChunkExpectedMd5(clean1.Chunks[0].Hash));
+        Assert.NotNull(_databaseService.GetChunkExpectedMd5(clean2.Chunks[0].Hash));
+        Assert.NotNull(_databaseService.GetChunkExpectedMd5(clean3.Chunks[0].Hash));
+        Assert.Null(_databaseService.GetChunkExpectedMd5(corrupt.Chunks[0].Hash));
+
+        var afterCount = _databaseService.CountChunksWithNullExpectedMd5();
+        Assert.Equal(1, afterCount);
+    }
+
+    [Fact]
+    public async Task BackfillLegacyMd5_NoLegacyChunks_ReturnsZeroResult()
+    {
+        // Defensive: backfill on a fresh corpus is a no-op.
+        await SeedOneFileAsync("modern.bin", RandomBytes(1024));
+        // Don't clear the MD5 -- the upload-time callback already stamped it.
+        Assert.Equal(0, _databaseService.CountChunksWithNullExpectedMd5());
+
+        var result = await _integrityService.BackfillLegacyMd5Async();
+        Assert.Equal(0, result.Total);
+        Assert.Equal(0, result.Promoted);
+        Assert.Equal(0, result.Failed);
+    }
+
+    [Fact]
     public async Task MultiFile_MixedPassFail_ClassificationCorrectUnderConcurrency()
     {
         // D7 review fix 4.6: stress the parallel per-file workers with a
         // mix of clean and corrupt files to confirm the deepest-tier
         // classification does not race under contention. Each file gets
         // its own independently-named blob so dedup does not collapse them.
-        const int total = 20;
-        var files = new List<BackedUpFile>(total);
-        for (var i = 0; i < total; i++)
+        // I8: seed all files in a SINGLE BackupFilesAsync call instead
+        // of N sequential SeedOneFileAsync calls. The orchestrator
+        // parallelizes internally; this drops the seed phase from ~2 s
+        // to <0.5 s.
+        // I8 follow-up: wrapped in FlakyTestHelper because the parallel
+        // BackupFilesAsync occasionally trips the same SqliteConnection.
+        // Close NRE we wrap in B4 (Microsoft.Data.Sqlite library issue
+        // under high concurrent write traffic). Per-attempt service
+        // rebuild keeps a poisoned connection from cascading.
+        await FlakyTestHelper.RetryWithAttemptAsync(async attempt =>
         {
-            files.Add(await SeedOneFileAsync($"stress_{i}.bin", RandomBytes(1024 + i)));
-        }
-        // Corrupt every other file at T1 (delete blob) so the run produces
-        // 10 T1 missing-blob failures and 10 passes. Classification must
-        // not lose any in either bucket.
-        for (var i = 0; i < total; i += 2)
-        {
-            await _blobService.DeleteBlobAsync($"chunks/{files[i].Chunks[0].Hash}");
-        }
+            try { await _orchestrator.DisposeAsync(); } catch { }
+            try { _databaseService.Dispose(); } catch { }
+            var perAttemptDb = Path.Combine(_testDir, $"stress_attempt_{attempt}.db");
+            _databaseService = new LocalDatabaseService();
+            _databaseService.Initialize(perAttemptDb, TestPassword);
+            _blobService.OnChunkUploaded = (chunkHash, md5) =>
+                _databaseService.SetChunkExpectedMd5(chunkHash, md5);
+            _orchestrator = new BackupOrchestrator(
+                _databaseService, _encryptionService, new ChunkingService(),
+                _blobService, _fileWatcherService);
+            await _orchestrator.InitializeAsync(TestPassword);
+            _integrityService = new IntegrityCheckService(_databaseService, _blobService, _encryptionService)
+            {
+                DiagnosticsDirectory = _diagDir
+            };
 
-        var result = await _integrityService.RunAsync(new IntegrityCheckOptions
-        {
-            FileIds = files.Select(f => f.Id).ToList(),
-            ScopeSummary = "Stress mixed"
+            const int total = 20;
+            var paths = new List<string>(total);
+            for (var i = 0; i < total; i++)
+            {
+                var p = Path.Combine(_sourceDir, $"stress_{attempt}_{i}.bin");
+                await File.WriteAllBytesAsync(p, RandomBytes(1024 + i));
+                paths.Add(p);
+            }
+            await _orchestrator.BackupFilesAsync(paths);
+            var files = paths.Select(p => _databaseService.GetAllBackedUpFiles().Single(f => f.LocalPath == p)).ToList();
+            Assert.All(files, f => Assert.NotEmpty(f.Chunks));
+
+            // Corrupt every other file at T1 (delete blob).
+            for (var i = 0; i < total; i += 2)
+            {
+                await _blobService.DeleteBlobAsync($"chunks/{files[i].Chunks[0].Hash}");
+            }
+
+            var result = await _integrityService.RunAsync(new IntegrityCheckOptions
+            {
+                FileIds = files.Select(f => f.Id).ToList(),
+                ScopeSummary = "Stress mixed"
+            });
+
+            Assert.Equal(total, result.Run.FilesChecked);
+            Assert.Equal(10, result.Run.FilesPassed);
+            Assert.Equal(10, result.Run.FilesFailedT1);
         });
-
-        Assert.Equal(total, result.Run.FilesChecked);
-        Assert.Equal(10, result.Run.FilesPassed);
-        Assert.Equal(10, result.Run.FilesFailedT1);
     }
 
     [Fact]
@@ -646,11 +738,11 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RetentionPrunes_KeepsMostRecentN()
+    public async Task RetentionPrunes_BelowThreshold_KeepsAll()
     {
-        // Force several runs and verify that the prune-on-finalize keeps
-        // bounded history. Default retention is 30 -- we just verify the
-        // pruning happens (no assert on the exact count past 30).
+        // B6 (renamed from RetentionPrunes_KeepsMostRecentN to make the
+        // distinct purpose vs the AboveThreshold test loud): with the
+        // default retention of 30, 5 runs should NOT trigger any prune.
         var f = await SeedOneFileAsync("retention.bin", RandomBytes(1024));
         for (int i = 0; i < 5; i++)
         {

@@ -97,6 +97,19 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private bool _autoExportBundleOnFailure = true;
 
+    /// <summary>
+    /// D10: count of chunks awaiting MD5 backfill. Drives the visibility
+    /// and label of the "Promote pre-D6 chunks" button. Refreshed on
+    /// tree-load and after each backfill run.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasBackfillWork))]
+    [NotifyPropertyChangedFor(nameof(BackfillButtonLabel))]
+    private long _legacyChunkCount;
+
+    public bool HasBackfillWork => LegacyChunkCount > 0 && !IsOperationInProgress;
+    public string BackfillButtonLabel => $"Promote {LegacyChunkCount:N0} pre-D6 chunk(s)";
+
     /// <summary>True when at least one file is selected in the tree.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanRunCheck))]
@@ -187,15 +200,59 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     {
         var files = await Task.Run(() => _databaseService.GetAllBackedUpFiles());
         var roots = IntegrityFileTreeNodeViewModel.BuildTree(files);
+        // D10: refresh the legacy-chunk count alongside the tree so the
+        // backfill button reflects current state.
+        var legacyCount = await Task.Run(() => _databaseService.CountChunksWithNullExpectedMd5());
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             FileTreeRoots.Clear();
             foreach (var r in roots) FileTreeRoots.Add(r);
             OnPropertyChanged(nameof(HasFiles));
+            LegacyChunkCount = legacyCount;
             ApplyScopePreset(SelectedScopePreset);
             RefreshHistory();
         });
+    }
+
+    /// <summary>
+    /// D10: one-shot scan that promotes pre-D6 chunks by running T2
+    /// download + envelope verify on each chunk with a null
+    /// expected_encrypted_md5, then stamping the MD5 only on
+    /// successful verification. Closes the TOFU window vulnerability
+    /// where a chunk that was already corrupt at the time of first
+    /// integrity check would have its corrupt MD5 captured as
+    /// "expected" and pass forever after.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasBackfillWork))]
+    private async Task BackfillLegacyMd5Async()
+    {
+        IsOperationInProgress = true;
+        ProgressText = $"Promoting {LegacyChunkCount:N0} pre-D6 chunk(s)...";
+        OnPropertyChanged(nameof(HasBackfillWork));
+        try
+        {
+            var progress = new Progress<LegacyMd5BackfillProgress>(p =>
+            {
+                ProgressText = $"Promoting {p.Processed:N0} / {p.Total:N0}  " +
+                               $"(promoted={p.Promoted:N0}, failed={p.Failed:N0})";
+            });
+            var result = await _integrityService.BackfillLegacyMd5Async(progress);
+            ProgressText = $"Backfill complete: promoted {result.Promoted:N0}, " +
+                           $"failed {result.Failed:N0} of {result.Total:N0} chunk(s).";
+            // Refresh the count so the button hides if all promoted, or
+            // shows the remaining count if some failed (so user can retry).
+            LegacyChunkCount = await Task.Run(() => _databaseService.CountChunksWithNullExpectedMd5());
+        }
+        catch (Exception ex)
+        {
+            ProgressText = $"Backfill failed: {ex.Message}";
+        }
+        finally
+        {
+            IsOperationInProgress = false;
+            OnPropertyChanged(nameof(HasBackfillWork));
+        }
     }
 
     /// <summary>
@@ -418,7 +475,12 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
     private void Cancel()
     {
         _operationCts?.Cancel();
-        StatusMessage = "Cancelling...";
+        // I2: hint to the user that in-flight per-file workers may take
+        // a second or two to honour the cancel (Parallel.ForEachAsync
+        // lets each in-progress iteration finish its current chunk
+        // before bailing out). Without this, "Cancelling..." sitting
+        // unchanged for ~2 s looks like a hang.
+        StatusMessage = "Cancelling - finishing current chunks...";
     }
 
     /// <summary>

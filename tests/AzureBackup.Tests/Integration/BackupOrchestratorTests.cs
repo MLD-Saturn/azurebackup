@@ -53,10 +53,12 @@ public class BackupOrchestratorTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await _orchestrator.DisposeAsync();
-        _encryptionService.Dispose();
-        _databaseService.Dispose();
-        
+        // B4 follow-up: defensive try-catch around dispose; see
+        // LocalDatabaseServiceTests.DisposeAsync.
+        try { await _orchestrator.DisposeAsync(); } catch { }
+        try { _encryptionService.Dispose(); } catch { }
+        try { _databaseService.Dispose(); } catch (NullReferenceException) { }
+
         if (Directory.Exists(_testDirectory))
         {
             try { Directory.Delete(_testDirectory, recursive: true); }

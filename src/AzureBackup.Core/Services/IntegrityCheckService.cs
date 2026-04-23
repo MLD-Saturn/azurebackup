@@ -297,6 +297,116 @@ public sealed class IntegrityCheckService
     }
 
     /// <summary>
+    /// D10: one-shot backfill scan that promotes pre-D6 chunks. For
+    /// every chunk whose <c>expected_encrypted_md5</c> is null, runs a
+    /// T2 download + envelope verify (CRC32 + AES-GCM tag via
+    /// <see cref="IBlobStorageService.DownloadChunkAsync"/>); only if
+    /// the download succeeds AND the live Azure ContentHash matches
+    /// what we just MD5-hashed locally do we stamp the MD5. This
+    /// closes the TOFU window vulnerability where a chunk corrupt at
+    /// the time of first integrity check would have its corrupt MD5
+    /// captured as the "expected" value and pass forever after.
+    /// </summary>
+    /// <returns>
+    /// A <see cref="LegacyMd5BackfillResult"/> with totals for
+    /// promoted, skipped, and failed chunks. Failures are NOT a fatal
+    /// error -- they leave the chunk's expected MD5 still null so the
+    /// scan can be retried later.
+    /// </returns>
+    /// <remarks>
+    /// Concurrency: T2 downloads gated by <c>T2Concurrency</c> (4) so
+    /// a multi-thousand-chunk corpus does not saturate the network.
+    /// Cancellation is honoured between chunks (not mid-download).
+    /// Progress is reported every 10 chunks to keep UI updates cheap.
+    /// </remarks>
+    public async Task<LegacyMd5BackfillResult> BackfillLegacyMd5Async(
+        IProgress<LegacyMd5BackfillProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_databaseService.IntegrityCheckSupported)
+            throw new NotSupportedException("BackfillLegacyMd5Async requires the SQLite backend.");
+
+        var hashes = _databaseService.GetChunkHashesWithNullExpectedMd5().ToList();
+        var total = hashes.Count;
+        Log($"BackfillLegacyMd5Async: starting on {total} chunk(s) with null expected MD5");
+
+        if (total == 0)
+        {
+            return new LegacyMd5BackfillResult { Total = 0, Promoted = 0, Failed = 0 };
+        }
+
+        int promoted = 0;
+        int failed = 0;
+        int processed = 0;
+        var failedHashes = new List<string>();
+        using var t2Sem = new SemaphoreSlim(T2Concurrency);
+
+        await Parallel.ForEachAsync(
+            hashes,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = T2Concurrency,
+                CancellationToken = cancellationToken
+            },
+            async (chunkHash, ct) =>
+            {
+                await t2Sem.WaitAsync(ct);
+                try
+                {
+                    var blobName = $"chunks/{chunkHash}";
+                    // Download (verifies envelope CRC + Azure MD5 internally
+                    // via VerifyDownloadIntegrity). If this throws, the
+                    // chunk is corrupt -- leave its expected MD5 null so
+                    // a future integrity check still flags it.
+                    var decrypted = await _blobService.DownloadChunkAsync(blobName, ct);
+
+                    // Re-fetch the live ContentHash; this is what the
+                    // integrity-check engine will compare against in the
+                    // future, so we capture exactly that value.
+                    var (exists, _, azureMd5) = await _blobService.GetChunkPropertiesAsync(blobName, ct);
+                    if (!exists || azureMd5 == null || azureMd5.Length != 16)
+                    {
+                        Interlocked.Increment(ref failed);
+                        lock (failedHashes) failedHashes.Add(chunkHash);
+                        return;
+                    }
+
+                    _databaseService.SetChunkExpectedMd5(chunkHash, azureMd5);
+                    Interlocked.Increment(ref promoted);
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    lock (failedHashes) failedHashes.Add(chunkHash);
+                    Log($"BackfillLegacyMd5Async: {chunkHash[..8]}... {ex.GetType().Name}: {ex.Message}");
+                }
+                finally
+                {
+                    t2Sem.Release();
+                    var done = Interlocked.Increment(ref processed);
+                    // Throttle progress to every 10 chunks (or the final one)
+                    // so UI updates stay cheap on big corpora.
+                    if (done % 10 == 0 || done == total)
+                    {
+                        progress?.Report(new LegacyMd5BackfillProgress(
+                            done, total,
+                            Volatile.Read(ref promoted),
+                            Volatile.Read(ref failed)));
+                    }
+                }
+            });
+
+        Log($"BackfillLegacyMd5Async: complete -- promoted={promoted}, failed={failed} of {total}");
+        return new LegacyMd5BackfillResult
+        {
+            Total = total,
+            Promoted = promoted,
+            Failed = failed,
+            FailedChunkHashes = failedHashes
+        };
+    }
+
+    /// <summary>
     /// T1 + T2 + T3 escalation for a single file. Returns the failures
     /// produced; an empty list means the file is clean.
     /// </summary>
@@ -622,16 +732,31 @@ public sealed class IntegrityCheckService
     }
 
     /// <summary>
-    /// D7 review fix 1.9: build a JSON detail object via the system
-    /// serializer so unusual filenames / exception messages with
-    /// backslashes, quotes, control characters, or non-ASCII don't
-    /// produce invalid JSON. Replaces ~10 hand-rolled $"{{\"...\":..."}}
-    /// sites that were collectively hard to audit.
+    /// D7 review fix 1.9 (refined by I4): build a JSON detail object
+    /// via System.Text.Json so unusual filenames / exception messages
+    /// with backslashes, quotes, control characters, or non-ASCII
+    /// don't produce invalid JSON. Uses <see cref="JsonObject"/>
+    /// rather than <c>Dictionary&lt;string,object?&gt;</c> so the
+    /// enumeration order is contractually insertion-order
+    /// (Dictionary's order is implementation-defined, even if it
+    /// happens to be insertion-order in modern .NET).
     /// </summary>
     private static string Detail(params (string key, object? value)[] pairs)
     {
-        var dict = new Dictionary<string, object?>(pairs.Length);
-        foreach (var (k, v) in pairs) dict[k] = v;
-        return System.Text.Json.JsonSerializer.Serialize(dict);
+        var node = new System.Text.Json.Nodes.JsonObject();
+        foreach (var (k, v) in pairs)
+        {
+            node[k] = v switch
+            {
+                null => null,
+                string s => s,
+                int i => i,
+                long l => l,
+                bool b => b,
+                double d => d,
+                _ => v.ToString()
+            };
+        }
+        return node.ToJsonString();
     }
 }
