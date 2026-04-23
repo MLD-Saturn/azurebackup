@@ -96,20 +96,9 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private ExpectedMd5Drain? _expectedMd5Drain;
 
     /// <summary>
-    /// Window title including mode indicator (Portable or Installed) and
-    /// the build configuration when DIAGNOSTICLOG is enabled. B16: a
-    /// tester who launches a Release exe by accident (no logging, no
-    /// .log file produced) can immediately tell from the title bar
-    /// that they are running a non-instrumented build, instead of
-    /// concluding the logging subsystem itself is broken. Release
-    /// builds show the plain title with no decoration.
+    /// Window title including mode indicator (Portable or Installed).
     /// </summary>
-    public string WindowTitle =>
-#if DIAGNOSTICLOG
-        $"Azure Backup - Encrypted Cloud Backup{AppMode.WindowTitleSuffix} [DEBUG/DIAG ON]";
-#else
-        $"Azure Backup - Encrypted Cloud Backup{AppMode.WindowTitleSuffix}";
-#endif
+    public string WindowTitle => $"Azure Backup - Encrypted Cloud Backup{AppMode.WindowTitleSuffix}";
 
     /// <summary>
     /// Gets whether the app is running in portable mode.
