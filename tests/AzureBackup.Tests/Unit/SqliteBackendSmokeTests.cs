@@ -1,4 +1,5 @@
 using AzureBackup.Core;
+using AzureBackup.Core.Models;
 using AzureBackup.Core.Services;
 using AzureBackup.Core.Services.Backends;
 using Xunit;
@@ -189,5 +190,127 @@ public class SqliteBackendSmokeTests : IDisposable
 
         Assert.NotNull(result);
         Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task ParallelSaveBackedUpFile_DoesNotProduceNestedTransactionOrRaceErrors()
+    {
+        // B18 regression: drive the same code path the BackupOrchestrator's
+        // Parallel.ForEachAsync loop hits at MaxParallelFileBackups=8.
+        // Pre-B18 the InWriteLock helper relied on the OUTER null-check
+        // staying valid for the duration of the locked section, which is
+        // false if a racing Close() ran between the check and
+        // EnterWriteLock. The lock itself already serialised the
+        // BeginTransaction calls (proven by the architecture review), so
+        // the only NEW failure mode this test detects is a concurrent
+        // backup workload OOM-ing or throwing nested-transaction errors
+        // under heavy contention. With 8 workers x 50 files each = 400
+        // SaveBackedUpFile calls in flight, any architectural mistake in
+        // the lock handling surfaces here.
+        using var backend = new SqliteBackend();
+        backend.Initialize(_dbPath, "ParallelSavePassword123!".AsSpan());
+
+        const int workerCount = 8;
+        const int filesPerWorker = 50;
+        var workers = Enumerable.Range(0, workerCount).Select(workerId =>
+            Task.Run(() =>
+            {
+                for (var i = 0; i < filesPerWorker; i++)
+                {
+                    backend.SaveBackedUpFile(new BackedUpFile
+                    {
+                        LocalPath = $@"C:\test\worker{workerId}\file{i}.bin",
+                        BlobName = $"blob/{workerId}/{i}",
+                        FileSize = 1024 * (i + 1),
+                        LastModified = DateTime.UtcNow,
+                        FileHash = $"hash-{workerId}-{i}",
+                        Status = BackupStatus.Completed,
+                        BackedUpAt = DateTime.UtcNow,
+                        Chunks =
+                        {
+                            new ChunkInfo
+                            {
+                                Index = 0,
+                                Offset = 0,
+                                Length = 1024,
+                                Hash = $"chunk-{workerId}-{i}",
+                                BlobName = $"chunks/{workerId}/{i}",
+                            },
+                        },
+                    });
+                }
+            })).ToArray();
+
+        await Task.WhenAll(workers);
+
+        // Sanity: every file landed.
+        var all = backend.GetAllBackedUpFiles();
+        Assert.Equal(workerCount * filesPerWorker, all.Count);
+    }
+
+    [Fact]
+    public async Task Close_DuringParallelSaveBackedUpFile_DoesNotNullRefOrThrowFromCloseSide()
+    {
+        // B18 regression: pre-B18 Close() did NOT acquire the write lock,
+        // so a racing SaveBackedUpFile could deref a null _connection
+        // between its outer null-check and the inner BeginTransaction --
+        // producing an opaque NullReferenceException with no
+        // diagnostic context. Post-B18 either:
+        //   (a) the writer finishes its transaction first and the
+        //       Close acquires the lock cleanly, OR
+        //   (b) the Close acquires first and the writer sees the
+        //       null _connection through the InWriteLock post-lock
+        //       re-check, surfacing a typed
+        //       InvalidOperationException("Backend was closed before
+        //       this writer could run.").
+        // Either outcome is acceptable. The forbidden outcomes are
+        // NullReferenceException and ObjectDisposedException leaking
+        // out of either side.
+        using var backend = new SqliteBackend();
+        backend.Initialize(_dbPath, "CloseRacePassword123!".AsSpan());
+
+        var writerExceptions = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+
+        // 4 writer tasks racing the Close on a separate thread.
+        var writers = Enumerable.Range(0, 4).Select(workerId =>
+            Task.Run(() =>
+            {
+                for (var i = 0; i < 25; i++)
+                {
+                    try
+                    {
+                        backend.SaveBackedUpFile(new BackedUpFile
+                        {
+                            LocalPath = $@"C:\race\w{workerId}\f{i}.bin",
+                            BlobName = $"blob/{workerId}/{i}",
+                            FileSize = 100,
+                            LastModified = DateTime.UtcNow,
+                            FileHash = $"h-{workerId}-{i}",
+                            Status = BackupStatus.Completed,
+                            BackedUpAt = DateTime.UtcNow,
+                        });
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Acceptable: hit the "backend closed" or
+                        // "not initialized" guard after Close.
+                    }
+                    catch (Exception ex)
+                    {
+                        writerExceptions.Enqueue(ex);
+                    }
+                }
+            })).ToArray();
+
+        // Give the writers a head start, then close concurrently.
+        await Task.Delay(5);
+        backend.Close();
+
+        await Task.WhenAll(writers);
+
+        // No NRE / ObjectDisposedException should escape.
+        Assert.True(writerExceptions.IsEmpty,
+            "Writers leaked unexpected exceptions: " +
+            string.Join(" | ", writerExceptions.Select(e => $"{e.GetType().Name}: {e.Message}")));
     }
 }

@@ -70,10 +70,25 @@ internal sealed class SqliteBackend : IDatabaseBackend
     /// and releases the lock - including on exceptions. Centralises the
     /// try/finally pattern so individual writers stay readable.
     /// </summary>
+    /// <remarks>
+    /// B18: re-checks <see cref="_connection"/> AFTER acquiring the lock
+    /// so a writer that passed its outer null-check before a racing
+    /// <see cref="Close"/> tore the connection down sees a clean
+    /// <see cref="InvalidOperationException"/> instead of a
+    /// <see cref="NullReferenceException"/> on the first command.
+    /// Without this guard the parallel backup loop
+    /// (<c>BackupOrchestrator.RunBackupLoopAsync</c>) could deref a null
+    /// connection if the user closed the database mid-backup.
+    /// </remarks>
     private void InWriteLock(Action action)
     {
         _writeLock.EnterWriteLock();
-        try { action(); }
+        try
+        {
+            if (_connection == null)
+                throw new InvalidOperationException("Backend was closed before this writer could run.");
+            action();
+        }
         finally { _writeLock.ExitWriteLock(); }
     }
 
@@ -84,7 +99,12 @@ internal sealed class SqliteBackend : IDatabaseBackend
     private T InWriteLock<T>(Func<T> action)
     {
         _writeLock.EnterWriteLock();
-        try { return action(); }
+        try
+        {
+            if (_connection == null)
+                throw new InvalidOperationException("Backend was closed before this writer could run.");
+            return action();
+        }
         finally { _writeLock.ExitWriteLock(); }
     }
 
@@ -2153,6 +2173,57 @@ internal sealed class SqliteBackend : IDatabaseBackend
     /// </summary>
     public void Close()
     {
+        // B18: serialize against in-flight writers. Pre-B18 a user-driven
+        // Close (e.g. clicking "Lock app" or shutting down) could race
+        // the parallel backup loop's SaveBackedUpFile / SaveChunkIndexEntry
+        // workers: the worker passed its outer (_connection == null) check
+        // and was about to call _connection.BeginTransaction() when this
+        // method's _connection.Dispose() ran -- producing an opaque
+        // NullReferenceException or ObjectDisposedException with no
+        // diagnostic context. Now the worker either finishes its
+        // transaction first, or sees the cleaned-up _connection through
+        // InWriteLock's post-lock re-check and surfaces a typed
+        // InvalidOperationException("Backend was closed before this
+        // writer could run.").
+        //
+        // Two safety guarantees this method preserves:
+        // 1. Never throws (the catch wraps everything; pre-B18 contract).
+        // 2. Idempotent (safe to call multiple times; second call is a no-op).
+        try
+        {
+            // EnterWriteLock itself can throw ObjectDisposedException
+            // if the caller has already Disposed the backend (legal under
+            // a paranoid double-dispose). In that case we have nothing to
+            // checkpoint anyway -- _connection is null on the second call.
+            _writeLock.EnterWriteLock();
+        }
+        catch
+        {
+            // Lock unavailable (already disposed). Fall through to the
+            // best-effort dispose path; if _connection is also already
+            // null we'll just exit.
+            CloseConnectionInternal();
+            return;
+        }
+
+        try
+        {
+            CloseConnectionInternal();
+        }
+        finally
+        {
+            try { _writeLock.ExitWriteLock(); } catch { /* lock already gone */ }
+        }
+    }
+
+    /// <summary>
+    /// B18: shared body for <see cref="Close"/>. Assumes the caller
+    /// holds the write lock (or has decided proceeding without it is
+    /// safe because the lock is already disposed). Best-effort
+    /// checkpoint + dispose; never throws.
+    /// </summary>
+    private void CloseConnectionInternal()
+    {
         if (_connection != null)
         {
             // Force a final WAL checkpoint so the next open is fast and the
@@ -2168,7 +2239,7 @@ internal sealed class SqliteBackend : IDatabaseBackend
                 // Best-effort; never throw from Close.
             }
 
-            _connection.Dispose();
+            try { _connection.Dispose(); } catch { /* terminal best-effort */ }
             _connection = null;
         }
     }
