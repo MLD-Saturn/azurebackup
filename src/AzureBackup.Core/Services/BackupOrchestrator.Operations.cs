@@ -279,14 +279,26 @@ public partial class BackupOrchestrator
 
             Metrics?.RecordContext("mirror-to-azure", config.MemoryLimitEnabled ? config.MemoryLimitMB : 0, config.MemoryLimitEnabled);
 
-            // Adapt BackupFilesCoreAsync progress to the mirror progress format
+            // Adapt BackupFilesCoreAsync progress to the mirror progress format.
+            // B19: the inner tuple's fileIndex is now a STABLE per-file id
+            // (the file's slot in filesToBackup), no longer a running
+            // completion counter. The mirror UI wants "operation X of M"
+            // where X advances by one per file COMPLETED. We track that
+            // ourselves and only push a mirror line on completion reports
+            // (detected by currentFileBytes == currentFileSize); per-byte
+            // callbacks are absorbed without spamming the top-line string.
             var backupBaseOp = result.FilesUnchanged;
+            var mirrorCompleted = 0;
             var adaptedProgress = progress != null
                 ? new Progress<(int fileIndex, int totalFiles, string fileName,
                     long bytesProcessed, long totalBytes,
                     long currentFileBytes, long currentFileSize)>(p =>
                 {
-                    progress.Report((backupBaseOp + p.fileIndex + 1, totalOperations, p.fileName, "Backing up"));
+                    if (p.currentFileBytes >= p.currentFileSize)
+                    {
+                        var ops = Interlocked.Increment(ref mirrorCompleted);
+                        progress.Report((backupBaseOp + ops, totalOperations, p.fileName, "Backing up"));
+                    }
                 })
                 : null;
 
@@ -536,7 +548,16 @@ public partial class BackupOrchestrator
     /// Backs up specific files to Azure using parallel file processing.
     /// </summary>
     /// <param name="filePaths">List of file paths to backup</param>
-    /// <param name="progress">Progress reporter with file index, total files, file name, overall bytes, total bytes, current file bytes, current file size</param>
+    /// <param name="progress">
+    /// Progress reporter. <c>fileIndex</c> is the file's STABLE position
+    /// in <paramref name="filePaths"/> -- safe to use as the key for a
+    /// per-file UI row across the file's entire lifetime, even when
+    /// multiple workers report concurrently. The other tuple fields are:
+    /// <c>totalFiles</c> (overall count), <c>fileName</c>, <c>bytesProcessed</c>
+    /// (sum across all files), <c>totalBytes</c> (sum of all file sizes),
+    /// <c>currentFileBytes</c> (this file's progress so far), and
+    /// <c>currentFileSize</c> (this file's full size).
+    /// </param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task BackupFilesAsync(
         IList<string> filePaths,
@@ -657,14 +678,27 @@ public partial class BackupOrchestrator
         }
 
         await Parallel.ForEachAsync(
-            filePaths,
+            // B19: project to (filePath, fileIndex) so each parallel worker
+            // has a STABLE per-file identifier independent of completion
+            // order. Pre-B19 we passed (int)completedFiles.Read() as the
+            // fileIndex, which all 8 in-flight workers saw as the same
+            // value at the moment they fired their first progress callback
+            // -- the UI's startedFiles.TryAdd then suppressed every file
+            // after the first, and FindActiveFile(0) updated the wrong row
+            // when later files reported byte progress. The fix is the
+            // smallest possible: hand each file its index in the input
+            // list ONCE at iteration time and let it carry that index for
+            // its entire lifetime.
+            filePaths.Select((path, idx) => (path, idx)),
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = MaxParallelFileBackups,
                 CancellationToken = cancellationToken
             },
-            async (filePath, ct) =>
+            async (item, ct) =>
             {
+                var filePath = item.path;
+                var fileIndex = item.idx;
                 var fileName = Path.GetFileName(filePath);
 
                 try
@@ -688,8 +722,13 @@ public partial class BackupOrchestrator
                         if (delta > 0)
                             processedBytes.Add(delta);
 
+                        // B19: emit the file's own STABLE index as fileIndex.
+                        // The first tuple element used to be the running
+                        // count of completed files (a UI-counter value that
+                        // collided across workers); now it's the per-file
+                        // identity the UI keys ActiveFiles rows on.
                         progress?.Report((
-                            (int)completedFiles.Read(), totalFiles, fileName,
+                            fileIndex, totalFiles, fileName,
                             processedBytes.Read(), totalBytes,
                             p.current, currentFileSize));
                     });
@@ -708,8 +747,11 @@ public partial class BackupOrchestrator
                         Log($"BackupFilesCoreAsync: [{done}/{totalFiles}] Successfully backed up: {fileName}");
                         _databaseService.RemovePendingChange(filePath);
 
+                        // B19: the FINAL completion report also carries the
+                        // file's own stable index so the UI can match it
+                        // against the FileStarted row instead of guessing.
                         progress?.Report((
-                            (int)done, totalFiles, fileName,
+                            fileIndex, totalFiles, fileName,
                             processedBytes.Read(), totalBytes,
                             currentFileSize, currentFileSize));
                     }

@@ -810,6 +810,94 @@ public class BackupOrchestratorTests : IAsyncLifetime
     }
 
     #endregion
+
+    #region B19: Stable per-file index in parallel backup progress
+
+    /// <summary>
+    /// B19 regression: BackupFilesAsync's progress callback must report a
+    /// STABLE per-file index for each file (the file's slot in the input
+    /// list), not a value derived from the running completed-files
+    /// counter shared across all parallel workers.
+    /// <para>
+    /// Pre-B19 every in-flight worker reported (int)completedFiles.Read()
+    /// as <c>fileIndex</c>. With 8 parallel workers, 8 distinct files
+    /// could fire their FIRST callback all reporting fileIndex=0, and the
+    /// UI's startedFiles.TryAdd then admitted only one row to the Active
+    /// Files panel. The other 7 files were silently dropped, and any
+    /// later byte-progress callback they emitted updated the wrong row.
+    /// </para>
+    /// <para>
+    /// This test creates 8 files large enough that each takes multiple
+    /// progress callbacks, runs BackupFilesAsync with the parallel
+    /// backup loop active, and asserts that:
+    /// <list type="number">
+    ///   <item>Every file's index in the input list appears in at least
+    ///     one progress report (no file dropped).</item>
+    ///   <item>For each fileIndex value, the (fileName, currentFileSize)
+    ///     pair is consistent across every report (no two files share
+    ///     the same index).</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task BackupFilesAsync_ParallelBackup_ReportsDistinctStableFileIndexPerFile()
+    {
+        // Arrange: 8 files = MaxParallelFileBackups so all run concurrently.
+        // Each file is 2 MB to guarantee multiple chunk-progress callbacks.
+        await _orchestrator.InitializeAsync(TestPassword);
+        var files = new List<string>();
+        for (var i = 0; i < 8; i++)
+        {
+            var path = Path.Combine(_sourceDirectory, $"parallel_{i}.bin");
+            await File.WriteAllBytesAsync(path, CreateRandomContent(2 * 1024 * 1024));
+            files.Add(path);
+        }
+
+        // Capture every progress report.
+        var reports = new ConcurrentBag<(int fileIndex, string fileName, long currentFileSize)>();
+        var progress = new Progress<(int fileIndex, int totalFiles, string fileName,
+            long bytesProcessed, long totalBytes,
+            long currentFileBytes, long currentFileSize)>(p =>
+        {
+            reports.Add((p.fileIndex, p.fileName, p.currentFileSize));
+        });
+
+        // Act
+        await _orchestrator.BackupFilesAsync(files, progress);
+
+        // Allow Progress<T> dispatcher continuations to drain.
+        await Task.Delay(100);
+
+        var captured = reports.ToList();
+        Assert.NotEmpty(captured);
+
+        // Assert 1: every input file's index appears at least once.
+        var seenIndices = captured.Select(r => r.fileIndex).Distinct().ToHashSet();
+        for (var i = 0; i < files.Count; i++)
+        {
+            Assert.Contains(i, seenIndices);
+        }
+
+        // Assert 2: each fileIndex maps to exactly one (fileName, size).
+        // A pre-B19 collision would map several files onto the same
+        // fileIndex value, producing more than one distinct fileName for
+        // that index.
+        var groupedByIndex = captured.GroupBy(r => r.fileIndex);
+        foreach (var group in groupedByIndex)
+        {
+            var distinctFileNames = group.Select(r => r.fileName).Distinct().ToList();
+            Assert.True(distinctFileNames.Count == 1,
+                $"fileIndex {group.Key} reported by multiple distinct files: " +
+                string.Join(", ", distinctFileNames));
+
+            var distinctSizes = group.Select(r => r.currentFileSize).Distinct().ToList();
+            Assert.True(distinctSizes.Count == 1,
+                $"fileIndex {group.Key} reported with multiple distinct sizes: " +
+                string.Join(", ", distinctSizes));
+        }
+    }
+
+    #endregion
 }
 
 /// <summary>
