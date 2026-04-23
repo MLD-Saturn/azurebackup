@@ -1,0 +1,136 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:AzureBackup.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="700"
+             x:Class="AzureBackup.Views.DataIntegrityView"
+             x:DataType="vm:DataIntegrityViewModel">
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto,*">
+        <!-- Header -->
+        <Border Grid.Row="0" Classes="card" Margin="0,0,0,8">
+            <StackPanel Orientation="Vertical" Spacing="4">
+                <TextBlock Text="Data Integrity Check" FontSize="20" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding StatusMessage}" Opacity="0.85" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Scope panel: dropdown + auto-export toggle + action buttons -->
+        <Border Grid.Row="1" Classes="card" Margin="0,0,0,8">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Scope:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Grid.Row="0" Grid.Column="1"
+                          ItemsSource="{Binding ScopeOptions}"
+                          SelectedItem="{Binding SelectedScopePreset, Mode=TwoWay}"
+                          MinWidth="240" HorizontalAlignment="Left"/>
+                <CheckBox Grid.Row="0" Grid.Column="2"
+                          Content="Auto-export bundle on failure"
+                          IsChecked="{Binding AutoExportBundleOnFailure}"
+                          ToolTip.Tip="When any failure occurs, automatically write a diagnostic bundle ZIP next to the data directory."
+                          Margin="16,0,16,0" VerticalAlignment="Center"/>
+                <Button Grid.Row="0" Grid.Column="3" Content="Check Now"
+                        Command="{Binding CheckNowCommand}" Margin="0,0,8,0"/>
+                <Button Grid.Row="0" Grid.Column="4" Content="Cancel"
+                        Command="{Binding CancelCommand}"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5"
+                           Margin="0,8,0,0" Opacity="0.7" FontSize="12"
+                           Text="{Binding SelectedFileCount, StringFormat='{}{0} file(s) selected. Choosing a preset auto-checks matching files; toggling files manually switches the dropdown to (Custom selection).'}"/>
+            </Grid>
+        </Border>
+
+        <!-- File tree panel -->
+        <Border Grid.Row="2" Classes="card" Margin="0,0,0,8">
+            <Grid RowDefinitions="Auto,*">
+                <TextBlock Grid.Row="0" Text="Files in scope" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                <TreeView Grid.Row="1"
+                          ItemsSource="{Binding FileTreeRoots}">
+                    <TreeView.ItemContainerTheme>
+                        <ControlTheme TargetType="TreeViewItem"
+                                      BasedOn="{StaticResource {x:Type TreeViewItem}}"
+                                      x:DataType="vm:IntegrityFileTreeNodeViewModel">
+                            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                        </ControlTheme>
+                    </TreeView.ItemContainerTheme>
+                    <TreeView.ItemTemplate>
+                        <TreeDataTemplate ItemsSource="{Binding Children}">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                                <CheckBox IsChecked="{Binding IsSelected}" Margin="0,0,4,0" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                           VerticalAlignment="Center"
+                                           ToolTip.Tip="{Binding FullPath}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding FolderSummary}"
+                                           Opacity="0.6" FontSize="11" Margin="8,0,0,0"
+                                           IsVisible="{Binding IsFolder}" VerticalAlignment="Center"/>
+                            </Grid>
+                        </TreeDataTemplate>
+                    </TreeView.ItemTemplate>
+                </TreeView>
+            </Grid>
+        </Border>
+
+        <!-- Progress strip -->
+        <Border Grid.Row="3" Classes="card" Margin="0,0,0,8"
+                IsVisible="{Binding IsOperationInProgress}">
+            <StackPanel Orientation="Vertical" Spacing="4">
+                <TextBlock Text="{Binding ProgressText}" FontSize="12"/>
+                <ProgressBar Value="{Binding ProgressValue}" Maximum="100" Height="8"/>
+                <TextBlock FontSize="11" Opacity="0.7">
+                    <Run Text="T1 fail: "/><Run Text="{Binding T1FailCount}"/>
+                    <Run Text="   T2 fail: "/><Run Text="{Binding T2FailCount}"/>
+                    <Run Text="   T3 fail: "/><Run Text="{Binding T3FailCount}"/>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <!-- Result panel: failures + history expander -->
+        <Border Grid.Row="4" Classes="card">
+            <Grid RowDefinitions="Auto,*,Auto">
+                <TextBlock Grid.Row="0" Text="Failures (latest run)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                <ScrollViewer Grid.Row="1">
+                    <ItemsControl ItemsSource="{Binding FailureGroups}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:IntegrityFailureGroupViewModel">
+                                <Expander Header="{Binding Header}" IsExpanded="True" Margin="0,2">
+                                    <ItemsControl ItemsSource="{Binding Items}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:IntegrityFailureItemViewModel">
+                                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="20,2,0,2">
+                                                    <StackPanel Grid.Column="0" Orientation="Vertical">
+                                                        <TextBlock Text="{Binding DisplayPath}"
+                                                                   ToolTip.Tip="{Binding DisplayPath}"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock FontSize="11" Opacity="0.7">
+                                                            <Run Text="{Binding Reason}"/>
+                                                            <Run Text=" -- "/>
+                                                            <Run Text="{Binding ChunkLabel}"/>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    <TextBlock Grid.Column="1" Text="{Binding DiagPath}"
+                                                               FontSize="10" Opacity="0.5" Margin="8,0"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Expander>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <Expander Grid.Row="2" Header="History (last 10 runs)" Margin="0,8,0,0"
+                          IsVisible="{Binding HasRunHistory}">
+                    <ItemsControl ItemsSource="{Binding RunHistory}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:IntegrityCheckRunViewModel">
+                                <TextBlock Text="{Binding Header}" Margin="2" FontFamily="Consolas,monospace" FontSize="11"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Expander>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

@@ -32,6 +32,10 @@
                             ToolTip.Tip="Configure Azure connection and watched folders"/>
                     <Button Content="Logs" Command="{Binding NavigateToCommand}" CommandParameter="Logs" Classes="nav"
                             ToolTip.Tip="View application logs"/>
+                    <!-- Data Integrity tab (D2): hidden until first opened from Storage Health, then persists. -->
+                    <Button Content="Data Integrity" Command="{Binding NavigateToCommand}" CommandParameter="DataIntegrity" Classes="nav"
+                            IsVisible="{Binding ShowDataIntegrityNavButton}"
+                            ToolTip.Tip="Post-backup data integrity check results and history"/>
                     <!-- Progress tab button — only visible during active operations -->
                     <Button Command="{Binding NavigateToCommand}" CommandParameter="Progress" Classes="nav"
                             IsVisible="{Binding ShowProgressNavButton}"
@@ -133,6 +137,22 @@
                 <ContentControl.ContentTemplate>
                     <DataTemplate x:DataType="vm:TierMigrationViewModel">
                         <views:TierMigrationView/>
+                    </DataTemplate>
+                </ContentControl.ContentTemplate>
+            </ContentControl>
+
+            <!-- Data Integrity View (D2) -->
+            <ContentControl Content="{Binding DataIntegrityTabVm}">
+                <ContentControl.IsVisible>
+                    <Binding Path="CurrentView">
+                        <Binding.Converter>
+                            <vm:EqualityConverter CompareValue="DataIntegrity"/>
+                        </Binding.Converter>
+                    </Binding>
+                </ContentControl.IsVisible>
+                <ContentControl.ContentTemplate>
+                    <DataTemplate x:DataType="vm:DataIntegrityViewModel">
+                        <views:DataIntegrityView/>
                     </DataTemplate>
                 </ContentControl.ContentTemplate>
             </ContentControl>

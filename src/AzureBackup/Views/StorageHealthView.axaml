@@ -24,6 +24,9 @@
                         <Button Content="Rebuild Index" Command="{Binding RebuildIndexCommand}"
                                 IsEnabled="{Binding CanRunOperations}"
                                 ToolTip.Tip="Rebuild chunk index from Azure metadata"/>
+                        <Button Content="Check Data Integrity" Command="{Binding CheckDataIntegrityCommand}"
+                                IsEnabled="{Binding CanRunOperations}"
+                                ToolTip.Tip="Open the Data Integrity tab to verify backed-up files against Azure storage. The tab persists for the rest of the session so you can return to historical results."/>
                         <Button Content="Cancel" Command="{Binding CancelOperationCommand}"
                                 IsVisible="{Binding IsOperationInProgress}"/>
                     </StackPanel>

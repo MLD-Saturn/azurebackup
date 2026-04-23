@@ -63,6 +63,25 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     public TierMigrationViewModel? TierMigrationViewModel { get; private set; }
 
     /// <summary>
+    /// ViewModel for the Data Integrity tab (D2). Created lazily on first
+    /// "Check Data Integrity" click from the Storage Health tab so the
+    /// nav button (and its subtree) does not exist until the user opts in.
+    /// Once shown the tab persists for the rest of the app session per the
+    /// design discussion.
+    /// </summary>
+    [ObservableProperty]
+    private DataIntegrityViewModel? _dataIntegrityTabVm;
+
+    /// <summary>
+    /// Drives the visibility of the "Data Integrity" nav button.
+    /// True once the user has opened the tab at least once.
+    /// </summary>
+    [ObservableProperty]
+    private bool _showDataIntegrityNavButton;
+
+    private IntegrityCheckService? _integrityService;
+
+    /// <summary>
     /// Window title including mode indicator (Portable or Installed).
     /// </summary>
     public string WindowTitle => $"Azure Backup - Encrypted Cloud Backup{AppMode.WindowTitleSuffix}";
@@ -733,6 +752,21 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         
         // Initialize Storage Health ViewModel
         StorageHealthViewModel = new StorageHealthViewModel(_chunkIndexService, _databaseService);
+        StorageHealthViewModel.OpenDataIntegrityRequested += (_, _) => OpenDataIntegrityTab();
+
+        // Initialize the integrity-check engine -- shared across runs of the
+        // tab. Wire the diagnostics directory + session id so per-file
+        // .diag files land in the same place the X4 bundle picks up, and
+        // so the run row carries a SessionId that correlates with logs.
+        _integrityService = new IntegrityCheckService(_databaseService, _blobService, _encryptionService)
+        {
+            DiagnosticsDirectory = System.IO.Path.Combine(AppMode.DataDirectory, "diagnostics"),
+            SessionId = Program.Logger?.SessionId ?? Guid.Empty
+        };
+        if (Program.Logger != null)
+        {
+            _integrityService.DiagnosticLog += (_, msg) => Program.Logger.Log(msg);
+        }
 
         // Initialize Tier Migration ViewModel
         TierMigrationViewModel = new TierMigrationViewModel(_blobService, _chunkIndexService, msg => AddLog(msg));
@@ -1254,5 +1288,46 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         _databaseService.Dispose();
         _fileWatcherService.Dispose();
         _throughputMetrics.Dispose();
+        DataIntegrityTabVm?.Dispose();
+    }
+
+    /// <summary>
+    /// Lazily creates the Data Integrity ViewModel on first request and
+    /// switches the main view to it. Subsequent calls reuse the existing
+    /// instance so persisted scope selection and history survive
+    /// navigation.
+    /// </summary>
+    private void OpenDataIntegrityTab()
+    {
+        if (_integrityService == null) return;
+
+        if (DataIntegrityTabVm == null)
+        {
+            var vm = new DataIntegrityViewModel(_integrityService, _databaseService)
+            {
+                SessionStartUtc = Program.Logger?.SessionStartUtc ?? DateTime.UtcNow
+            };
+            // Bridge: when a check completes, switch to the tab (in case
+            // user navigated away mid-run) and post a status line so the
+            // notification is visible even if the tab is not in focus.
+            vm.CheckCompleted += (_, e) =>
+            {
+                var totalFailures = e.Result.Run.FilesFailedT1 + e.Result.Run.FilesFailedT2 + e.Result.Run.FilesFailedT3;
+                var summary = totalFailures == 0
+                    ? $"Integrity check OK -- {e.Result.Run.FilesChecked} files passed."
+                    : $"Integrity check found {totalFailures} failures across {e.Result.Run.FilesChecked} files.";
+                AddLog(summary);
+                StatusMessage = summary;
+                CurrentView = "DataIntegrity";
+            };
+            DataIntegrityTabVm = vm;
+            ShowDataIntegrityNavButton = true;
+            // Fire-and-forget the initial tree population so opening the
+            // tab is instant; the file list appears as soon as the DB
+            // read finishes.
+            _ = vm.RefreshFileTreeAsync();
+        }
+
+        CurrentView = "DataIntegrity";
     }
 }

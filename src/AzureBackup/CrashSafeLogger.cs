@@ -31,6 +31,14 @@ public sealed class CrashSafeLogger : IDisposable
     /// </summary>
     public Guid SessionId { get; } = Guid.NewGuid();
 
+    /// <summary>
+    /// UTC timestamp at which this logger (and therefore the app session)
+    /// started. Used by D2's <c>DataIntegrityViewModel</c> as the anchor
+    /// for the "This session" scope preset: any backed-up file with
+    /// <c>BackedUpAt &gt;= SessionStartUtc</c> is considered in-scope.
+    /// </summary>
+    public DateTime SessionStartUtc { get; } = DateTime.UtcNow;
+
     public CrashSafeLogger()
     {
         var logDir = AppMode.DataDirectory;

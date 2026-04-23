@@ -320,6 +320,26 @@ public partial class StorageHealthViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// Raised when the user clicks "Check Data Integrity" -- the host
+    /// (<see cref="MainWindowViewModel"/>) responds by ensuring the
+    /// Data Integrity tab exists and switching focus to it. This view-
+    /// model deliberately does NOT hold a reference to MainWindowViewModel
+    /// to keep the dependency direction one-way (host owns this VM).
+    /// </summary>
+    public event System.EventHandler? OpenDataIntegrityRequested;
+
+    /// <summary>
+    /// Switches focus to (or creates on first click) the Data Integrity
+    /// tab. The tab persists indefinitely once shown so the tester can
+    /// return to historical results without re-running the check.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanRunOperations))]
+    private void CheckDataIntegrity()
+    {
+        OpenDataIntegrityRequested?.Invoke(this, System.EventArgs.Empty);
+    }
+
+    /// <summary>
     /// Rebuilds the chunk index from Azure metadata.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanRunOperations))]
