@@ -228,5 +228,24 @@ public interface IBlobStorageService : IAsyncDisposable
     /// <exception cref="HashCollisionException">Thrown if hash matches but data differs (extremely rare)</exception>
     Task<bool> VerifyChunkIntegrityAsync(string chunkHash, ReadOnlyMemory<byte> expectedData, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// D6: optional callback invoked after a successful chunk upload with
+    /// the chunk hash and the MD5 of the encrypted bytes that were
+    /// actually stored. Used by the integrity-check engine (via
+    /// <see cref="LocalDatabaseService.SetChunkExpectedMd5"/>) to capture
+    /// the upload-time MD5 so future T1 checks can detect same-size
+    /// post-upload corruption. Null callback = no-op (legacy behaviour).
+    /// </summary>
+    /// <remarks>
+    /// The callback runs synchronously on the upload thread immediately
+    /// after the bytes hit storage. Implementations should keep it cheap
+    /// and side-effect-free with respect to the upload contract; failure
+    /// in the callback should NOT roll back the upload (which already
+    /// succeeded). Wiring is via the application composition root
+    /// (MainWindowViewModel) where both the blob service and the
+    /// database service are constructed.
+    /// </remarks>
+    Action<string, byte[]>? OnChunkUploaded { get; set; }
+
     #endregion
 }

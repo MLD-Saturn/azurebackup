@@ -843,5 +843,31 @@ public partial class LocalDatabaseService : IDisposable
     /// </summary>
     public bool IntegrityCheckSupported => _sqliteBackend != null;
 
+    /// <summary>
+    /// D6: persists the upload-time encrypted-blob MD5 for a chunk so
+    /// the cheap T1 integrity tier can compare against the live
+    /// Azure-side ContentHash. SQLite-only; no-op on the LiteDB legacy
+    /// backend (matches the broader integrity-feature contract).
+    /// </summary>
+    public void SetChunkExpectedMd5(string chunkHash, byte[] md5)
+    {
+        if (_sqliteBackend != null)
+        {
+            _sqliteBackend.SetChunkExpectedMd5(chunkHash, md5);
+        }
+        // LiteDB no-op: the integrity feature is unsupported on LiteDB
+        // and the schema has no column for the value.
+    }
+
+    /// <summary>
+    /// D6: returns the persisted MD5 for a chunk, or null if not present.
+    /// Null on LiteDB (integrity feature unsupported) and on SQLite when
+    /// the chunk was uploaded before D6.
+    /// </summary>
+    public byte[]? GetChunkExpectedMd5(string chunkHash)
+    {
+        return _sqliteBackend?.GetChunkExpectedMd5(chunkHash);
+    }
+
     #endregion
 }

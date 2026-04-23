@@ -49,6 +49,11 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
         _blobService = new InMemoryBlobService(_encryptionService);
         _databaseService = new LocalDatabaseService();
         _databaseService.Initialize(_dbPath, TestPassword);
+        // D6: wire the upload-time MD5 capture (mirrors MainWindowViewModel
+        // composition root) so the cheap T1 integrity tier has a baseline
+        // to compare future Azure ContentHash values against.
+        _blobService.OnChunkUploaded = (chunkHash, md5) =>
+            _databaseService.SetChunkExpectedMd5(chunkHash, md5);
         _fileWatcherService = new FileWatcherService(_databaseService);
 
         _orchestrator = new BackupOrchestrator(
@@ -202,40 +207,137 @@ public class IntegrityCheckServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task EnvelopeCorruption_SameSize_T1Passes_KnownLimitation()
+    public async Task EnvelopeCorruption_SameSize_NowDetectedAtT1_ViaMd5()
     {
-        // KNOWN LIMITATION (D6 follow-up): the cheap T1 (HEAD-only) tier
-        // cannot detect envelope-internal corruption when the encrypted
-        // blob length is unchanged. T1 currently fetches ContentLength
-        // and Azure-side ContentHash via GetChunkPropertiesAsync but
-        // DISCARDS the hash because the engine has nowhere to compare
-        // it against -- the upload-time MD5 is not persisted in the
-        // local DB. To catch the production CRC bug from this cheap
-        // tier we would need to persist that MD5 at backup time and add
-        // an MD5 comparison to T1. This test pins the current behaviour
-        // so a future change is loud.
+        // D6: T1 now compares persisted upload-time MD5 against the live
+        // Azure-side ContentHash. A byte flipped deep inside the
+        // encrypted payload changes the MD5 even though the size is
+        // unchanged, so T1 trips with reason="md5-mismatch" and
+        // escalates to T2/T3 for full envelope evidence.
+        // Pre-D6 this test was the limitation pin (FilesPassed == 1).
         var f = await SeedOneFileAsync("envelope-crc.bin", RandomBytes(4096));
         var blobName = $"chunks/{f.Chunks[0].Hash}";
         // Flip a byte deep inside the encrypted payload (past the 17-byte
-        // envelope header and inside the AES-GCM ciphertext region) so
-        // the size stays identical but the bytes are corrupt.
+        // envelope header and inside the AES-GCM ciphertext region).
         _blobService.TestOnlyCorruptByte(blobName, byteIndex: 25);
 
         var result = await _integrityService.RunAsync(new IntegrityCheckOptions
         {
             FileIds = new[] { f.Id },
-            ScopeSummary = "T2 envelope corruption",
+            ScopeSummary = "T1 md5 catch",
             AutoExportBundleOnFailure = false
         });
 
-        // CURRENT BEHAVIOUR (the gap): T1 sees the right ContentLength
-        // and skips T2/T3, so the corrupt chunk is reported as PASSING.
-        // FilesPassed == 1 is the warning sign that the cheap tier
-        // missed real corruption. When D6 ships an MD5-aware T1, this
-        // assertion flips to expect FilesFailedT1 >= 1 (or T2 if T1
-        // escalates).
-        Assert.Equal(1, result.Run.FilesPassed);
-        Assert.Equal(0, result.Run.FilesFailedT1 + result.Run.FilesFailedT2 + result.Run.FilesFailedT3);
+        Assert.Equal(0, result.Run.FilesPassed);
+        Assert.True(result.Run.FilesFailedT1 + result.Run.FilesFailedT2 + result.Run.FilesFailedT3 > 0,
+            "Expected at least one tier-classified failure after D6 MD5 check");
+        Assert.Contains(result.Failures, x => x.FailureTier == 1 && x.FailureReason == "md5-mismatch");
+    }
+
+    [Fact]
+    public async Task DecryptFailed_GcmTagCorruption_TripsT2WithDecryptFailedReason()
+    {
+        // D6 review fix 4.4: when a corruption flip lands in the AES-GCM
+        // tag region (last 16 bytes of the encrypted envelope), T2's
+        // download-time decrypt throws CryptographicException which the
+        // engine maps to reason="decrypt-failed". T1 still trips first
+        // via md5-mismatch (D6) and escalates to T2 for evidence.
+        var f = await SeedOneFileAsync("gcm-tag.bin", RandomBytes(4096));
+        var blobName = $"chunks/{f.Chunks[0].Hash}";
+        // Get current size and flip a byte in the GCM tag region (last
+        // 16 bytes of the envelope = last 16 bytes of the stored blob).
+        var (_, contentLength, _) = await _blobService.GetChunkPropertiesAsync(blobName);
+        _blobService.TestOnlyCorruptByte(blobName, byteIndex: (int)contentLength - 5);
+
+        var result = await _integrityService.RunAsync(new IntegrityCheckOptions
+        {
+            FileIds = new[] { f.Id },
+            ScopeSummary = "T2 decrypt fail",
+            AutoExportBundleOnFailure = false
+        });
+
+        // Expect at least one T2 failure (decrypt-failed). T1 also
+        // produces an md5-mismatch first which is the trigger for T2.
+        Assert.True(result.Run.FilesFailedT2 + result.Run.FilesFailedT3 > 0);
+        Assert.Contains(result.Failures, x =>
+            x.FailureTier == 2 &&
+            (x.FailureReason == "decrypt-failed" || x.FailureReason == "crc-mismatch"));
+    }
+
+    [Fact]
+    public async Task LegacyChunk_NullExpectedMd5_StillPassesT1_TofuCapturesOnFirstCheck()
+    {
+        // D6 contract: chunks uploaded before D6 (or with a backend that
+        // doesn't persist MD5) have null in expected_encrypted_md5.
+        // The engine must NOT flag those as failures -- it captures the
+        // current Azure MD5 on first observation (TOFU) and only starts
+        // comparing on the SECOND check. This test simulates the legacy
+        // state by clearing the persisted MD5 between seed and check.
+        var f = await SeedOneFileAsync("legacy.bin", RandomBytes(2048));
+        var blobName = $"chunks/{f.Chunks[0].Hash}";
+        // Simulate "uploaded before D6" by erasing what the upload
+        // callback persisted. We test directly via the database service
+        // because there is no public unwind API.
+        // (LiteDB legacy backend would naturally have null here.)
+        // Trick: write all-zero bytes which will be overwritten by TOFU
+        // on first check, but the integrity check should not fail.
+        // Actually the cleanest path: clear via setting a sentinel of
+        // 16 zero bytes (semantically "I'm null pre-D6"). The engine
+        // treats only literal null (column NULL) as TOFU; an all-zero
+        // value would be a real mismatch. So instead we use the ALTER
+        // path: do nothing -- the chunk row is created BEFORE the upload
+        // callback fires, and we just need a chunk where the column was
+        // never updated. The TestOnly helper below sets the column to
+        // null via a direct SQL UPDATE.
+        ClearExpectedMd5(f.Chunks[0].Hash);
+
+        // First check: column is null, T1 captures the live MD5 via TOFU
+        // and the run passes.
+        var first = await _integrityService.RunAsync(new IntegrityCheckOptions
+        {
+            FileIds = new[] { f.Id },
+            ScopeSummary = "First (TOFU capture)",
+            AutoExportBundleOnFailure = false
+        });
+        Assert.Equal(1, first.Run.FilesPassed);
+        Assert.Equal(0, first.Run.FilesFailedT1 + first.Run.FilesFailedT2 + first.Run.FilesFailedT3);
+
+        // Second check: column was populated by TOFU on the first check,
+        // and the chunk hasn't moved, so the run still passes.
+        var second = await _integrityService.RunAsync(new IntegrityCheckOptions
+        {
+            FileIds = new[] { f.Id },
+            ScopeSummary = "Second (TOFU compare)",
+            AutoExportBundleOnFailure = false
+        });
+        Assert.Equal(1, second.Run.FilesPassed);
+        Assert.Equal(0, second.Run.FilesFailedT1 + second.Run.FilesFailedT2 + second.Run.FilesFailedT3);
+    }
+
+    /// <summary>
+    /// Test helper: simulates "no D6 MD5 was ever persisted for this
+    /// chunk" by NULL-ing the column via a direct SQL UPDATE through the
+    /// database service. Used only by the legacy-chunk TOFU test.
+    /// </summary>
+    private void ClearExpectedMd5(string chunkHash)
+    {
+        // The cleanest way without adding an SQL escape hatch to the
+        // production API is to write a 16-byte sentinel and then assert
+        // the test passes -- but the engine treats any non-null value
+        // as authoritative. So we exercise the real null path: persist
+        // a known value, then reach into the SqliteBackend's connection
+        // via reflection to NULL it. This is acceptable in a test.
+        var backendField = typeof(LocalDatabaseService).GetField("_sqliteBackend",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var backend = backendField?.GetValue(_databaseService);
+        var connField = backend?.GetType().GetField("_connection",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var conn = connField?.GetValue(backend) as Microsoft.Data.Sqlite.SqliteConnection;
+        if (conn == null) throw new InvalidOperationException("SqliteBackend connection not reachable for test");
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE chunk_index SET expected_encrypted_md5 = NULL WHERE chunk_hash = $hash;";
+        cmd.Parameters.AddWithValue("$hash", chunkHash);
+        cmd.ExecuteNonQuery();
     }
 
     [Fact]

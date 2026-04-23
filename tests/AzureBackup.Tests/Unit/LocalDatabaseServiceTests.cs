@@ -658,9 +658,23 @@ public class LocalDatabaseServiceTests : IAsyncLifetime
         // object is not associated with the same connection" when a
         // reader race lands inside a writer's open transaction. The test
         // is a deadlock guard, not a connection-thread-safety guard, so
-        // a retry loop is the right tool. Wrapped in FlakyTestHelper.
-        await FlakyTestHelper.RetryAsync(async () =>
+        // a retry loop is the right tool.
+        //
+        // D6 hardening: a failed attempt can leave the SqliteConnection
+        // in a partially-disposed state which then NREs in the test's
+        // DisposeAsync. We rebuild the service inside the retry so each
+        // attempt starts from a clean connection. The class-level
+        // _databaseService is replaced with the fresh instance so the
+        // outer DisposeAsync still finds something disposable.
+        await FlakyTestHelper.RetryWithAttemptAsync(async attempt =>
         {
+            // Per-attempt fresh service so a failed attempt's poisoned
+            // connection does not bleed into the next.
+            try { _databaseService.Dispose(); } catch { /* prior attempt's mess */ }
+            var perAttemptPath = Path.Combine(_testDirectory, $"concurrent_attempt_{attempt}.db");
+            _databaseService = new LocalDatabaseService();
+            _databaseService.Initialize(perAttemptPath, TestPassword);
+
             // Arrange
             using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
             List<Task> tasks = new();

@@ -768,6 +768,20 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _integrityService.DiagnosticLog += (_, msg) => Program.Logger.Log(msg);
         }
 
+        // D6: wire the upload-time MD5 capture. Each successful chunk
+        // upload stamps the encrypted-blob MD5 onto the chunk_index row
+        // so the cheap T1 integrity tier can compare against the live
+        // Azure-side ContentHash on a future check. SQLite-only via
+        // LocalDatabaseService.SetChunkExpectedMd5 (no-op on LiteDB).
+        // The callback runs on the upload thread pool but
+        // SetChunkExpectedMd5 takes the SqliteBackend write lock so
+        // concurrent calls serialize cleanly.
+        _blobService.OnChunkUploaded = (chunkHash, md5) =>
+        {
+            try { _databaseService.SetChunkExpectedMd5(chunkHash, md5); }
+            catch { /* best effort -- upload already succeeded */ }
+        };
+
         // Initialize Tier Migration ViewModel
         TierMigrationViewModel = new TierMigrationViewModel(_blobService, _chunkIndexService, msg => AddLog(msg));
 

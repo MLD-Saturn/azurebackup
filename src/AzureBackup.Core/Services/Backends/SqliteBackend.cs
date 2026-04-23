@@ -1204,6 +1204,80 @@ internal sealed class SqliteBackend : IDatabaseBackend
     }
 
     /// <summary>
+    /// D6: stamps the expected encrypted-blob MD5 on a chunk_index row.
+    /// Called from <see cref="IBlobStorageService"/> upload paths once the
+    /// MD5 is known (we compute it locally rather than relying on Azure's
+    /// returned ContentHash so the value is identical for in-memory and
+    /// real backends). Pre-D6 chunks remain null until a re-upload OR the
+    /// next rebuild pass populates them.
+    /// </summary>
+    /// <remarks>
+    /// We deliberately update ONLY this column rather than upserting the
+    /// whole row -- the upload path doesn't have the file count / tier
+    /// information needed for the full row, and we don't want a partial
+    /// upsert wiping reference counts. When the chunk_index row does NOT
+    /// yet exist (the upload-time callback runs BEFORE
+    /// <see cref="ChunkIndexService.AddReference"/> creates the row) we
+    /// insert a minimal placeholder carrying ONLY the MD5 -- the
+    /// <see cref="ChunkIndexUpsertSql"/> clause is careful to NOT touch
+    /// expected_encrypted_md5 on conflict, so the subsequent upsert
+    /// fills in the other fields without clobbering the MD5.
+    /// </remarks>
+    public void SetChunkExpectedMd5(string chunkHash, byte[] md5)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        ArgumentNullException.ThrowIfNull(md5);
+        if (md5.Length != 16)
+            throw new ArgumentException("Expected 16-byte MD5", nameof(md5));
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        InWriteLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            // Insert-or-update keyed on chunk_hash. The placeholder row's
+            // size/refcount/tier defaults are sentinel values that the
+            // subsequent SaveChunkIndexEntry overwrites; the MD5 we set
+            // here is preserved because ChunkIndexUpsertSql's ON CONFLICT
+            // clause omits expected_encrypted_md5 from its excluded list.
+            cmd.CommandText = """
+                INSERT INTO chunk_index
+                    (chunk_hash, first_uploaded_at, original_uploader_path,
+                     size_bytes, reference_count, current_tier, last_verified_at,
+                     expected_encrypted_md5)
+                VALUES
+                    ($hash, $now, '', 0, 0, 0, $now, $md5)
+                ON CONFLICT(chunk_hash) DO UPDATE SET
+                    expected_encrypted_md5 = excluded.expected_encrypted_md5;
+                """;
+            cmd.Parameters.AddWithValue("$hash", chunkHash);
+            cmd.Parameters.AddWithValue("$md5", md5);
+            cmd.Parameters.AddWithValue("$now", FormatUtc(DateTime.UtcNow));
+            cmd.ExecuteNonQuery();
+        });
+    }
+
+    /// <summary>
+    /// D6: read the persisted upload-time MD5 for a chunk. Returns null when
+    /// the chunk has no row, the row pre-dates D6, or the chunk was uploaded
+    /// before the column existed and never re-stamped. The integrity-check
+    /// engine treats null as "T1 cannot decide -- pass" so legacy chunks
+    /// degrade gracefully.
+    /// </summary>
+    public byte[]? GetChunkExpectedMd5(string chunkHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
+        if (_connection == null)
+            throw new InvalidOperationException("Backend is not initialized.");
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT expected_encrypted_md5 FROM chunk_index WHERE chunk_hash = $hash;";
+        cmd.Parameters.AddWithValue("$hash", chunkHash);
+        var result = cmd.ExecuteScalar();
+        return result is byte[] bytes ? bytes : null;
+    }
+
+    /// <summary>
     /// Bulk upsert in a single transaction with a reused prepared statement.
     /// At the reverse-index rebuild scale (500K chunks measured in Phase 5)
     /// this is dramatically faster than N round-trips - SQLite's bulk
@@ -2446,7 +2520,15 @@ internal sealed class SqliteBackend : IDatabaseBackend
                 size_bytes INTEGER NOT NULL,
                 reference_count INTEGER NOT NULL,
                 current_tier INTEGER NOT NULL DEFAULT 0,
-                last_verified_at TEXT NOT NULL
+                last_verified_at TEXT NOT NULL,
+                -- D6: MD5 of the encrypted blob as stored in Azure
+                -- (matches what GetChunkPropertiesAsync returns as
+                -- ContentHash). Stamped at upload time; null for
+                -- chunks uploaded before D6. The integrity check's
+                -- T1 tier compares this against the live Azure-side
+                -- hash so same-size envelope corruption is detected
+                -- without escalating to a full T2 download.
+                expected_encrypted_md5 BLOB NULL
             );
             CREATE INDEX IF NOT EXISTS idx_chunk_index_refcount ON chunk_index(reference_count);
             CREATE INDEX IF NOT EXISTS idx_chunk_index_tier ON chunk_index(current_tier);
@@ -2512,6 +2594,25 @@ internal sealed class SqliteBackend : IDatabaseBackend
             CREATE INDEX IF NOT EXISTS idx_integrity_check_failures_tier ON integrity_check_failures(failure_tier);
             """;
         cmd.ExecuteNonQuery();
+
+        // D6 backfill: idempotently add expected_encrypted_md5 to chunk_index
+        // for databases created before D6. Skipped when the column already
+        // exists (CREATE TABLE IF NOT EXISTS above declares it for fresh
+        // installs). Pre-existing chunks remain null until they get
+        // re-uploaded; the integrity check engine treats null as "T1
+        // cannot decide -- pass" so legacy chunks still pass the cheap
+        // tier (escalation to T2 is the user's lever).
+        using (var probeCmd = _connection.CreateCommand())
+        {
+            probeCmd.CommandText = "SELECT 1 FROM pragma_table_info('chunk_index') WHERE name='expected_encrypted_md5';";
+            var present = probeCmd.ExecuteScalar();
+            if (present == null)
+            {
+                using var alterCmd = _connection.CreateCommand();
+                alterCmd.CommandText = "ALTER TABLE chunk_index ADD COLUMN expected_encrypted_md5 BLOB NULL;";
+                alterCmd.ExecuteNonQuery();
+            }
+        }
 
         // Seed the singleton config row so the wrong-password probe in
         // OpenAndUnlock has a real user-table read to perform on reopen.

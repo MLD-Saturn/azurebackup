@@ -54,6 +54,9 @@ public class InMemoryBlobService : IBlobStorageService
     /// </summary>
     public long TotalStorageUsed => _blobs.Values.Sum(b => (long)b.Length);
 
+    /// <summary>D6: see <see cref="IBlobStorageService.OnChunkUploaded"/>.</summary>
+    public Action<string, byte[]>? OnChunkUploaded { get; set; }
+
     public InMemoryBlobService(EncryptionService encryptionService, int simulatedLatencyMs = 0, double failureRate = 0.0)
     {
         ArgumentNullException.ThrowIfNull(encryptionService);
@@ -167,10 +170,25 @@ public class InMemoryBlobService : IBlobStorageService
         var encryptedData = _encryptionService.Encrypt(chunkData.Span);
         _blobs[blobName] = encryptedData;
         _blobTiers[blobName] = storageTier;
-        
+
         Interlocked.Add(ref _totalBytesUploaded, encryptedData.Length);
         Interlocked.Increment(ref _totalOperations);
         progress?.Report(encryptedData.Length);
+
+        // D6: notify the host so it can persist the upload-time MD5 for
+        // the cheap T1 integrity tier. Computed locally to match what
+        // the integrity check will see on a future HEAD (which also
+        // computes MD5 over the stored bytes).
+        var onUploaded = OnChunkUploaded;
+        if (onUploaded != null)
+        {
+            try
+            {
+                var md5 = System.Security.Cryptography.MD5.HashData(encryptedData);
+                onUploaded(chunkHash, md5);
+            }
+            catch { /* upload already succeeded; never roll back on callback failure */ }
+        }
 
         return blobName;
     }
@@ -195,10 +213,25 @@ public class InMemoryBlobService : IBlobStorageService
         var encryptedData = _encryptionService.Encrypt(chunkData.Span);
         _blobs[blobName] = encryptedData;
         _blobTiers[blobName] = storageTier;
-        
+
         Interlocked.Add(ref _totalBytesUploaded, encryptedData.Length);
         Interlocked.Increment(ref _totalOperations);
         progress?.Report(encryptedData.Length);
+
+        // D6: same callback as UploadChunkAsync. Both upload paths must
+        // notify or new-file backups would never have an upload-time
+        // MD5 persisted (the orchestrator picks UploadChunkDirectAsync
+        // for new files for the API-call savings).
+        var onUploaded = OnChunkUploaded;
+        if (onUploaded != null)
+        {
+            try
+            {
+                var md5 = System.Security.Cryptography.MD5.HashData(encryptedData);
+                onUploaded(chunkHash, md5);
+            }
+            catch { /* upload already succeeded */ }
+        }
 
         return blobName;
     }

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Security.Cryptography;
 using AzureBackup.Core.Models;
 
 namespace AzureBackup.Core.Services;
@@ -397,10 +398,11 @@ public sealed class IntegrityCheckService
         // -------- T1: HEAD (gated by engine-shared t1Sem) --------
         bool exists;
         long contentLength;
+        byte[]? azureMd5;
         await t1Sem.WaitAsync(cancellationToken);
         try
         {
-            (exists, contentLength, _) = await _blobService.GetChunkPropertiesAsync(blobName, cancellationToken);
+            (exists, contentLength, azureMd5) = await _blobService.GetChunkPropertiesAsync(blobName, cancellationToken);
         }
         finally
         {
@@ -423,11 +425,49 @@ public sealed class IntegrityCheckService
             // the wrong-size already constitutes a confirmed problem.
         }
 
+        // D6: T1 MD5 comparison (trust-on-first-use). The cheap T1 tier
+        // pre-D6 was structural-only: it could not detect same-size
+        // envelope corruption. Now we compare the live Azure-side
+        // ContentHash against a persisted expected value:
+        //   - First time we see a chunk and the persisted MD5 is null,
+        //     we capture Azure's current MD5 as the expected. Azure
+        //     validates Content-MD5 server-side on PUT so an upload
+        //     that completed has a trustworthy initial MD5.
+        //   - On subsequent observations, mismatch => T1 md5-mismatch
+        //     failure (escalates to T2/T3 for envelope evidence).
+        //   - Backends without persistence (LiteDB legacy) silently
+        //     skip via _databaseService.GetChunkExpectedMd5 returning
+        //     null -- the broader integrity feature is unsupported on
+        //     LiteDB anyway.
+        var md5Mismatch = false;
+        if (azureMd5 != null && azureMd5.Length == 16)
+        {
+            var persistedMd5 = _databaseService.GetChunkExpectedMd5(chunk.Hash);
+            if (persistedMd5 == null)
+            {
+                // First observation: capture as expected. We deliberately
+                // swallow exceptions here -- the integrity check is read-
+                // only from the user's perspective and a write failure
+                // shouldn't fail the run.
+                try { _databaseService.SetChunkExpectedMd5(chunk.Hash, azureMd5); }
+                catch (Exception ex) { Log($"SetChunkExpectedMd5({chunk.Hash}): {ex.Message}"); }
+            }
+            else if (!CryptographicOperations.FixedTimeEquals(persistedMd5, azureMd5))
+            {
+                md5Mismatch = true;
+                ensureDiag().RecordChunk("T1", chunk.Index, chunk.Hash, chunk.Length, (int)contentLength,
+                    extra: $"md5-mismatch expected={Convert.ToHexString(persistedMd5)} actual={Convert.ToHexString(azureMd5)}");
+                failures.Add(NewFailure(runId, file, chunk, tier: 1, reason: "md5-mismatch",
+                    detail: $"{{\"chunkIndex\":{chunk.Index},\"expectedMd5\":\"{Convert.ToHexString(persistedMd5)}\",\"actualMd5\":\"{Convert.ToHexString(azureMd5)}\"}}"));
+            }
+        }
+
         // -------- T2: full blob --------
-        // Only escalate if T1 failed OR we want a deeper check; here we only
-        // escalate on T1 fail to keep the cheap path cheap. A separate
-        // "paranoid mode" knob (future) would always run T2 + T3.
-        var t1Failed = !exists || contentLength != expectedEncryptedLength;
+        // Escalate when T1 found ANY problem (missing-size mismatch OR D6
+        // md5-mismatch). The cheap path stays cheap for clean chunks; a
+        // chunk with bad bytes pays the T2 price for the envelope-level
+        // evidence (and T3 byte-compare against local).
+        var t1Failed = contentLength != expectedEncryptedLength || md5Mismatch;
         if (!t1Failed) return;
 
         byte[]? decrypted = null;

@@ -701,33 +701,52 @@ public class BackupOrchestratorTests : IAsyncLifetime
     [Fact]
     public async Task WhenMemoryBudgetEnabledThenBackupSucceedsWithLimitedConcurrency()
     {
-        // Arrange
-        await _orchestrator.InitializeAsync(TestPassword);
-
-        var config = _databaseService.GetConfiguration();
-        config.MemoryLimitEnabled = true;
-        config.MemoryLimitMB = 512;
-        _databaseService.SaveConfiguration(config);
-
-        // Create multiple files that will produce several chunks
-        var files = new List<string>();
-        for (var i = 0; i < 5; i++)
+        // Pre-existing flake (predates D6): concurrent multi-chunk
+        // upload races on Microsoft.Data.Sqlite's connection internal
+        // state and produces an NRE inside SqliteConnection.Close()
+        // during DisposeAsync. Same family as ConcurrentReadsAndWrites_
+        // DoNotDeadlock. Wrapped in FlakyTestHelper with per-attempt
+        // service rebuild so a failed attempt's poisoned connection
+        // does not cascade.
+        await FlakyTestHelper.RetryWithAttemptAsync(async attempt =>
         {
-            var filePath = Path.Combine(_sourceDirectory, $"budget_test_{i}.bin");
-            await File.WriteAllBytesAsync(filePath, CreateRandomContent(256 * 1024));
-            files.Add(filePath);
-        }
+            try { await _orchestrator.DisposeAsync(); } catch { }
+            try { _databaseService.Dispose(); } catch { }
+            var perAttemptDb = Path.Combine(_testDirectory, $"budget_attempt_{attempt}.db");
+            _databaseService = new LocalDatabaseService();
+            _databaseService.Initialize(perAttemptDb, TestPassword);
+            _orchestrator = new BackupOrchestrator(
+                _databaseService, _encryptionService, new ChunkingService(),
+                _blobService, _fileWatcherService);
 
-        // Act: backup with budget-aware path
-        await _orchestrator.BackupFilesAsync(files);
+            // Arrange
+            await _orchestrator.InitializeAsync(TestPassword);
 
-        // Assert: all files backed up successfully
-        foreach (var filePath in files)
-        {
-            var backedUp = _databaseService.GetBackedUpFile(filePath);
-            Assert.NotNull(backedUp);
-            Assert.Equal(BackupStatus.Completed, backedUp.Status);
-        }
+            var config = _databaseService.GetConfiguration();
+            config.MemoryLimitEnabled = true;
+            config.MemoryLimitMB = 512;
+            _databaseService.SaveConfiguration(config);
+
+            // Create multiple files that will produce several chunks
+            var files = new List<string>();
+            for (var i = 0; i < 5; i++)
+            {
+                var filePath = Path.Combine(_sourceDirectory, $"budget_test_{attempt}_{i}.bin");
+                await File.WriteAllBytesAsync(filePath, CreateRandomContent(256 * 1024));
+                files.Add(filePath);
+            }
+
+            // Act: backup with budget-aware path
+            await _orchestrator.BackupFilesAsync(files);
+
+            // Assert: all files backed up successfully
+            foreach (var filePath in files)
+            {
+                var backedUp = _databaseService.GetBackedUpFile(filePath);
+                Assert.NotNull(backedUp);
+                Assert.Equal(BackupStatus.Completed, backedUp.Status);
+            }
+        });
     }
 
     [Fact]

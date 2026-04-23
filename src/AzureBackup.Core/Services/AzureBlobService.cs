@@ -69,6 +69,9 @@ public partial class AzureBlobService : IBlobStorageService
     /// wire. See <see cref="OperationMetrics.CrcRetryCount"/>.
     /// </summary>
     public long TotalCrcRetries => Interlocked.Read(ref _totalCrcRetries);
+
+    /// <summary>D6: see <see cref="IBlobStorageService.OnChunkUploaded"/>.</summary>
+    public Action<string, byte[]>? OnChunkUploaded { get; set; }
     
     /// <summary>
     /// Event for detailed debug/diagnostic logging.
@@ -961,6 +964,23 @@ public partial class AzureBlobService : IBlobStorageService
         TotalOperations++;
         progress?.Report(encryptedLength);
         Log($"{caller}: Chunk uploaded successfully ({encryptedLength} bytes encrypted, MD5 verified)");
+
+        // D6: notify the host with the upload-time MD5 of the encrypted
+        // blob (computed locally over the bytes we actually sent). The
+        // integrity-check engine compares this against future Azure-side
+        // ContentHash values to detect post-upload corruption at the
+        // cheap T1 tier. Best-effort: a callback failure must not roll
+        // back an upload that already succeeded.
+        var onUploaded = OnChunkUploaded;
+        if (onUploaded != null)
+        {
+            try
+            {
+                var md5 = MD5.HashData(rentedBuffer.AsSpan(0, encryptedLength));
+                onUploaded(chunkHash, md5);
+            }
+            catch (Exception ex) { Log($"{caller}: OnChunkUploaded callback failed: {ex.Message}"); }
+        }
     }
 
     /// <summary>
