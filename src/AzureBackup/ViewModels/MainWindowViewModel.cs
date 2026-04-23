@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -24,7 +25,13 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private readonly FileWatcherService _fileWatcherService;
     private readonly BackupOrchestrator _orchestrator;
     private readonly RestoreService _restoreService;
-    private readonly ThroughputMetrics _throughputMetrics;
+    // B14: nullable. Only assigned under #if DIAGNOSTICLOG; left null in
+    // Release builds where no metrics directory is created. The pragma
+    // disable is purely cosmetic -- nullable null IS the correct
+    // initial value when the assignment block is compiled out.
+#pragma warning disable CS0649
+    private readonly ThroughputMetrics? _throughputMetrics;
+#pragma warning restore CS0649
     private ChunkIndexService? _chunkIndexService;
 
     /// <summary>
@@ -731,18 +738,24 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             _blobService, _fileWatcherService);
         _restoreService = new RestoreService(_databaseService, _blobService, _encryptionService);
 
-        // Wire per-file diagnostics directory so .diag logs land next to the database
+#if DIAGNOSTICLOG
+        // B14: per-file diagnostics directory only allocated under DIAGNOSTICLOG.
+        // Without this gate, an integrity-check failure in a Release build
+        // would produce .diag files on disk -- contradicting the contract
+        // "DIAGNOSTICLOG disabled => no logging at all of any kind".
         var diagDir = Path.Combine(AppMode.DataDirectory, "diagnostics");
         _orchestrator.DiagnosticsDirectory = diagDir;
         _restoreService.DiagnosticsDirectory = diagDir;
 
-        // Initialize throughput metrics logger for performance analysis
+        // Initialize throughput metrics logger for performance analysis.
+        // Same gate -- a Release build writes no .jsonl files anywhere.
         var metricsDir = Path.Combine(AppMode.DataDirectory, "metrics");
         var throughputMetrics = new ThroughputMetrics(metricsDir);
         _throughputMetrics = throughputMetrics;
         _orchestrator.Metrics = throughputMetrics;
         _restoreService.Metrics = throughputMetrics;
         throughputMetrics.CleanupOldFiles();
+#endif
 
         // Initialize progress tab for backup/restore/mirror operations
         ProgressTab = new ProgressTabViewModel();
@@ -765,15 +778,21 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         // tab. Wire the diagnostics directory + session id so per-file
         // .diag files land in the same place the X4 bundle picks up, and
         // so the run row carries a SessionId that correlates with logs.
+        // B14: DiagnosticsDirectory + SessionId gated on DIAGNOSTICLOG so
+        // a Release build writes no .diag bundles. The integrity engine
+        // gracefully tolerates a null/empty DiagnosticsDirectory.
         _integrityService = new IntegrityCheckService(_databaseService, _blobService, _encryptionService)
         {
+#if DIAGNOSTICLOG
             DiagnosticsDirectory = System.IO.Path.Combine(AppMode.DataDirectory, "diagnostics"),
             SessionId = Program.Logger?.SessionId ?? Guid.Empty
+#endif
         };
-        if (Program.Logger != null)
-        {
-            _integrityService.DiagnosticLog += (_, msg) => Program.Logger.Log(msg);
-        }
+        // B14: removed the duplicate _integrityService.DiagnosticLog ->
+        // Program.Logger.Log wire that previously bypassed OnDiagnosticLog.
+        // The wire below at the "Wire up diagnostic logging events" block
+        // already routes IntegrityCheckService events through the same
+        // symmetric in-memory + file path as every other service.
 
         // D6 + I6: wire the upload-time MD5 capture through a background
         // drain so a slow SetChunkExpectedMd5 (large WAL flush, contended
@@ -813,33 +832,38 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         // Wire up Azure file tree selection change events
         FileTreeNodeViewModel.SelectionChanged += OnAzureFileSelectionChanged;
         
-        // Wire up diagnostic logging events (detailed service logs)
+        // B14: single symmetric wire for all service DiagnosticLog events.
+        // OnDiagnosticLog is the ONLY subscriber and is responsible for
+        // routing each message to BOTH the in-memory log pane AND the
+        // file logger. Pre-B14 we wired two subscribers (the in-memory
+        // pane via OnDiagnosticLog, and Program.Logger.OnDiagnosticLog
+        // separately) which meant the runtime EnableDiagnosticLogging
+        // toggle could leave them out of sync, formats diverged ([DIAG]
+        // vs the magnifier emoji), and IntegrityCheckService had a
+        // third bypass wire that double-logged its events.
         _orchestrator.DiagnosticLog += OnDiagnosticLog;
         blobService.DiagnosticLog += OnDiagnosticLog;
         _databaseService.DiagnosticLog += OnDiagnosticLog;
         _encryptionService.DiagnosticLog += OnDiagnosticLog;
         _restoreService.DiagnosticLog += OnDiagnosticLog;
         _fileWatcherService.DiagnosticLog += OnDiagnosticLog;
+        _integrityService.DiagnosticLog += OnDiagnosticLog;
 
-        // Wire up crash-safe file logger for all service diagnostic events
+        // ErrorOccurred routes through AddLog (which already mirrors to
+        // file via the same in-memory + file path under DIAGNOSTICLOG).
+        _restoreService.ErrorOccurred += (s, msg) => AddLog($"[ERROR] {msg}");
+        _orchestrator.ErrorOccurred += (s, msg) => AddLog($"[ERROR] {msg}");
+
+#if DIAGNOSTICLOG
         if (Program.Logger != null)
         {
-            _orchestrator.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            blobService.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            _databaseService.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            _encryptionService.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            _restoreService.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            _fileWatcherService.DiagnosticLog += Program.Logger.OnDiagnosticLog;
-            
-            _restoreService.ErrorOccurred += (s, msg) => Program.Logger.Log($"[ERROR] {msg}");
-            _orchestrator.ErrorOccurred += (s, msg) => Program.Logger.Log($"[ERROR] {msg}");
-            
             Program.Logger.Log($"Services initialized, log file: {Program.Logger.LogFilePath}");
             // Echo the SessionId into the UI log too so a tester capturing
             // a screenshot of the Logs tab can quote it back without
             // hunting through the data directory for the file log.
             AddLog($"Session: {Program.Logger.SessionId:N}");
         }
+#endif
 
         AddLog("Application started - diagnostic logging enabled");
 
@@ -915,15 +939,29 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>
-    /// Handles diagnostic log messages from services.
+    /// Handles diagnostic log messages from services. B14: writes the
+    /// SAME formatted line to BOTH the in-memory pane and the file
+    /// logger so the two sources stay byte-identical. The runtime
+    /// EnableDiagnosticLogging toggle still controls whether DIAG-tier
+    /// service messages are surfaced (the user can hide the per-chunk
+    /// noise from the UI without recompiling), but when it IS enabled
+    /// both sinks see the same message.
     /// </summary>
+    /// <remarks>
+    /// Cannot use [Conditional("DIAGNOSTICLOG")] here because the method
+    /// is subscribed to events (event handlers must always have a runtime
+    /// representation). Instead we guard the body so when DIAGNOSTICLOG
+    /// is undefined the handler is a no-op and the JIT inlines it away.
+    /// </remarks>
     private void OnDiagnosticLog(object? sender, string message)
     {
-        if (EnableDiagnosticLogging)
-        {
-            _pendingLogMessages.Enqueue($"\U0001f50d {message}");
-            DrainLogQueue();
-        }
+#if DIAGNOSTICLOG
+        if (!EnableDiagnosticLogging) return;
+        var formatted = $"[DIAG] {message}";
+        _pendingLogMessages.Enqueue(formatted);
+        DrainLogQueue();
+        Program.Logger?.Log(formatted);
+#endif
     }
 
     /// <summary>
@@ -1027,20 +1065,25 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         PendingChanges = stats.PendingChanges;
     }
 
+    /// <summary>
+    /// B14: writes to BOTH the in-memory log pane AND the file logger.
+    /// The two sinks receive byte-identical messages so a tester can
+    /// quote either source in a bug report and the triager sees the
+    /// same text. Compiled out entirely when DIAGNOSTICLOG is undefined
+    /// (Release): no string interpolation cost at the call sites, no
+    /// queue allocation, no enqueue overhead.
+    /// </summary>
+    [Conditional("DIAGNOSTICLOG")]
     private void AddLog(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
-        _pendingLogMessages.Enqueue($"[{timestamp}] {message}");
+        var formatted = $"[{timestamp}] {message}";
+        _pendingLogMessages.Enqueue(formatted);
         Interlocked.Exchange(ref _latestStatusMessage, message);
         DrainLogQueue();
-        // B13: also persist to the crash-safe file log. Pre-B13 the unlock
-        // flow's AddLog calls (notably the OOM / wrong-password / migration
-        // failure messages) only reached the in-memory Logs UI tab, which
-        // a tester cannot copy into a bug report after the app has been
-        // closed. Routing to the file logger as well means a session log
-        // contains the full unlock narrative even if the UI was closed
-        // immediately after the failure.
-        Program.Logger?.Log(message);
+        // Mirror the same formatted line to the file logger so the on-
+        // disk log matches the UI Logs tab line-for-line.
+        Program.Logger?.Log(formatted);
     }
 
     /// <summary>
@@ -1322,7 +1365,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
         _databaseService.Dispose();
         _fileWatcherService.Dispose();
-        _throughputMetrics.Dispose();
+        _throughputMetrics?.Dispose();
         DataIntegrityTabVm?.Dispose();
     }
 

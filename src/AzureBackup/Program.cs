@@ -18,7 +18,17 @@ sealed class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        // Initialize file logger first so it catches everything
+        // B14: the entire logging subsystem is gated on the DIAGNOSTICLOG
+        // compile constant. When DIAGNOSTICLOG is undefined (Release):
+        //   - No .log file is created on disk
+        //   - No throughput metrics directory is created
+        //   - No per-file .diag bundles are written on integrity failures
+        //   - All [Conditional("DIAGNOSTICLOG")] Log() calls in services
+        //     compile to no-ops (zero allocations, zero string interpolation)
+        //   - In-memory log pane stays empty (AddLog is itself Conditional)
+        // The user's contract: "DIAGNOSTICLOG disabled -> no logging at all
+        // of any kind" with no performance hit for the dropped paths.
+#if DIAGNOSTICLOG
         Logger = new CrashSafeLogger();
         Logger.Log($"Starting AzureBackup (args: [{string.Join(", ", args)}])");
 
@@ -40,20 +50,30 @@ sealed class Program
             Logger.LogException(e.Exception, "TaskScheduler.UnobservedTaskException");
             e.SetObserved(); // Prevent crash from unobserved task exceptions
         };
+#endif
 
         try
         {
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
+#if DIAGNOSTICLOG
         catch (Exception ex)
         {
-            Logger.LogException(ex, "Main entry point");
+            Logger?.LogException(ex, "Main entry point");
             throw; // Re-throw so the OS knows the process crashed
         }
+#else
+        catch
+        {
+            throw; // Re-throw so the OS knows the process crashed
+        }
+#endif
         finally
         {
-            Logger.Log("Application exiting");
-            Logger.Dispose();
+#if DIAGNOSTICLOG
+            Logger?.Log("Application exiting");
+            Logger?.Dispose();
+#endif
         }
     }
 
