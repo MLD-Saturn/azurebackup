@@ -10,11 +10,23 @@ architectural pitfalls, in-progress workstreams, recent commits, and the
 
 UPDATE `AGENT_CONTEXT.md` during your session whenever any of these happen:
 - a user preference or convention is established or changed
-- a non-obvious production behavior is discovered
+- a non-obvious production behavior is discovered OR introduced
+  (introducing a new public API on a `Core` type, a new cross-project
+  constant, a new env var, a new build-time `DefineConstants`, a new
+  on-disk file, a new partial-class seam, etc. all count)
 - a benchmark is run that produces a measurable design-relevant number
 - a workstream completes, blocks, or pivots
-- a commit lands that future sessions need to know about
+- a commit lands that future sessions need to know about (every
+  B-numbered commit qualifies; add a row to the recent-commit-history
+  table and an entry to Completed workstreams)
 - a "do not do this" lesson is learned
+
+`AGENT_CONTEXT.md` itself contains a numbered "Pre-commit checklist"
+section near the top with the precise audit questions. **Run that
+checklist before every `git commit`.** The list above is the summary;
+the file is the authority. Skipping the audit is the single most
+common AGENT_CONTEXT failure mode and has cost the user multiple
+follow-up prompts asking "did you remember the file?".
 
 The file's last section is a dated maintenance log; add one line per
 session that touches it.
@@ -33,6 +45,18 @@ splitting long pipelines across lines.
 When code changes reach a logical stopping point in a git repository,
 commit the modifications immediately with a meaningful message. Rules:
 
+- **Before running `git commit`, audit `AGENT_CONTEXT.md` against the
+  staged change.** That file contains a numbered "Pre-commit checklist"
+  near the top with the specific questions to walk through. The agent
+  has demonstrably skipped this audit before, leaving the file silently
+  drifted; do not repeat the mistake. If the audit shows a required
+  update, stage `AGENT_CONTEXT.md` (and any required `docs/` updates)
+  in the SAME `git add` so they land in one commit. The trap to avoid:
+  reasoning "this commit only changes code, not docs, so no doc update
+  is needed". `AGENT_CONTEXT.md` documents the code, so a code-only
+  commit can absolutely require a `AGENT_CONTEXT.md` update — for
+  example any new public API on a `Core` type, any new cross-project
+  constant, any new env var, any new architectural seam.
 - Use `git commit -m "..."` with one or more `-m` flags, one per
   paragraph. Never write the commit message to a file. Never use
   `git commit -F <file>`.
