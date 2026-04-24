@@ -810,6 +810,19 @@ public partial class BackupOrchestrator : IAsyncDisposable
 
             return true;
         }
+        catch (OperationCanceledException)
+        {
+            // B23: cancellation is a user-initiated outcome, NOT an error
+            // worth surfacing as a .diag file. Pre-B23 a Cancel button
+            // press during a 1000-file backup produced a per-file .diag
+            // for every in-flight file (8 parallel workers => 8 stray
+            // diag files at minimum), drowning the user's "find the
+            // real failures" workflow in noise. Discarding here also
+            // removes the diag from the live registry so the shutdown
+            // hook does NOT write a stale snapshot at app exit.
+            diag.Discard();
+            throw;
+        }
         catch (Exception ex)
         {
             diag.RecordError("BackupFileAsync", ex);
@@ -826,6 +839,17 @@ public partial class BackupOrchestrator : IAsyncDisposable
             _databaseService.SaveBackedUpFile(failedFile);
 
             return false;
+        }
+        finally
+        {
+            // B23: belt-and-braces -- on the happy path the try-block
+            // returned true above without throwing, so we land here with
+            // diag still in the live registry. Discard removes it so
+            // the shutdown hook does not flush a stale snapshot to disk
+            // for a file that backed up cleanly. Idempotent: calling
+            // Discard after Flush (the catch path) is a no-op because
+            // both routes through the same _isFlushed Interlocked guard.
+            diag.Discard();
         }
     }
 

@@ -135,24 +135,28 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new List<ChunkFileRefRow>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT file_path, chunk_hash, chunk_index, referenced_at
-            FROM chunk_file_refs;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(new ChunkFileRefRow
+            var result = new List<ChunkFileRefRow>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT file_path, chunk_hash, chunk_index, referenced_at
+                FROM chunk_file_refs;
+                """;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
             {
-                FilePath = reader.GetString(0),
-                ChunkHash = reader.GetString(1),
-                ChunkIndex = reader.GetInt32(2),
-                ReferencedAt = ParseUtc(reader.GetString(3)),
-            });
-        }
-        return result;
+                result.Add(new ChunkFileRefRow
+                {
+                    FilePath = reader.GetString(0),
+                    ChunkHash = reader.GetString(1),
+                    ChunkIndex = reader.GetInt32(2),
+                    ReferencedAt = ParseUtc(reader.GetString(3)),
+                });
+            }
+            return result;
+        });
     }
 
     /// <summary>
@@ -275,23 +279,27 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new List<ChunkIndexEntry>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT DISTINCT
-                ci.chunk_hash, ci.first_uploaded_at, ci.original_uploader_path,
-                ci.size_bytes, ci.reference_count, ci.current_tier, ci.last_verified_at
-            FROM chunk_file_refs cfr
-            INNER JOIN chunk_index ci ON ci.chunk_hash = cfr.chunk_hash
-            WHERE cfr.file_path = $file_path;
-            """;
-        cmd.Parameters.AddWithValue("$file_path", filePath);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(ReadChunkEntry(reader));
-        }
-        return result;
+            var result = new List<ChunkIndexEntry>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT DISTINCT
+                    ci.chunk_hash, ci.first_uploaded_at, ci.original_uploader_path,
+                    ci.size_bytes, ci.reference_count, ci.current_tier, ci.last_verified_at
+                FROM chunk_file_refs cfr
+                INNER JOIN chunk_index ci ON ci.chunk_hash = cfr.chunk_hash
+                WHERE cfr.file_path = $file_path;
+                """;
+            cmd.Parameters.AddWithValue("$file_path", filePath);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(ReadChunkEntry(reader));
+            }
+            return result;
+        });
     }
 
     /// <summary>

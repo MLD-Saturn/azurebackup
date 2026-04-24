@@ -19,16 +19,20 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT value FROM index_metadata WHERE key = $key;";
-        cmd.Parameters.AddWithValue("$key", key);
-        var raw = cmd.ExecuteScalar() as string;
-        if (raw == null) return null;
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT value FROM index_metadata WHERE key = $key;";
+            cmd.Parameters.AddWithValue("$key", key);
+            var raw = cmd.ExecuteScalar() as string;
+            if (raw == null) return (DateTime?)null;
 
-        // Round-trip via O so DateTimeKind.Utc survives. We always write UTC
-        // values in SetIndexMetadata so this is safe.
-        return DateTime.Parse(raw, System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.RoundtripKind);
+            // Round-trip via O so DateTimeKind.Utc survives. We always write UTC
+            // values in SetIndexMetadata so this is safe.
+            return DateTime.Parse(raw, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind);
+        });
     }
 
     /// <summary>
@@ -70,27 +74,31 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new Dictionary<string, DateTime>(StringComparer.Ordinal);
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT key, value FROM index_metadata;";
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock<IReadOnlyDictionary<string, DateTime>>(() =>
         {
-            var key = reader.GetString(0);
-            var raw = reader.GetString(1);
-            // Stored as ISO-8601 "O" format per SetIndexMetadata.
-            if (DateTime.TryParse(raw,
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind,
-                out var parsed))
+            var result = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT key, value FROM index_metadata;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
             {
-                result[key] = parsed;
+                var key = reader.GetString(0);
+                var raw = reader.GetString(1);
+                // Stored as ISO-8601 "O" format per SetIndexMetadata.
+                if (DateTime.TryParse(raw,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind,
+                    out var parsed))
+                {
+                    result[key] = parsed;
+                }
+                // Silently skip unparseable rows. In practice this is never
+                // hit because SetIndexMetadata is the only writer; if a
+                // foreign tool ever writes here we prefer not to crash.
             }
-            // Silently skip unparseable rows. In practice this is never
-            // hit because SetIndexMetadata is the only writer; if a
-            // foreign tool ever writes here we prefer not to crash.
-        }
-        return result;
+            return result;
+        });
     }
 
 }

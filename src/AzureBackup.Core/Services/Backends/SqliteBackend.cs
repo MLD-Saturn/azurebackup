@@ -55,11 +55,21 @@ internal sealed partial class SqliteBackend : IDatabaseBackend
     /// </para>
     ///
     /// <para>
-    /// Reads are NOT lock-protected: SQLite WAL allows concurrent readers
-    /// against an in-flight writer, and most read methods on this class
-    /// touch nothing more than a single SELECT that is internally
-    /// thread-safe via the underlying SqliteCommand pipeline. The
-    /// _writeLock guards only the write side.
+    /// <b>B23 correction:</b> earlier comments here claimed "Reads are
+    /// NOT lock-protected: SQLite WAL allows concurrent readers".
+    /// That was wrong. WAL allows concurrent readers across DIFFERENT
+    /// connections; with the single shared <see cref="SqliteConnection"/>
+    /// this backend uses, two threads doing CreateCommand /
+    /// ExecuteReader / Dispose on it concurrently produce
+    /// <c>ArgumentOutOfRangeException</c> from inside Microsoft.Data.Sqlite's
+    /// command tracker, AND any in-flight reader holds an implicit
+    /// transaction that prevents a concurrent writer from issuing
+    /// BEGIN -- producing <c>SQLite Error 1: 'cannot start a
+    /// transaction within a transaction'</c>. Both shapes were observed
+    /// in production telemetry. Reads now take a read lock via
+    /// <see cref="InReadLock{T}"/>; writes continue through the
+    /// write lock. The slim RWL allows readers to run concurrently
+    /// with each other but mutually excludes readers from writers.
     /// </para>
     /// </summary>
     private readonly System.Threading.ReaderWriterLockSlim _writeLock
@@ -103,6 +113,52 @@ internal sealed partial class SqliteBackend : IDatabaseBackend
         {
             if (_connection == null)
                 throw new InvalidOperationException("Backend was closed before this writer could run.");
+            return action();
+        }
+        finally { _writeLock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// B23: read-side counterpart to <see cref="InWriteLock(Action)"/>.
+    /// <para>
+    /// Pre-B23 the backend's contract claimed reads were safe to run
+    /// without lock protection because "SQLite WAL allows concurrent
+    /// readers". That claim only holds for readers on DIFFERENT
+    /// connections; this backend uses ONE shared
+    /// <see cref="SqliteConnection"/>, and Microsoft.Data.Sqlite is
+    /// explicit that a single connection is NOT thread-safe -- two
+    /// threads doing CreateCommand/ExecuteReader/Dispose on the same
+    /// connection corrupt M.D.Sqlite's internal command tracker
+    /// (surfaces as <c>ArgumentOutOfRangeException</c> from inside the
+    /// driver) AND any in-flight reader holds an implicit transaction
+    /// that prevents a concurrent writer from issuing BEGIN
+    /// (surfaces as <c>SQLite Error 1: 'cannot start a transaction
+    /// within a transaction'</c>). Production telemetry recorded both
+    /// shapes when the orchestrator's parallel backup loop drove
+    /// <see cref="ChunkIndexService.AddReference"/> at 8-way fan-out
+    /// against this backend.
+    /// </para>
+    /// <para>
+    /// <b>Implementation note:</b> the helper is named <c>InReadLock</c>
+    /// for caller clarity ("this is a read operation, not a write"),
+    /// but under the hood it acquires the <em>write</em> lock. M.D.Sqlite
+    /// cannot tolerate concurrent access of any kind on a single
+    /// <see cref="SqliteConnection"/> -- even reader-vs-reader is
+    /// unsafe (a regression test confirmed two reader threads racing
+    /// CreateCommand corrupt the internal command-tracker list). The
+    /// underlying <see cref="System.Threading.ReaderWriterLockSlim"/>
+    /// would gladly let two readers in concurrently, so we must use
+    /// the exclusive write side for reads as well. The semantic name
+    /// is preserved so call sites still document intent.
+    /// </para>
+    /// </summary>
+    private T InReadLock<T>(Func<T> action)
+    {
+        _writeLock.EnterWriteLock();
+        try
+        {
+            if (_connection == null)
+                throw new InvalidOperationException("Backend was closed before this reader could run.");
             return action();
         }
         finally { _writeLock.ExitWriteLock(); }

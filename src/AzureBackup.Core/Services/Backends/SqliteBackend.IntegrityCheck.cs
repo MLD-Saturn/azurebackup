@@ -149,24 +149,29 @@ internal sealed partial class SqliteBackend
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         if (_connection == null) throw new InvalidOperationException("Backend is not initialized.");
-        var results = new List<IntegrityCheckRun>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, started_utc, finished_utc, session_id, scope_summary,
-                   files_checked, files_passed, files_failed_t1,
-                   files_failed_t2, files_failed_t3, files_warning,
-                   cancelled, parent_run_id, diag_bundle_path
-            FROM integrity_check_runs
-            ORDER BY started_utc DESC
-            LIMIT $limit;
-            """;
-        cmd.Parameters.AddWithValue("$limit", limit);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            results.Add(ReadRun(reader));
-        }
-        return results;
+            var results = new List<IntegrityCheckRun>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT id, started_utc, finished_utc, session_id, scope_summary,
+                       files_checked, files_passed, files_failed_t1,
+                       files_failed_t2, files_failed_t3, files_warning,
+                       cancelled, parent_run_id, diag_bundle_path
+                FROM integrity_check_runs
+                ORDER BY started_utc DESC
+                LIMIT $limit;
+                """;
+            cmd.Parameters.AddWithValue("$limit", limit);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                results.Add(ReadRun(reader));
+            }
+            return results;
+        });
     }
 
     /// <summary>
@@ -177,22 +182,27 @@ internal sealed partial class SqliteBackend
     public List<IntegrityCheckFailure> GetIntegrityCheckFailures(int runId)
     {
         if (_connection == null) throw new InvalidOperationException("Backend is not initialized.");
-        var results = new List<IntegrityCheckFailure>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, run_id, file_id, local_path, failure_tier,
-                   failure_reason, chunk_hash, detail, diag_file_path
-            FROM integrity_check_failures
-            WHERE run_id = $run
-            ORDER BY failure_tier DESC, local_path ASC;
-            """;
-        cmd.Parameters.AddWithValue("$run", runId);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            results.Add(ReadFailure(reader));
-        }
-        return results;
+            var results = new List<IntegrityCheckFailure>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT id, run_id, file_id, local_path, failure_tier,
+                       failure_reason, chunk_hash, detail, diag_file_path
+                FROM integrity_check_failures
+                WHERE run_id = $run
+                ORDER BY failure_tier DESC, local_path ASC;
+                """;
+            cmd.Parameters.AddWithValue("$run", runId);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                results.Add(ReadFailure(reader));
+            }
+            return results;
+        });
     }
 
     /// <summary>

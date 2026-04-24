@@ -9,8 +9,11 @@ namespace AzureBackup.Core.Services;
 /// Collects diagnostic entries for a single file backup or restore operation.
 /// Thread-safe: multiple producer threads (parallel chunk uploads/downloads) can
 /// log concurrently. On error the collected entries are flushed to a per-file
-/// <c>.diag</c> log file so that all context for the failure is in one place.
-/// On success the entries are discarded.
+/// <c>.diag</c> log file via <see cref="FileOperationDiagnostics.Flush"/> so
+/// that all context for the failure is in one place. On success the entries
+/// are discarded via <see cref="FileOperationDiagnostics.Discard"/>; the
+/// caller MUST invoke either <c>Flush</c> or <c>Discard</c> exactly once or
+/// the shutdown hook will write a stale snapshot at process exit.
 ///
 /// <para><b>Ambient context:</b> Lower-level services (e.g., <c>AzureBlobService</c>)
 /// that don't receive a <c>FileOperationDiagnostics</c> parameter can call
@@ -303,6 +306,30 @@ public sealed class FileOperationDiagnostics
             _live.TryRemove(this, out _);
         }
         return path;
+    }
+
+    /// <summary>
+    /// B23: success-path counterpart to <see cref="Flush"/>. Removes
+    /// this instance from the live registry so the
+    /// <see cref="AppDomain.ProcessExit"/> hook does NOT write a stale
+    /// snapshot of its in-memory entries to disk on app shutdown.
+    /// <para>
+    /// Pre-B23 the success path of <c>BackupFileAsync</c> never invoked
+    /// any flush at all, so live <see cref="FileOperationDiagnostics"/>
+    /// instances accumulated in <see cref="_live"/> until process exit;
+    /// when the user clicked Cancel the shutdown hook fired and wrote
+    /// hundreds of partial-snapshot .diag files for files that had
+    /// already backed up successfully. Calling <c>Discard</c> on the
+    /// success path makes the registry honest about which operations
+    /// are actually still in flight.
+    /// </para>
+    /// </summary>
+    public void Discard()
+    {
+        if (Interlocked.Exchange(ref _isFlushed, 1) == 0)
+        {
+            _live.TryRemove(this, out _);
+        }
     }
 
     private string? WriteSnapshot(string? errorSummary, bool terminal)

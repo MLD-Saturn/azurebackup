@@ -144,26 +144,31 @@ internal sealed partial class SqliteBackend
         // batch for the FileChangeEvent worker without needing to grow.
         const int InitialCapacityCeiling = 1024;
         var initialCapacity = Math.Min(batchSize, InitialCapacityCeiling);
-        var result = new List<FileChangeEvent>(initialCapacity);
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT file_path, change_type, detected_at
-            FROM pending_changes
-            ORDER BY detected_at ASC
-            LIMIT $batch_size;
-            """;
-        cmd.Parameters.AddWithValue("$batch_size", batchSize);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(new FileChangeEvent
+            var result = new List<FileChangeEvent>(initialCapacity);
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT file_path, change_type, detected_at
+                FROM pending_changes
+                ORDER BY detected_at ASC
+                LIMIT $batch_size;
+                """;
+            cmd.Parameters.AddWithValue("$batch_size", batchSize);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
             {
-                FilePath = reader.GetString(0),
-                ChangeType = (FileChangeType)reader.GetInt32(1),
-                DetectedAt = ParseUtc(reader.GetString(2)),
-            });
-        }
-        return result;
+                result.Add(new FileChangeEvent
+                {
+                    FilePath = reader.GetString(0),
+                    ChangeType = (FileChangeType)reader.GetInt32(1),
+                    DetectedAt = ParseUtc(reader.GetString(2)),
+                });
+            }
+            return result;
+        });
     }
 
     /// <summary>
@@ -195,15 +200,19 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT file_path FROM pending_changes;";
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(reader.GetString(0));
-        }
-        return result;
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT file_path FROM pending_changes;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(reader.GetString(0));
+            }
+            return result;
+        });
     }
 
 }

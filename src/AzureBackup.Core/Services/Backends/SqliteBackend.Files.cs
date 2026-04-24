@@ -19,36 +19,43 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        long id;
-        BackedUpFile file;
-        using (var cmd = _connection.CreateCommand())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        // LoadChunksForFile is invoked INSIDE the lock so the per-file SELECT
+        // and the per-chunk SELECT share one read-lock acquisition (RWL is
+        // NoRecursion, so a nested lock would deadlock the same thread).
+        return InReadLock(() =>
         {
-            cmd.CommandText = """
-                SELECT id, local_path, blob_name, file_size, last_modified,
-                       file_hash, status, backed_up_at, metadata_version
-                FROM files WHERE local_path = $local_path;
-                """;
-            cmd.Parameters.AddWithValue("$local_path", localPath);
-            using var reader = cmd.ExecuteReader();
-            if (!reader.Read()) return null;
-
-            id = reader.GetInt64(0);
-            file = new BackedUpFile
+            long id;
+            BackedUpFile file;
+            using (var cmd = _connection.CreateCommand())
             {
-                Id = (int)id,
-                LocalPath = reader.GetString(1),
-                BlobName = reader.GetString(2),
-                FileSize = reader.GetInt64(3),
-                LastModified = ParseUtc(reader.GetString(4)),
-                FileHash = reader.GetString(5),
-                Status = (BackupStatus)reader.GetInt32(6),
-                BackedUpAt = ParseUtc(reader.GetString(7)),
-                MetadataVersion = reader.GetInt32(8),
-            };
-        }
+                cmd.CommandText = """
+                    SELECT id, local_path, blob_name, file_size, last_modified,
+                           file_hash, status, backed_up_at, metadata_version
+                    FROM files WHERE local_path = $local_path;
+                    """;
+                cmd.Parameters.AddWithValue("$local_path", localPath);
+                using var reader = cmd.ExecuteReader();
+                if (!reader.Read()) return (BackedUpFile?)null;
 
-        file.Chunks = LoadChunksForFile(id);
-        return file;
+                id = reader.GetInt64(0);
+                file = new BackedUpFile
+                {
+                    Id = (int)id,
+                    LocalPath = reader.GetString(1),
+                    BlobName = reader.GetString(2),
+                    FileSize = reader.GetInt64(3),
+                    LastModified = ParseUtc(reader.GetString(4)),
+                    FileHash = reader.GetString(5),
+                    Status = (BackupStatus)reader.GetInt32(6),
+                    BackedUpAt = ParseUtc(reader.GetString(7)),
+                    MetadataVersion = reader.GetInt32(8),
+                };
+            }
+
+            file.Chunks = LoadChunksForFile(id);
+            return file;
+        });
     }
 
     /// <summary>
@@ -62,64 +69,68 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var byId = new Dictionary<long, BackedUpFile>();
-        var result = new List<BackedUpFile>();
-
-        using (var cmd = _connection.CreateCommand())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            cmd.CommandText = """
-                SELECT id, local_path, blob_name, file_size, last_modified,
-                       file_hash, status, backed_up_at, metadata_version
-                FROM files;
-                """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            var byId = new Dictionary<long, BackedUpFile>();
+            var result = new List<BackedUpFile>();
+
+            using (var cmd = _connection.CreateCommand())
             {
-                var id = reader.GetInt64(0);
-                var file = new BackedUpFile
+                cmd.CommandText = """
+                    SELECT id, local_path, blob_name, file_size, last_modified,
+                           file_hash, status, backed_up_at, metadata_version
+                    FROM files;
+                    """;
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
                 {
-                    Id = (int)id,
-                    LocalPath = reader.GetString(1),
-                    BlobName = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    LastModified = ParseUtc(reader.GetString(4)),
-                    FileHash = reader.GetString(5),
-                    Status = (BackupStatus)reader.GetInt32(6),
-                    BackedUpAt = ParseUtc(reader.GetString(7)),
-                    MetadataVersion = reader.GetInt32(8),
-                };
-                byId[id] = file;
-                result.Add(file);
+                    var id = reader.GetInt64(0);
+                    var file = new BackedUpFile
+                    {
+                        Id = (int)id,
+                        LocalPath = reader.GetString(1),
+                        BlobName = reader.GetString(2),
+                        FileSize = reader.GetInt64(3),
+                        LastModified = ParseUtc(reader.GetString(4)),
+                        FileHash = reader.GetString(5),
+                        Status = (BackupStatus)reader.GetInt32(6),
+                        BackedUpAt = ParseUtc(reader.GetString(7)),
+                        MetadataVersion = reader.GetInt32(8),
+                    };
+                    byId[id] = file;
+                    result.Add(file);
+                }
             }
-        }
 
-        if (byId.Count == 0) return result;
+            if (byId.Count == 0) return result;
 
-        // Single pass over file_chunks; chunk_order ASC so we can append
-        // directly into each file's Chunks list without sorting later.
-        using (var cmd = _connection.CreateCommand())
-        {
-            cmd.CommandText = """
-                SELECT file_id, chunk_index, offset, length, hash, blob_name
-                FROM file_chunks
-                ORDER BY file_id, chunk_order;
-                """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            // Single pass over file_chunks; chunk_order ASC so we can append
+            // directly into each file's Chunks list without sorting later.
+            using (var cmd = _connection.CreateCommand())
             {
-                if (!byId.TryGetValue(reader.GetInt64(0), out var file)) continue;
-                file.Chunks.Add(new ChunkInfo
+                cmd.CommandText = """
+                    SELECT file_id, chunk_index, offset, length, hash, blob_name
+                    FROM file_chunks
+                    ORDER BY file_id, chunk_order;
+                    """;
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
                 {
-                    Index = reader.GetInt32(1),
-                    Offset = reader.GetInt64(2),
-                    Length = reader.GetInt32(3),
-                    Hash = reader.GetString(4),
-                    BlobName = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                });
+                    if (!byId.TryGetValue(reader.GetInt64(0), out var file)) continue;
+                    file.Chunks.Add(new ChunkInfo
+                    {
+                        Index = reader.GetInt32(1),
+                        Offset = reader.GetInt64(2),
+                        Length = reader.GetInt32(3),
+                        Hash = reader.GetString(4),
+                        BlobName = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                    });
+                }
             }
-        }
 
-        return result;
+            return result;
+        });
     }
 
     /// <summary>

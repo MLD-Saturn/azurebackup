@@ -25,91 +25,95 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var config = new BackupConfiguration();
-
-        using (var cmd = _connection.CreateCommand())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            cmd.CommandText = """
-                SELECT auth_method, storage_account_name, encrypted_connection_string,
-                       container_name, password_salt, password_verification_hash,
-                       last_backup_time, total_bytes_uploaded,
-                       failed_login_attempts, lockout_until_ticks,
-                       is_entra_id_authenticated, entra_id_user_name,
-                       config_version, memory_limit_enabled, memory_limit_mb
-                FROM config WHERE id = 1;
-                """;
-            using var reader = cmd.ExecuteReader();
-            if (reader.Read())
-            {
-                config.AuthMethod = (AzureAuthMethod)reader.GetInt32(0);
-                config.StorageAccountName = reader.IsDBNull(1) ? null : reader.GetString(1);
-                config.EncryptedConnectionString = reader.IsDBNull(2)
-                    ? null
-                    : (byte[])reader.GetValue(2);
-                config.ContainerName = reader.IsDBNull(3) ? null : reader.GetString(3);
-                config.PasswordSalt = reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4);
-                config.PasswordVerificationHash = reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5);
-                config.LastBackupTime = reader.IsDBNull(6) ? null : ParseUtc(reader.GetString(6));
-                config.TotalBytesUploaded = reader.GetInt64(7);
-                config.FailedLoginAttempts = reader.GetInt32(8);
-                config.LockoutUntilTicks = reader.IsDBNull(9) ? null : reader.GetInt64(9);
-                config.IsEntraIdAuthenticated = reader.GetInt32(10) != 0;
-                config.EntraIdUserName = reader.IsDBNull(11) ? null : reader.GetString(11);
-                config.ConfigVersion = reader.GetInt32(12);
-                config.MemoryLimitEnabled = reader.GetInt32(13) != 0;
-                config.MemoryLimitMB = reader.GetInt32(14);
-            }
-        }
+            var config = new BackupConfiguration();
 
-        // Watched folders (and their per-folder exclude lists).
-        var foldersById = new Dictionary<long, WatchedFolder>();
-        using (var cmd = _connection.CreateCommand())
-        {
-            cmd.CommandText = """
-                SELECT id, path, storage_tier, is_enabled FROM watched_folders ORDER BY id;
-                """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            using (var cmd = _connection.CreateCommand())
             {
-                var folder = new WatchedFolder
+                cmd.CommandText = """
+                    SELECT auth_method, storage_account_name, encrypted_connection_string,
+                           container_name, password_salt, password_verification_hash,
+                           last_backup_time, total_bytes_uploaded,
+                           failed_login_attempts, lockout_until_ticks,
+                           is_entra_id_authenticated, entra_id_user_name,
+                           config_version, memory_limit_enabled, memory_limit_mb
+                    FROM config WHERE id = 1;
+                    """;
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
                 {
-                    Path = reader.GetString(1),
-                    StorageTier = (StorageTier)reader.GetInt32(2),
-                    IsEnabled = reader.GetInt32(3) != 0,
-                };
-                foldersById[reader.GetInt64(0)] = folder;
-                config.WatchedFolders.Add(folder);
+                    config.AuthMethod = (AzureAuthMethod)reader.GetInt32(0);
+                    config.StorageAccountName = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    config.EncryptedConnectionString = reader.IsDBNull(2)
+                        ? null
+                        : (byte[])reader.GetValue(2);
+                    config.ContainerName = reader.IsDBNull(3) ? null : reader.GetString(3);
+                    config.PasswordSalt = reader.IsDBNull(4) ? null : (byte[])reader.GetValue(4);
+                    config.PasswordVerificationHash = reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5);
+                    config.LastBackupTime = reader.IsDBNull(6) ? null : ParseUtc(reader.GetString(6));
+                    config.TotalBytesUploaded = reader.GetInt64(7);
+                    config.FailedLoginAttempts = reader.GetInt32(8);
+                    config.LockoutUntilTicks = reader.IsDBNull(9) ? null : reader.GetInt64(9);
+                    config.IsEntraIdAuthenticated = reader.GetInt32(10) != 0;
+                    config.EntraIdUserName = reader.IsDBNull(11) ? null : reader.GetString(11);
+                    config.ConfigVersion = reader.GetInt32(12);
+                    config.MemoryLimitEnabled = reader.GetInt32(13) != 0;
+                    config.MemoryLimitMB = reader.GetInt32(14);
+                }
             }
-        }
 
-        if (foldersById.Count > 0)
-        {
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = """
-                SELECT folder_id, pattern, kind FROM watched_folder_excludes ORDER BY id;
-                """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            // Watched folders (and their per-folder exclude lists).
+            var foldersById = new Dictionary<long, WatchedFolder>();
+            using (var cmd = _connection.CreateCommand())
             {
-                if (!foldersById.TryGetValue(reader.GetInt64(0), out var folder)) continue;
-                var pattern = reader.GetString(1);
-                var kind = reader.GetInt32(2);
-                if (kind == ExcludeKindPattern) folder.ExcludePatterns.Add(pattern);
-                else if (kind == ExcludeKindSubfolder) folder.ExcludeSubfolders.Add(pattern);
+                cmd.CommandText = """
+                    SELECT id, path, storage_tier, is_enabled FROM watched_folders ORDER BY id;
+                    """;
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var folder = new WatchedFolder
+                    {
+                        Path = reader.GetString(1),
+                        StorageTier = (StorageTier)reader.GetInt32(2),
+                        IsEnabled = reader.GetInt32(3) != 0,
+                    };
+                    foldersById[reader.GetInt64(0)] = folder;
+                    config.WatchedFolders.Add(folder);
+                }
             }
-        }
 
-        using (var cmd = _connection.CreateCommand())
-        {
-            cmd.CommandText = "SELECT pattern FROM global_exclude_patterns ORDER BY id;";
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
+            if (foldersById.Count > 0)
             {
-                config.GlobalExcludePatterns.Add(reader.GetString(0));
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = """
+                    SELECT folder_id, pattern, kind FROM watched_folder_excludes ORDER BY id;
+                    """;
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (!foldersById.TryGetValue(reader.GetInt64(0), out var folder)) continue;
+                    var pattern = reader.GetString(1);
+                    var kind = reader.GetInt32(2);
+                    if (kind == ExcludeKindPattern) folder.ExcludePatterns.Add(pattern);
+                    else if (kind == ExcludeKindSubfolder) folder.ExcludeSubfolders.Add(pattern);
+                }
             }
-        }
 
-        return config;
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = "SELECT pattern FROM global_exclude_patterns ORDER BY id;";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    config.GlobalExcludePatterns.Add(reader.GetString(0));
+                }
+            }
+
+            return config;
+        });
     }
 
     /// <summary>

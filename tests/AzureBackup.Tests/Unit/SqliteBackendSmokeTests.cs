@@ -313,4 +313,105 @@ public class SqliteBackendSmokeTests : IDisposable
             "Writers leaked unexpected exceptions: " +
             string.Join(" | ", writerExceptions.Select(e => $"{e.GetType().Name}: {e.Message}")));
     }
+
+    [Fact]
+    public async Task ConcurrentReadsAndWrites_DoNotProduceNestedTransactionOrDriverCorruption()
+    {
+        // B23 regression: drive the same code path the production
+        // BackupOrchestrator hits when its parallel backup loop fans
+        // out ChunkIndexService.AddReference to N workers. Each worker
+        // alternates between SaveChunkIndexEntry (writer) and
+        // GetChunkIndexEntry / GetReferencingFilesForChunk (readers)
+        // on the SAME shared SqliteConnection.
+        //
+        // Pre-B23 the backend serialized only writes; reads were
+        // documented as "WAL allows concurrent readers" -- which is
+        // true for readers on DIFFERENT connections but FALSE for the
+        // single shared connection this backend uses. Production
+        // telemetry showed two failure shapes:
+        //   1. SQLite Error 1: "cannot start a transaction within a
+        //      transaction" -- a reader's open SqliteDataReader
+        //      held an implicit transaction that prevented a writer
+        //      thread from issuing BEGIN.
+        //   2. ArgumentOutOfRangeException ("Index was out of range.
+        //      Must be non-negative and less than the size of the
+        //      collection. (Parameter 'index')") -- two threads
+        //      doing CreateCommand/Dispose corrupted M.D.Sqlite's
+        //      internal command-tracker List<>.
+        // Both shapes were observed in a single 1000-file production
+        // backup run.
+        //
+        // This test exercises both seams. Writers do an upsert per
+        // iteration (BeginTransaction internally via SaveChunkIndexEntry's
+        // ON CONFLICT); readers do GetChunkIndexEntry and
+        // GetReferencingFilesForChunk -- ExecuteReader paths that
+        // pre-B23 were unprotected. Any leaked exception fails the test.
+        using var backend = new SqliteBackend();
+        backend.Initialize(_dbPath, "MixedReadWritePassword123!".AsSpan());
+
+        // Seed a known set of chunks so readers always have rows to read.
+        const int chunkCount = 50;
+        var seed = new List<ChunkIndexEntry>(chunkCount);
+        for (var i = 0; i < chunkCount; i++)
+        {
+            seed.Add(new ChunkIndexEntry
+            {
+                ChunkHash = $"seed-{i:000}",
+                FirstUploadedAt = DateTime.UtcNow,
+                OriginalUploaderPath = $@"C:\seed\file{i}.bin",
+                SizeBytes = 1024 * (i + 1),
+                ReferenceCount = 1,
+                CurrentTier = StorageTier.Hot,
+                LastVerifiedAt = DateTime.UtcNow,
+            });
+        }
+        backend.BulkInsertChunkIndexEntries(seed);
+
+        const int workerCount = 8;
+        const int iterationsPerWorker = 200;
+        var exceptions = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+
+        var workers = Enumerable.Range(0, workerCount).Select(workerId =>
+            Task.Run(() =>
+            {
+                var rng = new Random(workerId * 1009);
+                for (var i = 0; i < iterationsPerWorker; i++)
+                {
+                    try
+                    {
+                        // Half writes, half reads -- mixed in a tight loop
+                        // so threads collide on the connection often.
+                        if ((i & 1) == 0)
+                        {
+                            backend.SaveChunkIndexEntry(new ChunkIndexEntry
+                            {
+                                ChunkHash = $"w{workerId}-{i:000}",
+                                FirstUploadedAt = DateTime.UtcNow,
+                                OriginalUploaderPath = $@"C:\worker{workerId}\file{i}.bin",
+                                SizeBytes = 4096,
+                                ReferenceCount = 1,
+                                CurrentTier = StorageTier.Hot,
+                                LastVerifiedAt = DateTime.UtcNow,
+                            });
+                        }
+                        else
+                        {
+                            var hash = $"seed-{rng.Next(chunkCount):000}";
+                            _ = backend.GetChunkIndexEntry(hash);
+                            _ = backend.GetReferencingFilesForChunk(hash);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Enqueue(ex);
+                    }
+                }
+            })).ToArray();
+
+        await Task.WhenAll(workers);
+
+        Assert.True(exceptions.IsEmpty,
+            "Mixed read/write workload leaked exceptions (B23 regression): " +
+            string.Join(" | ", exceptions.Select(e => $"{e.GetType().Name}: {e.Message}")));
+    }
 }

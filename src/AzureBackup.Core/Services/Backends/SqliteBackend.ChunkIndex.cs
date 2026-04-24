@@ -20,16 +20,20 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT chunk_hash, first_uploaded_at, original_uploader_path,
-                   size_bytes, reference_count, current_tier, last_verified_at
-            FROM chunk_index WHERE chunk_hash = $chunk_hash;
-            """;
-        cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
-        using var reader = cmd.ExecuteReader();
-        if (!reader.Read()) return null;
-        return ReadChunkEntry(reader);
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT chunk_hash, first_uploaded_at, original_uploader_path,
+                       size_bytes, reference_count, current_tier, last_verified_at
+                FROM chunk_index WHERE chunk_hash = $chunk_hash;
+                """;
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) return (ChunkIndexEntry?)null;
+            return ReadChunkEntry(reader);
+        });
     }
 
     /// <summary>
@@ -117,11 +121,15 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT expected_encrypted_md5 FROM chunk_index WHERE chunk_hash = $hash;";
-        cmd.Parameters.AddWithValue("$hash", chunkHash);
-        var result = cmd.ExecuteScalar();
-        return result is byte[] bytes ? bytes : null;
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT expected_encrypted_md5 FROM chunk_index WHERE chunk_hash = $hash;";
+            cmd.Parameters.AddWithValue("$hash", chunkHash);
+            var result = cmd.ExecuteScalar();
+            return result is byte[] bytes ? bytes : null;
+        });
     }
 
     /// <summary>
@@ -137,16 +145,19 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        // Buffer the result up front so the connection isn't tied up
-        // by an open reader while the caller does network I/O per
-        // chunk -- the SQLite write lock would deadlock otherwise
-        // when the caller eventually invokes SetChunkExpectedMd5.
-        var hashes = new List<string>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT chunk_hash FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read()) hashes.Add(reader.GetString(0));
-        return hashes;
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        // Buffer the result up front so the read lock is released before the
+        // caller does network I/O per chunk -- otherwise a subsequent
+        // SetChunkExpectedMd5 (writer) would block waiting for this reader.
+        return InReadLock<IEnumerable<string>>(() =>
+        {
+            var hashes = new List<string>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT chunk_hash FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) hashes.Add(reader.GetString(0));
+            return hashes;
+        });
     }
 
     /// <summary>
@@ -158,9 +169,13 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
-        return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM chunk_index WHERE expected_encrypted_md5 IS NULL;";
+            return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+        });
     }
 
     /// <summary>
@@ -250,19 +265,23 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new List<ChunkIndexEntry>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT chunk_hash, first_uploaded_at, original_uploader_path,
-                   size_bytes, reference_count, current_tier, last_verified_at
-            FROM chunk_index;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(ReadChunkEntry(reader));
-        }
-        return result;
+            var result = new List<ChunkIndexEntry>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT chunk_hash, first_uploaded_at, original_uploader_path,
+                       size_bytes, reference_count, current_tier, last_verified_at
+                FROM chunk_index;
+                """;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(ReadChunkEntry(reader));
+            }
+            return result;
+        });
     }
 
     /// <summary>
@@ -277,21 +296,25 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new Dictionary<string, (int, long, StorageTier)>(StringComparer.Ordinal);
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT chunk_hash, reference_count, size_bytes, current_tier
-            FROM chunk_index;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result[reader.GetString(0)] = (
-                reader.GetInt32(1),
-                reader.GetInt64(2),
-                (StorageTier)reader.GetInt32(3));
-        }
-        return result;
+            var result = new Dictionary<string, (int, long, StorageTier)>(StringComparer.Ordinal);
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT chunk_hash, reference_count, size_bytes, current_tier
+                FROM chunk_index;
+                """;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                result[reader.GetString(0)] = (
+                    reader.GetInt32(1),
+                    reader.GetInt64(2),
+                    (StorageTier)reader.GetInt32(3));
+            }
+            return result;
+        });
     }
 
     /// <summary>
@@ -304,9 +327,13 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT count(*) FROM chunk_index;";
-        return Convert.ToInt32(cmd.ExecuteScalar());
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT count(*) FROM chunk_index;";
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        });
     }
 
     /// <summary>
@@ -349,19 +376,23 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new List<ChunkIndexEntry>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT chunk_hash, first_uploaded_at, original_uploader_path,
-                   size_bytes, reference_count, current_tier, last_verified_at
-            FROM chunk_index WHERE reference_count = 0;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(ReadChunkEntry(reader));
-        }
-        return result;
+            var result = new List<ChunkIndexEntry>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT chunk_hash, first_uploaded_at, original_uploader_path,
+                       size_bytes, reference_count, current_tier, last_verified_at
+                FROM chunk_index WHERE reference_count = 0;
+                """;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(ReadChunkEntry(reader));
+            }
+            return result;
+        });
     }
 
     /// <summary>
@@ -378,10 +409,14 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM chunk_file_refs WHERE chunk_hash = $chunk_hash;";
-        cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
-        return Convert.ToInt32(cmd.ExecuteScalar());
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM chunk_file_refs WHERE chunk_hash = $chunk_hash;";
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        });
     }
 
     /// <summary>
@@ -397,25 +432,29 @@ internal sealed partial class SqliteBackend
         if (_connection == null)
             throw new InvalidOperationException("Backend is not initialized.");
 
-        var result = new List<ChunkFileReference>();
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT file_path, chunk_index, referenced_at
-            FROM chunk_file_refs
-            WHERE chunk_hash = $chunk_hash;
-            """;
-        cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        // B23: serialize against the shared SqliteConnection -- see InReadLock comment.
+        return InReadLock(() =>
         {
-            result.Add(new ChunkFileReference
+            var result = new List<ChunkFileReference>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                SELECT file_path, chunk_index, referenced_at
+                FROM chunk_file_refs
+                WHERE chunk_hash = $chunk_hash;
+                """;
+            cmd.Parameters.AddWithValue("$chunk_hash", chunkHash);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
             {
-                FilePath = reader.GetString(0),
-                ChunkIndex = reader.GetInt32(1),
-                ReferencedAt = ParseUtc(reader.GetString(2)),
-            });
-        }
-        return result;
+                result.Add(new ChunkFileReference
+                {
+                    FilePath = reader.GetString(0),
+                    ChunkIndex = reader.GetInt32(1),
+                    ReferencedAt = ParseUtc(reader.GetString(2)),
+                });
+            }
+            return result;
+        });
     }
 
     // Shared SQL string and reader helper to keep the DML and projection
