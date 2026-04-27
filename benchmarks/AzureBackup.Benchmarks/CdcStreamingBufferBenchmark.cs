@@ -97,7 +97,12 @@ public class CdcStreamingBufferBenchmark
 
         await foreach (var payload in channel.Reader.ReadAllAsync())
         {
-            ArrayPool<byte>.Shared.Return(payload.Data);
+            // B33: exact byte[] allocations carry ReturnToPool=false and
+            // must not be returned to the shared pool.
+            if (payload.ReturnToPool)
+            {
+                ArrayPool<byte>.Shared.Return(payload.Data);
+            }
         }
         return result;
     }

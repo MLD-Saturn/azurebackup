@@ -174,7 +174,7 @@ Follow-ups deferred from B27 (each can become its own future workstream when pri
 
 ## Conventions / patterns observed in this codebase
 
-- **Numbered fixes**: every commit message starts with `B<n>:`. The current series is at **B29** (the hardware-aware MemoryLimitMB default). Pick the next free number (B30 at time of writing) when committing a new fix or feature. Use `git log --oneline | Select-Object -First 1` to confirm the current head before picking a number.
+- **Numbered fixes**: every commit message starts with `B<n>:`. The current series is at **B30** (memory-budget accounting fixes plus B33/B34/B36 in the same commit). Pick the next free number (B31 at time of writing) when committing a new fix or feature. Use `git log --oneline | Select-Object -First 1` to confirm the current head before picking a number.
 - **`[Conditional("DIAGNOSTICLOG")]` logging**: services use `Log(string)` methods that are completely no-ops in Release without the `DIAGNOSTICLOG` constant set. The B16 commit also adds a title-bar marker showing whether the build has DEBUG/DIAG on.
 - **Diagnostic events forwarded by name**: services raise `EventHandler<string>? DiagnosticLog` events; `MainWindowViewModel.OnDiagnosticLog` aggregates them all.
 - **Crash-safe atomic operations**: file moves during DB migration use a sentinel `.upgrade-pending` JSON file plus 4-step rename dance. See `LocalDatabaseService.Migration.cs` and `.Migration.Sqlite.cs`. Do not invent new file-rename code without reading those.
@@ -226,6 +226,8 @@ Notes:
 
 | Hash | Message |
 |---|---|
+| `<B30_HASH>` | B30+B33+B34+B36: producer-side budget accounting, exact byte[] for large chunks, tightened oversized admission, periodic memory log |
+| `d3e60d4` | B29: add B29 row to AGENT_CONTEXT recent-commit-history table |
 | `aa6fec8` | B29: hardware-aware MemoryLimitMB default (25 percent of physical RAM, capped at 8 GB) |
 | `35536b0` | B28: fix AGENT_CONTEXT self-reference of B28 commit hash |
 | `e67951e` | B28: fix empty Local pane on startup; document Avalonia TreeView+Reset-event footgun |

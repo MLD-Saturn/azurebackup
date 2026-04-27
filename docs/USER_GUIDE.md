@@ -368,6 +368,26 @@ The rule is "25 percent of physical RAM, snapped down to a slider step, capped a
 
 The slider snaps to a discrete set of values; the live label shows the chosen MB and a status color (green / amber / red) indicating how aggressive the cap is.
 
+### Memory log lines during a backup (B36)
+
+While a backup is running you will see periodic log lines of the form
+
+```
+[mem] backup t+30s | budget used=2048 MB / 8192 MB (25.0%) | stalls +12 (total 47) | oversized +0 (total 0) | gcHeap=2310 MB | gcLoad=12345 MB | workingSet=2680 MB | privateMem=2750 MB | unaccounted=632 MB | gcCollections=[34,8,1]
+```
+
+emitted every 30 seconds from the moment a backup or mirror operation starts until it finishes. The fields are:
+
+- `budget` — bytes acquired from `MemoryLimitMB` versus the configured cap. A percentage at or near 100 percent across many samples means the budget is binding and the pipeline is throttling.
+- `stalls +N (total M)` — number of times since the previous sample that a chunk had to wait for the budget to free up before it could be admitted, plus the running total since the operation started. A non-zero rate confirms the budget is actually doing its job.
+- `oversized +N (total M)` — number of chunks that bypassed the cap because they individually exceeded the entire budget (the deadlock-avoidance branch). A non-zero value here means the configured cap is smaller than the largest chunk size produced; consider raising `MemoryLimitMB` or reducing the per-extension chunk-size config.
+- `gcHeap` — total managed heap as seen by the GC (`GC.GetTotalMemory`).
+- `gcLoad` — system-wide memory load the GC is observing (`GCMemoryInfo.MemoryLoadBytes`).
+- `workingSet` and `privateMem` — what the OS bills the process for.
+- `unaccounted` — `workingSet - budget.UsedBytes`. This is the gap between what the budget thinks is in flight and what the OS sees the process holding. A small bounded value is normal (managed object headers, the SQLite connection's page cache, etc.). A growing `unaccounted` value across samples is the signature of an undercounted allocation site and should be reported.
+
+The first line is tagged `[mem-start]` and captures the pre-fan-out state; the last line on a given operation arrives at operation completion (just before the operation summary). Operations shorter than 30 seconds will produce only the start and end lines.
+
 ### UI scale
 
 A slider that scales the whole UI, with a reset button next to it.

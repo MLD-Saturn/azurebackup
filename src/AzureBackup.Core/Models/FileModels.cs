@@ -52,10 +52,31 @@ public class ChunkInfo
 
 /// <summary>
 /// Carries chunk metadata and raw data through the CDC-to-upload pipeline.
-/// Data may be a rented ArrayPool buffer (oversized) — use Length for actual data extent.
-/// The consumer returns the buffer to the pool after upload.
+/// <para>
+/// <c>Data</c> may be a rented ArrayPool buffer (oversized) or, for chunks
+/// large enough to skip the pool under B33, an exactly-sized <c>byte[]</c>
+/// allocated by the producer. Use <see cref="Length"/> for the actual data
+/// extent.
+/// </para>
+/// <para>
+/// <c>ChargedBytes</c> (B30) is the amount the producer charged to the
+/// shared <see cref="MemoryBudget"/> when allocating <c>Data</c>. The
+/// consumer MUST release exactly this amount when it is done with the
+/// payload, regardless of <see cref="Length"/>. This decouples accounting
+/// from the user-visible chunk size, so a chunk whose ArrayPool tier
+/// rounded up from 80 MB to 128 MB charges (and releases) the actual
+/// 128 MB residency.
+/// </para>
+/// <para>
+/// <c>ReturnToPool</c> (B33) tells the consumer whether to return
+/// <c>Data</c> to <see cref="System.Buffers.ArrayPool{T}.Shared"/> after
+/// upload. <c>true</c> matches the pre-B33 behaviour. <c>false</c> means
+/// <c>Data</c> was an exact-sized GC allocation that must NOT be returned
+/// to the pool (returning a non-pool array silently corrupts the pool's
+/// invariants).
+/// </para>
 /// </summary>
-public record ChunkPayload(ChunkInfo Info, byte[] Data, int Length);
+public record ChunkPayload(ChunkInfo Info, byte[] Data, int Length, long ChargedBytes, bool ReturnToPool);
 
 public enum BackupStatus
 {

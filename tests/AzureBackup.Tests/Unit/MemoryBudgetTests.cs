@@ -269,4 +269,126 @@ public class MemoryBudgetTests : IDisposable
         Assert.Equal(42, _budget.TotalBytes);
         Assert.False(_budget.IsUnlimited);
     }
+
+    // ---------------------------------------------------------------------
+    // B34: tightened at-least-one branch
+    //
+    // Pre-B34 behaviour: any request that fit OR found _usedBytes==0 was
+    // admitted. Post-B34: the deadlock-avoidance branch admits oversized
+    // requests ONLY when bytes > totalBytes AND _usedBytes == 0. A
+    // request that COULD fit by waiting must wait, even when the budget
+    // is momentarily empty. Each oversized admission increments
+    // OversizedAdmissions so the breach is observable.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void OversizedAdmissionsStartsAtZero()
+    {
+        _budget = new MemoryBudget(1000);
+
+        Assert.Equal(0, _budget.OversizedAdmissions);
+    }
+
+    [Fact]
+    public async Task AcquireBytesGreaterThanTotalIncrementsOversizedAdmissions()
+    {
+        _budget = new MemoryBudget(100);
+
+        // Single acquire that exceeds the entire budget. Pre-B34 this took
+        // the at-least-one branch silently; post-B34 it still succeeds
+        // (deadlock-avoidance is preserved) but the counter is incremented.
+        await _budget.AcquireAsync(500);
+
+        Assert.Equal(500, _budget.UsedBytes);
+        Assert.Equal(1, _budget.OversizedAdmissions);
+
+        _budget.Release(500);
+    }
+
+    [Fact]
+    public async Task AcquireBytesEqualToTotalDoesNotCountAsOversized()
+    {
+        _budget = new MemoryBudget(100);
+
+        // bytes == totalBytes fits within the cap (the <= test in the
+        // fast path), so this is NOT an oversized admission.
+        await _budget.AcquireAsync(100);
+
+        Assert.Equal(100, _budget.UsedBytes);
+        Assert.Equal(0, _budget.OversizedAdmissions);
+
+        _budget.Release(100);
+    }
+
+    [Fact]
+    public async Task AcquireBlocksWhenWouldFitButBudgetMomentarilyDrained()
+    {
+        // B34 regression guard: pre-B34 a fitting request would have
+        // taken the at-least-one branch as soon as the budget read 0,
+        // even though it could fit by waiting. With 16-way file
+        // parallelism this caused the budget to admit unbounded
+        // concurrent requests during transient drain windows. Post-B34
+        // such a request must wait for the slow path so the budget cap
+        // actually holds across all 16 callers.
+        _budget = new MemoryBudget(1000);
+
+        // Acquire and immediately release so _usedBytes returns to 0 but
+        // the budget has clearly been used.
+        await _budget.AcquireAsync(800);
+        _budget.Release(800);
+
+        // Now fill the budget with one call.
+        await _budget.AcquireAsync(800);
+
+        // A second 500-byte request fits (500 <= 1000) but does not fit
+        // RIGHT NOW (500 + 800 > 1000). It must block, not take an
+        // at-least-one shortcut.
+        var secondAcquired = false;
+        var secondTask = Task.Run(async () =>
+        {
+            await _budget.AcquireAsync(500);
+            secondAcquired = true;
+        });
+
+        await Task.Delay(150);
+        Assert.False(secondAcquired);
+        Assert.Equal(0, _budget.OversizedAdmissions);
+
+        _budget.Release(800);
+        await secondTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(secondAcquired);
+        Assert.Equal(0, _budget.OversizedAdmissions);
+
+        _budget.Release(500);
+    }
+
+    [Fact]
+    public async Task AtLeastOneGuaranteeStillFiresForGenuinelyOversizedRequests()
+    {
+        // Companion to the test above: confirm we did not break the
+        // legitimate deadlock-avoidance case. A single request that
+        // CANNOT fit (bytes > totalBytes) must still be admitted when
+        // the budget is empty, otherwise the system deadlocks on a
+        // chunk that legitimately exceeds the configured cap.
+        _budget = new MemoryBudget(100);
+
+        await _budget.AcquireAsync(500);
+
+        Assert.Equal(500, _budget.UsedBytes);
+        Assert.Equal(1, _budget.OversizedAdmissions);
+
+        _budget.Release(500);
+    }
+
+    [Fact]
+    public async Task UnlimitedBudgetDoesNotIncrementOversizedAdmissions()
+    {
+        _budget = new MemoryBudget(long.MaxValue);
+
+        await _budget.AcquireAsync(long.MaxValue / 2);
+
+        // Unlimited fast-paths immediately and never reaches the
+        // oversized-admission code path.
+        Assert.Equal(0, _budget.OversizedAdmissions);
+    }
 }

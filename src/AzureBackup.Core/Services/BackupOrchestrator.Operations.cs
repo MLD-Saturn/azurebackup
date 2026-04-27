@@ -272,6 +272,14 @@ public partial class BackupOrchestrator
         {
             var config = _databaseService.GetConfiguration();
             using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
+            // B36: emit a periodic memory snapshot through StatusChanged so
+            // the always-visible log pane records budget vs working-set
+            // drift during the operation. Wired before BackupFilesCoreAsync
+            // so the initial sample captures pre-fan-out state.
+            using var memReporter = new BackupMemoryReporter(
+                memoryBudget,
+                opLabel: "mirror",
+                emit: line => StatusChanged?.Invoke(this, line));
 
             Log($"MirrorSyncToAzureAsync: Backing up {filesToBackup.Count} new/modified files " +
                 $"(max {EffectiveMaxParallelFileBackups} concurrent, " +
@@ -572,6 +580,13 @@ public partial class BackupOrchestrator
 
         var config = _databaseService.GetConfiguration();
         using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
+        // B36: see MirrorSyncToAzureAsync for the rationale; same pattern
+        // here so any backup operation -- not just mirror -- gets the
+        // periodic memory snapshot in the always-visible log pane.
+        using var memReporter = new BackupMemoryReporter(
+            memoryBudget,
+            opLabel: "backup",
+            emit: line => StatusChanged?.Invoke(this, line));
 
         Log($"BackupFilesAsync: Starting parallel backup of {filePaths.Count} files " +
             $"(max {EffectiveMaxParallelFileBackups} concurrent, " +

@@ -106,8 +106,21 @@ public partial class BackupOrchestrator : IAsyncDisposable
     // Batch size for the background backup monitoring loop
     private const int BackupLoopBatchSize = 50;
 
-    // Memory budget overhead for the CDC buffer (ArrayPool rental in ChunkingService)
-    private const long CdcBufferOverhead = 128L * 1024 * 1024;
+    // Memory budget overhead for fixed (non-chunk) per-file allocations.
+    // <para>
+    // Pre-B30 this was 128 MB, sized to cover the chunking service's
+    // peak per-file payload buffer rental. After B30 the producer's
+    // chunk buffer is charged exactly via
+    // <c>ChunkingService.AcquireChunkBufferAsync</c>, so the only
+    // residual fixed overhead per backup operation is the 64 KB scratch
+    // buffer, file-stream OS read-ahead, the rolling-hash window, and
+    // the IncrementalHash state -- all small and fixed-size. 16 MB is
+    // a generous safety margin that absorbs SqliteBackend connection
+    // overhead, ChannelWriter slot allocations, and any other small
+    // managed allocations that touch the budget's nominal headroom but
+    // are not visible to the budget itself.
+    // </para>
+    private const long CdcBufferOverhead = 16L * 1024 * 1024;
 
     public event EventHandler<BackupProgressEventArgs>? ProgressChanged;
     public event EventHandler<string>? StatusChanged;
@@ -665,8 +678,13 @@ public partial class BackupOrchestrator : IAsyncDisposable
             {
                 try
                 {
+                    // B30: pass the shared memoryBudget through to the
+                    // chunking service so producer-side allocations are
+                    // charged at rent time. The consumer below no longer
+                    // re-charges -- it only releases the amount the
+                    // producer charged, which is carried on the payload.
                     var (producedChunks, producedHash) = await _chunkingService.ChunkAndStreamChangedAsync(
-                        filePath, existingHashes, channel.Writer, cdcProgress, cancellationToken);
+                        filePath, existingHashes, channel.Writer, cdcProgress, memoryBudget, cancellationToken);
                     return (producedChunks, producedHash);
                 }
                 finally
@@ -683,12 +701,13 @@ public partial class BackupOrchestrator : IAsyncDisposable
             {
                 await foreach (var payload in channel.Reader.ReadAllAsync(cancellationToken))
                 {
-                    // Memory budget: acquire the cost of plaintext + encrypted copy.
-                    // EncryptInto writes into a rented buffer inside the blob service,
-                    // so the actual in-flight memory per chunk is ~2× plaintext size.
-                    var chunkMemoryCost = (long)payload.Length * 2;
-                    if (memoryBudget != null)
-                        await memoryBudget.AcquireAsync(chunkMemoryCost, cancellationToken);
+                    // B30: producer-side charging means the budget was
+                    // already debited when this payload's buffer was
+                    // allocated. The consumer does NOT re-acquire here --
+                    // doing so would double-charge each chunk and the
+                    // budget would saturate at half capacity. We only
+                    // need to mirror the producer's release in the
+                    // finally block below.
                     try
                     {
                         // Slice the rented buffer to actual data extent for upload
@@ -744,8 +763,27 @@ public partial class BackupOrchestrator : IAsyncDisposable
                             payload.Length,
                             extra: $"firstByte=0x{(payload.Length > 0 ? payload.Data[0] : 0):X2}");
                         CryptographicOperations.ZeroMemory(payload.Data.AsSpan(0, payload.Length));
-                        ArrayPool<byte>.Shared.Return(payload.Data);
-                        memoryBudget?.Release(chunkMemoryCost);
+
+                        // B33: respect the producer's allocation decision.
+                        // Pool-rented buffers go back to the pool; exact
+                        // byte[] allocations get released to the GC by
+                        // dropping the reference. Returning a non-pool
+                        // array via ArrayPool.Return silently corrupts
+                        // the pool's tier buckets, so the flag is
+                        // load-bearing.
+                        if (payload.ReturnToPool)
+                        {
+                            ArrayPool<byte>.Shared.Return(payload.Data);
+                        }
+
+                        // B30: release exactly what the producer charged.
+                        // Using payload.ChargedBytes (not payload.Length)
+                        // mirrors the producer's accounting decision so a
+                        // pool-tier-rounded charge is fully reclaimed.
+                        if (payload.ChargedBytes > 0)
+                        {
+                            memoryBudget?.Release(payload.ChargedBytes);
+                        }
                     }
                 }
             }).ToArray();

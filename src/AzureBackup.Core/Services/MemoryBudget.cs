@@ -24,6 +24,7 @@ public sealed class MemoryBudget : IDisposable
     private long _usedBytes;
     private int _waitersCount;
     private long _stallCount;
+    private long _oversizedAdmissions;
     private readonly Lock _lock = new();
     private readonly SemaphoreSlim _budgetReleased = new(0, int.MaxValue);
 
@@ -49,6 +50,16 @@ public sealed class MemoryBudget : IDisposable
     public long StallCount => Volatile.Read(ref _stallCount);
 
     /// <summary>
+    /// B34: number of acquisitions that bypassed the cap because a single
+    /// request exceeded the entire budget (and would otherwise deadlock).
+    /// A non-zero value means the user's configured ceiling was breached
+    /// at least once during the operation; <see cref="BackupMemoryReporter"/>
+    /// surfaces this in periodic samples so the breach is visible without
+    /// having to wait for the operation summary. Thread-safe.
+    /// </summary>
+    public long OversizedAdmissions => Volatile.Read(ref _oversizedAdmissions);
+
+    /// <summary>
     /// Resets the stall counter to zero. Call at the start of each operation
     /// to get per-operation stall counts.
     /// </summary>
@@ -69,8 +80,21 @@ public sealed class MemoryBudget : IDisposable
 
     /// <summary>
     /// Acquires <paramref name="bytes"/> from the budget, waiting if necessary.
-    /// Always allows at least one operation even if it exceeds the remaining budget,
-    /// preventing deadlock when a single chunk is larger than available headroom.
+    /// <para>
+    /// B34: the deadlock-avoidance branch admits a request that exceeds
+    /// the remaining budget ONLY when the request itself is larger than
+    /// the entire budget AND no other operation is currently in flight.
+    /// Pre-B34 the branch fired whenever <c>_usedBytes == 0</c>, which on a
+    /// long-running parallel backup could happen repeatedly between
+    /// drain cycles -- each oversized admission then bypassed the cap and
+    /// the actual residency drifted past the configured ceiling. The
+    /// new check guarantees a single chunk that legitimately cannot fit
+    /// (e.g. a 128 MB CDC payload on a 64 MB budget) is still admitted,
+    /// while a chunk that COULD fit if it waited will wait, even when
+    /// the budget happens to read empty at this instant. Each oversized
+    /// admission increments <see cref="OversizedAdmissions"/> so the
+    /// breach is observable rather than silent.
+    /// </para>
     /// </summary>
     /// <param name="bytes">Cost in bytes (typically chunkSize × 2 for encrypt, × 3 for download).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -84,9 +108,20 @@ public sealed class MemoryBudget : IDisposable
         // Fast path: try to acquire without waiting
         lock (_lock)
         {
-            if (_usedBytes + bytes <= _totalBytes || _usedBytes == 0)
+            if (_usedBytes + bytes <= _totalBytes)
             {
                 _usedBytes += bytes;
+                return;
+            }
+
+            // B34: deadlock-avoidance only fires for genuinely oversized
+            // requests when nothing else is in flight. A request that
+            // could fit by waiting must wait, even when the budget is
+            // momentarily empty.
+            if (bytes > _totalBytes && _usedBytes == 0)
+            {
+                _usedBytes += bytes;
+                Interlocked.Increment(ref _oversizedAdmissions);
                 return;
             }
         }
@@ -102,9 +137,16 @@ public sealed class MemoryBudget : IDisposable
 
                 lock (_lock)
                 {
-                    if (_usedBytes + bytes <= _totalBytes || _usedBytes == 0)
+                    if (_usedBytes + bytes <= _totalBytes)
                     {
                         _usedBytes += bytes;
+                        return;
+                    }
+
+                    if (bytes > _totalBytes && _usedBytes == 0)
+                    {
+                        _usedBytes += bytes;
+                        Interlocked.Increment(ref _oversizedAdmissions);
                         return;
                     }
                 }
