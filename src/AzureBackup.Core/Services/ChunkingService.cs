@@ -188,7 +188,9 @@ public class ChunkingService
 
     /// <summary>
     /// B30: rents (or allocates) a chunk-payload buffer and charges the
-    /// shared <see cref="MemoryBudget"/> for the actual allocated size.
+    /// shared <see cref="MemoryBudget"/> for the actual allocated size
+    /// PLUS the downstream encrypt-side rented buffer that the consumer
+    /// will allocate when it picks the chunk off the channel (B38).
     /// Returns the buffer, the charged byte count, and a flag indicating
     /// whether the consumer should return the buffer to the pool.
     /// <para>
@@ -201,8 +203,22 @@ public class ChunkingService
     /// rental.
     /// </para>
     /// <para>
+    /// B38: the encrypt-side buffer (chunk + 37 bytes overhead, rounded up
+    /// to <see cref="ArrayPool{T}.Shared"/>'s tier ceiling) is charged
+    /// HERE, on the producer side, in the same atomic Acquire as the
+    /// payload buffer. This avoids a producer-vs-consumer circular wait
+    /// on the budget: an alternative design where the consumer
+    /// re-acquires for the encrypt buffer can deadlock when the producer
+    /// charge fills the budget before the consumer's Acquire can run, and
+    /// the producer charge can only release after the consumer finishes
+    /// its upload -- which it cannot start because its Acquire is blocked
+    /// on the producer charge. Charging both stages on the producer side
+    /// in one atomic operation makes the budget a strict throttle on the
+    /// producer alone; the consumer never Acquires, only Releases.
+    /// </para>
+    /// <para>
     /// Charging happens BEFORE the buffer is allocated so the budget can
-    /// throttle the producer. With B30 in place the producer is the
+    /// throttle the producer. With B30+B38 in place the producer is the
     /// budget-binding stage; the channel-buffered ChunkPayloads, the
     /// consumer-side encrypt buffer, and any SDK staging downstream all
     /// live within the headroom the producer has already reserved.
@@ -216,18 +232,14 @@ public class ChunkingService
         // Decide pool vs exact-allocation BEFORE charging so the charged
         // amount matches the actual residency that will be created.
         var skipPool = payloadSize >= PoolSkipThresholdBytes;
-        long chargedBytes;
+        long payloadCharge;
         byte[] buffer;
         bool returnToPool;
 
         if (skipPool)
         {
             // Exact allocation: charge exactly the requested size.
-            chargedBytes = payloadSize;
-            if (budget != null)
-                await budget.AcquireAsync(chargedBytes, cancellationToken);
-            buffer = new byte[payloadSize];
-            returnToPool = false;
+            payloadCharge = payloadSize;
         }
         else
         {
@@ -237,9 +249,34 @@ public class ChunkingService
             // gap. We compute the tier ceiling defensively without
             // duplicating ArrayPool's internal sizing -- worst case the
             // tier rounds up to next power-of-two, so we charge that.
-            chargedBytes = NextPowerOfTwoOrSelf(payloadSize);
-            if (budget != null)
-                await budget.AcquireAsync(chargedBytes, cancellationToken);
+            payloadCharge = NextPowerOfTwoOrSelf(payloadSize);
+        }
+
+        // B38: add the encrypt-side rented buffer to the charge. The
+        // encrypt-side allocation is `payloadSize + EncryptionOverhead`
+        // bytes rented from ArrayPool<byte>.Shared and is alive from the
+        // moment the consumer picks up the payload until the upload
+        // completes. We charge its tier ceiling here so the budget
+        // covers the chunk's full pipeline residency in one Acquire.
+        //
+        // Note: when payloadSize is itself a power of two (e.g. exactly
+        // 128 MB on the LargeFileConfig path), encrypt rounds up to the
+        // NEXT tier (256 MB) because of the 37-byte overhead. That is
+        // the correct charge for that case -- ArrayPool will indeed
+        // hand back the next-larger tier.
+        var encryptCharge = (long)NextPowerOfTwoOrSelf(payloadSize + EncryptionService.EncryptionOverhead);
+
+        var chargedBytes = payloadCharge + encryptCharge;
+        if (budget != null)
+            await budget.AcquireAsync(chargedBytes, cancellationToken);
+
+        if (skipPool)
+        {
+            buffer = new byte[payloadSize];
+            returnToPool = false;
+        }
+        else
+        {
             buffer = ArrayPool<byte>.Shared.Rent(payloadSize);
             returnToPool = true;
         }

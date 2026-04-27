@@ -729,6 +729,18 @@ public partial class BackupOrchestrator : IAsyncDisposable
                             progress?.Report((uploaded, totalFileSize));
                         });
 
+                        // B30/B38: the producer charge in
+                        // ChunkingService.AcquireChunkBufferAsync covers
+                        // BOTH the chunk-payload buffer AND the
+                        // downstream encrypt-side rented buffer in a
+                        // single Acquire. The blob service does not
+                        // re-acquire from the same budget here -- doing
+                        // so would create a producer-vs-consumer
+                        // circular wait, since the producer charge can
+                        // only release after the consumer finishes the
+                        // upload, but the consumer's encrypt-Acquire
+                        // would block on the producer charge that is
+                        // already filling the budget.
                         payload.Info.BlobName = isNewFile
                             ? await _blobService.UploadChunkDirectAsync(chunkData, payload.Info.Hash, storageTier,
                                 uploadProgress, cancellationToken)

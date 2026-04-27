@@ -798,6 +798,47 @@ public class BackupOrchestratorTests : IAsyncLifetime
         Assert.Equal(0, budget.UsedBytes);
     }
 
+    [Fact]
+    public async Task B38_ProducerChargeCoversEncryptBuffer_NoDeadlockOnMultiChunkFile()
+    {
+        // Regression guard for the B38 producer-vs-consumer deadlock.
+        //
+        // Pre-fix: B38 added a consumer-side Acquire for the encrypt
+        // buffer on top of B30's producer-side Acquire for the chunk
+        // buffer. With a tight budget, the producer charge could fill
+        // the budget before any consumer's encrypt-Acquire could run,
+        // and the producer charge could only release after the consumer
+        // finished uploading -- which it could not start because its
+        // Acquire was blocked on the producer charge. Result: every
+        // pipeline staged through this code path hung indefinitely.
+        //
+        // Post-fix: the producer charge in
+        // ChunkingService.AcquireChunkBufferAsync covers BOTH the chunk
+        // buffer AND the downstream encrypt buffer in one atomic
+        // Acquire. The consumer never Acquires; only Releases. There
+        // is no circular wait possible.
+        //
+        // The test deliberately creates a multi-chunk file with a
+        // budget that is smaller than the worst-case per-chunk
+        // residency so the at-least-one branch fires, and uses a
+        // wall-clock timeout to convert any future deadlock back into
+        // a fast-failing test rather than a hang.
+        await _orchestrator.InitializeAsync(TestPassword);
+
+        var filePath = Path.Combine(_sourceDirectory, "multi_chunk_tight_budget.bin");
+        // 8 MB of random content; default-extension chunk config is
+        // 64 KB - 1 MB so this produces multiple chunks per pipeline.
+        await File.WriteAllBytesAsync(filePath, CreateRandomContent(8 * 1024 * 1024));
+
+        using var budget = new MemoryBudget(512 * 1024);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var success = await _orchestrator.BackupFileAsync(filePath, progress: null, budget, cts.Token);
+
+        Assert.True(success);
+        Assert.Equal(0, budget.UsedBytes);
+    }
+
     #endregion
 
     #region Helper Methods
