@@ -226,6 +226,8 @@ Notes:
 
 | Hash | Message |
 |---|---|
+| `aa6fec8` | B29: hardware-aware MemoryLimitMB default (25 percent of physical RAM, capped at 8 GB) |
+| `35536b0` | B28: fix AGENT_CONTEXT self-reference of B28 commit hash |
 | `e67951e` | B28: fix empty Local pane on startup; document Avalonia TreeView+Reset-event footgun |
 | `4364faf` | B27: fix AGENT_CONTEXT self-reference of B27 commit hash |
 | `fee6622` | B27: 16-way file concurrency, MemoryLimit defaults on/8 GB, InMemoryBlobService discard mode, big-scale benchmark result tables |
