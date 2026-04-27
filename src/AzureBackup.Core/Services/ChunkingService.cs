@@ -224,9 +224,10 @@ public class ChunkingService
     /// live within the headroom the producer has already reserved.
     /// </para>
     /// </summary>
-    private static async Task<(byte[] Buffer, long ChargedBytes, bool ReturnToPool)> AcquireChunkBufferAsync(
+    private static async Task<(byte[] Buffer, long ChargedBytes, bool ReturnToPool, LargeChunkBufferPool? LargeChunkPool)> AcquireChunkBufferAsync(
         int payloadSize,
         MemoryBudget? budget,
+        LargeChunkBufferPool? largeChunkPool,
         CancellationToken cancellationToken)
     {
         // Decide pool vs exact-allocation BEFORE charging so the charged
@@ -235,6 +236,7 @@ public class ChunkingService
         long payloadCharge;
         byte[] buffer;
         bool returnToPool;
+        LargeChunkBufferPool? assignedLargeChunkPool = null;
 
         if (skipPool)
         {
@@ -272,8 +274,33 @@ public class ChunkingService
 
         if (skipPool)
         {
-            buffer = new byte[payloadSize];
-            returnToPool = false;
+            // B37: when a LargeChunkBufferPool is supplied, the
+            // skip-pool allocation goes through the bounded LOH
+            // recycler instead of `new byte[]`. The recycler keeps
+            // cached buffers ALIVE forever so the GC never has to
+            // reclaim a 128 MB LOH-resident array between gen-2
+            // collections, which was the dominant residency leak the
+            // B36 memory log surfaced after B30/B33/B34 landed. The
+            // recycler is bounded (per-bucket cap) so total residency
+            // is strictly capped; overflow above the cap allocates
+            // fresh, falling back to the pre-B37 GC-managed path. The
+            // consumer sees a buffer whose `Length` matches the
+            // bucket size (>= payloadSize), but the chunk loop only
+            // ever writes up to `chunkLength` bytes and slices to
+            // that length when handing off, so the bucket-size
+            // overshoot is invisible downstream.
+            if (largeChunkPool != null)
+            {
+                var (poolBuffer, _) = largeChunkPool.Rent(payloadSize);
+                buffer = poolBuffer;
+                returnToPool = false; // not the shared ArrayPool
+                assignedLargeChunkPool = largeChunkPool;
+            }
+            else
+            {
+                buffer = new byte[payloadSize];
+                returnToPool = false;
+            }
         }
         else
         {
@@ -281,21 +308,25 @@ public class ChunkingService
             returnToPool = true;
         }
 
-        return (buffer, chargedBytes, returnToPool);
+        return (buffer, chargedBytes, returnToPool, assignedLargeChunkPool);
     }
 
     /// <summary>
     /// Releases a chunk-payload buffer that <see cref="AcquireChunkBufferAsync"/>
-    /// produced. Matches the rent path (pool vs GC) so the pool's invariants
-    /// are preserved.
+    /// produced. Matches the rent path (LargeChunkBufferPool vs ArrayPool
+    /// vs raw GC byte[]) so the underlying pool's invariants are preserved.
     /// </summary>
-    private static void ReleaseChunkBuffer(byte[] buffer, bool returnToPool, long chargedBytes, MemoryBudget? budget)
+    private static void ReleaseChunkBuffer(byte[] buffer, bool returnToPool, LargeChunkBufferPool? largeChunkPool, long chargedBytes, MemoryBudget? budget)
     {
-        if (returnToPool)
+        if (largeChunkPool != null)
+        {
+            largeChunkPool.Return(buffer);
+        }
+        else if (returnToPool)
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
-        // Else: exact byte[] -- let the GC reclaim it. Nothing to do here.
+        // Else: raw new byte[] -- let the GC reclaim it. Nothing to do here.
 
         if (budget != null && chargedBytes > 0)
             budget.Release(chargedBytes);
@@ -413,7 +444,7 @@ public class ChunkingService
         IProgress<(long bytesProcessed, long totalBytes, int chunksFound)>? cdcProgress,
         CancellationToken cancellationToken = default)
         => ChunkAndStreamChangedAsync(filePath, existingHashes, channel, cdcProgress,
-            memoryBudget: null, cancellationToken);
+            memoryBudget: null, largeChunkPool: null, cancellationToken);
 
     /// <summary>
     /// B30 overload: same as <see cref="ChunkAndStreamChangedAsync(string, HashSet{string}, ChannelWriter{ChunkPayload}, IProgress{(long, long, int)}?, CancellationToken)"/>
@@ -421,12 +452,35 @@ public class ChunkingService
     /// at allocation time. Pass <c>null</c> for the legacy unaccounted
     /// behaviour (used by the CDC benchmarks that never run with a budget).
     /// </summary>
+    public Task<(List<ChunkInfo> Chunks, string FileHash)> ChunkAndStreamChangedAsync(
+        string filePath,
+        HashSet<string> existingHashes,
+        ChannelWriter<ChunkPayload> channel,
+        IProgress<(long bytesProcessed, long totalBytes, int chunksFound)>? cdcProgress,
+        MemoryBudget? memoryBudget,
+        CancellationToken cancellationToken = default)
+        => ChunkAndStreamChangedAsync(filePath, existingHashes, channel, cdcProgress,
+            memoryBudget, largeChunkPool: null, cancellationToken);
+
+    /// <summary>
+    /// B37 overload: as above, plus an optional
+    /// <see cref="LargeChunkBufferPool"/> that the producer rents
+    /// from for chunks at or above
+    /// <see cref="PoolSkipThresholdBytes"/>. When supplied, chunks
+    /// large enough to skip <see cref="ArrayPool{T}.Shared"/> instead
+    /// flow through the bounded LOH recycler -- buffers stay alive
+    /// forever (no gen-2 retention pressure) but the per-bucket cap
+    /// strictly bounds total residency. Pass <c>null</c> to keep the
+    /// pre-B37 behaviour of allocating a fresh <c>byte[]</c> for
+    /// every large chunk.
+    /// </summary>
     public async Task<(List<ChunkInfo> Chunks, string FileHash)> ChunkAndStreamChangedAsync(
         string filePath,
         HashSet<string> existingHashes,
         ChannelWriter<ChunkPayload> channel,
         IProgress<(long bytesProcessed, long totalBytes, int chunksFound)>? cdcProgress,
         MemoryBudget? memoryBudget,
+        LargeChunkBufferPool? largeChunkPool,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
@@ -447,7 +501,7 @@ public class ChunkingService
         if (fileLength <= config.MinChunkSize)
         {
             await EmitSingleChunkAsync(stream, fileLength, fileHasher, existingHashes,
-                channel, cdcProgress, chunks, memoryBudget, cancellationToken);
+                channel, cdcProgress, chunks, memoryBudget, largeChunkPool, cancellationToken);
             return (chunks, FinalizeFileHash(fileHasher));
         }
 
@@ -480,6 +534,7 @@ public class ChunkingService
         byte[]? payloadBuffer = null;
         long payloadCharged = 0;
         bool payloadReturnToPool = false;
+        LargeChunkBufferPool? payloadLargeChunkPool = null;
         try
         {
             var chunkStart = 0L;
@@ -499,8 +554,8 @@ public class ChunkingService
             // charge the budget for it. AcquireChunkBufferAsync awaits when
             // the budget is full, which is the throttling primitive that
             // keeps the producer side honest.
-            (payloadBuffer, payloadCharged, payloadReturnToPool) =
-                await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, cancellationToken);
+            (payloadBuffer, payloadCharged, payloadReturnToPool, payloadLargeChunkPool) =
+                await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, largeChunkPool, cancellationToken);
 
             while (true)
             {
@@ -520,12 +575,13 @@ public class ChunkingService
                             var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
                                 ComputeChunkHash(span));
                             await DispatchChunkAsync(chunk, payloadBuffer, payloadCharged,
-                                payloadReturnToPool, chunks, existingHashes,
+                                payloadReturnToPool, payloadLargeChunkPool, chunks, existingHashes,
                                 channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
                             // Ownership transferred (or buffer + budget released
                             // inside DispatchChunkAsync on the dedup branch).
                             payloadBuffer = null;
                             payloadCharged = 0;
+                            payloadLargeChunkPool = null;
                         }
                         break;
                     }
@@ -565,7 +621,7 @@ public class ChunkingService
                     var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
                         ComputeChunkHash(span));
                     await DispatchChunkAsync(chunk, payloadBuffer, payloadCharged,
-                        payloadReturnToPool, chunks, existingHashes,
+                        payloadReturnToPool, payloadLargeChunkPool, chunks, existingHashes,
                         channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
 
                     // Ownership of the buffer was transferred to the consumer
@@ -582,6 +638,7 @@ public class ChunkingService
                     {
                         payloadBuffer = null;
                         payloadCharged = 0;
+                        payloadLargeChunkPool = null;
                         break;
                     }
 
@@ -589,8 +646,8 @@ public class ChunkingService
                     // where the budget binds for files with many large
                     // chunks -- the producer awaits here when the in-flight
                     // headroom is consumed by upstream consumers.
-                    (payloadBuffer, payloadCharged, payloadReturnToPool) =
-                        await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, cancellationToken);
+                    (payloadBuffer, payloadCharged, payloadReturnToPool, payloadLargeChunkPool) =
+                        await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, largeChunkPool, cancellationToken);
                 }
             }
 
@@ -605,7 +662,7 @@ public class ChunkingService
             // both the buffer and the charged bytes.
             if (payloadBuffer != null)
             {
-                ReleaseChunkBuffer(payloadBuffer, payloadReturnToPool, payloadCharged, memoryBudget);
+                ReleaseChunkBuffer(payloadBuffer, payloadReturnToPool, payloadLargeChunkPool, payloadCharged, memoryBudget);
             }
         }
     }
@@ -630,6 +687,7 @@ public class ChunkingService
         byte[] payloadBuffer,
         long payloadCharged,
         bool payloadReturnToPool,
+        LargeChunkBufferPool? payloadLargeChunkPool,
         List<ChunkInfo> chunks,
         HashSet<string> existingHashes,
         ChannelWriter<ChunkPayload> channel,
@@ -651,15 +709,16 @@ public class ChunkingService
             // after the first MaxParallel files even though no bytes are
             // actually in flight.
             chunk.BlobName = $"chunks/{chunk.Hash}";
-            ReleaseChunkBuffer(payloadBuffer, payloadReturnToPool, payloadCharged, memoryBudget);
+            ReleaseChunkBuffer(payloadBuffer, payloadReturnToPool, payloadLargeChunkPool, payloadCharged, memoryBudget);
         }
         else
         {
-            // Ownership transfers to the consumer. ChargedBytes and
-            // ReturnToPool ride along on the payload so the consumer can
-            // mirror the producer's accounting decision exactly.
+            // Ownership transfers to the consumer. ChargedBytes,
+            // ReturnToPool, and LargeChunkPool ride along on the payload
+            // so the consumer can mirror the producer's accounting and
+            // pool decisions exactly.
             await channel.WriteAsync(
-                new ChunkPayload(chunk, payloadBuffer, chunk.Length, payloadCharged, payloadReturnToPool),
+                new ChunkPayload(chunk, payloadBuffer, chunk.Length, payloadCharged, payloadReturnToPool, payloadLargeChunkPool),
                 cancellationToken);
         }
 
@@ -679,14 +738,15 @@ public class ChunkingService
         IProgress<(long bytesProcessed, long totalBytes, int chunksFound)>? cdcProgress,
         List<ChunkInfo> chunks,
         MemoryBudget? memoryBudget,
+        LargeChunkBufferPool? largeChunkPool,
         CancellationToken cancellationToken)
     {
         var dataLength = (int)fileLength;
         // B30: charge the budget before allocating, even on the tiny-file
         // path. ArrayPool.Rent(0) throws so we always size at least 1.
         var rentSize = Math.Max(dataLength, 1);
-        var (data, charged, returnToPool) = await AcquireChunkBufferAsync(
-            rentSize, memoryBudget, cancellationToken);
+        var (data, charged, returnToPool, assignedLargeChunkPool) = await AcquireChunkBufferAsync(
+            rentSize, memoryBudget, largeChunkPool, cancellationToken);
         var transferred = false;
         try
         {
@@ -709,7 +769,7 @@ public class ChunkingService
             {
                 // Ownership transfers to the consumer.
                 await channel.WriteAsync(
-                    new ChunkPayload(info, data, dataLength, charged, returnToPool),
+                    new ChunkPayload(info, data, dataLength, charged, returnToPool, assignedLargeChunkPool),
                     cancellationToken);
                 transferred = true;
             }
@@ -722,7 +782,7 @@ public class ChunkingService
         {
             if (!transferred)
             {
-                ReleaseChunkBuffer(data, returnToPool, charged, memoryBudget);
+                ReleaseChunkBuffer(data, returnToPool, assignedLargeChunkPool, charged, memoryBudget);
             }
         }
     }

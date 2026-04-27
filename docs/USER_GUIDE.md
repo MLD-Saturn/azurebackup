@@ -373,7 +373,7 @@ The slider snaps to a discrete set of values; the live label shows the chosen MB
 While a backup is running you will see periodic log lines of the form
 
 ```
-[mem] backup t+30s | budget used=2048 MB / 8192 MB (25.0%) | stalls +12 (total 47) | oversized +0 (total 0) | gcHeap=2310 MB | gcLoad=12345 MB | workingSet=2680 MB | privateMem=2750 MB | unaccounted=632 MB | gcCollections=[34,8,1]
+[mem] backup t+30s | budget used=2048 MB / 8192 MB (25.0%) | stalls +12 (total 47) | oversized +0 (total 0) | gcHeap=2310 MB | gcLoad=12345 MB | workingSet=2680 MB | privateMem=2750 MB | unaccounted=632 MB | gcCollections=[34,8,1] | lohPool=1024 MB cached, hit=87%
 ```
 
 emitted every 30 seconds from the moment a backup or mirror operation starts until it finishes. The fields are:
@@ -385,6 +385,7 @@ emitted every 30 seconds from the moment a backup or mirror operation starts unt
 - `gcLoad` — system-wide memory load the GC is observing (`GCMemoryInfo.MemoryLoadBytes`).
 - `workingSet` and `privateMem` — what the OS bills the process for.
 - `unaccounted` — `workingSet - budget.UsedBytes`. This is the gap between what the budget thinks is in flight and what the OS sees the process holding. A small bounded value is normal (managed object headers, the SQLite connection's page cache, etc.). A growing `unaccounted` value across samples is the signature of an undercounted allocation site and should be reported.
+- `lohPool=X MB cached, hit=Y%` (B37) — current residency in the operation-scoped LOH recycler pool that holds large-chunk buffers, plus the percentage of large-chunk rents that were served from the pool's cache instead of allocating fresh. A high hit rate (typically above 70 percent in steady state) confirms the recycler is doing its job; a low hit rate with high `gcHeap` growth means buffers are flowing through the pool but not being kept across chunks (e.g. a workload where every chunk lands in a different bucket size). The cached residency is bounded by the per-bucket cap so a steady value here is expected.
 
 The first line is tagged `[mem-start]` and captures the pre-fan-out state; the last line on a given operation arrives at operation completion (just before the operation summary). Operations shorter than 30 seconds will produce only the start and end lines.
 

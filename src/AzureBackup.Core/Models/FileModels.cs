@@ -1,3 +1,5 @@
+using AzureBackup.Core.Services;
+
 namespace AzureBackup.Core.Models;
 
 /// <summary>
@@ -71,12 +73,31 @@ public class ChunkInfo
 /// <c>ReturnToPool</c> (B33) tells the consumer whether to return
 /// <c>Data</c> to <see cref="System.Buffers.ArrayPool{T}.Shared"/> after
 /// upload. <c>true</c> matches the pre-B33 behaviour. <c>false</c> means
-/// <c>Data</c> was an exact-sized GC allocation that must NOT be returned
-/// to the pool (returning a non-pool array silently corrupts the pool's
-/// invariants).
+/// <c>Data</c> was either an exact-sized GC allocation that must be
+/// dropped on the floor (legacy B33 path with no pool) OR is owned by
+/// <c>LargeChunkPool</c> and must be returned there instead -- the
+/// consumer's dispatch is "if LargeChunkPool != null, return there;
+/// else if ReturnToPool, return to ArrayPool.Shared; else drop".
+/// Returning a non-pool array to the shared pool silently corrupts
+/// the pool's invariants, so the flag is load-bearing.
+/// </para>
+/// <para>
+/// <c>LargeChunkPool</c> (B37) is the per-operation
+/// <see cref="LargeChunkBufferPool"/> that owns <c>Data</c> when the
+/// chunk skipped <see cref="System.Buffers.ArrayPool{T}.Shared"/> AND
+/// the orchestrator supplied a pool. <c>null</c> for chunks that flow
+/// through the shared pool (small chunks below
+/// <c>ChunkingService.PoolSkipThresholdBytes</c>) and for chunks
+/// produced by callers that did not supply a pool (CDC benchmarks).
 /// </para>
 /// </summary>
-public record ChunkPayload(ChunkInfo Info, byte[] Data, int Length, long ChargedBytes, bool ReturnToPool);
+public record ChunkPayload(
+    ChunkInfo Info,
+    byte[] Data,
+    int Length,
+    long ChargedBytes,
+    bool ReturnToPool,
+    LargeChunkBufferPool? LargeChunkPool = null);
 
 public enum BackupStatus
 {

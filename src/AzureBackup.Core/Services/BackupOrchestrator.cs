@@ -566,7 +566,7 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// </summary>
     public Task<bool> BackupFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
-        return BackupFileAsync(filePath, progress: null, memoryBudget: null, cancellationToken);
+        return BackupFileAsync(filePath, progress: null, memoryBudget: null, largeChunkPool: null, cancellationToken);
     }
 
     /// <summary>
@@ -577,10 +577,27 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// <param name="memoryBudget">Optional memory budget for throttling parallel chunk uploads.
     /// When null, upload parallelism is unbounded (existing behavior).</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    public async Task<bool> BackupFileAsync(
-        string filePath, 
+    public Task<bool> BackupFileAsync(
+        string filePath,
         IProgress<(long current, long total)>? progress,
-        MemoryBudget? memoryBudget = null,
+        MemoryBudget? memoryBudget,
+        CancellationToken cancellationToken = default)
+        => BackupFileAsync(filePath, progress, memoryBudget, largeChunkPool: null, cancellationToken);
+
+    /// <summary>
+    /// B37 overload: as above, plus an optional
+    /// <see cref="LargeChunkBufferPool"/> shared across the operation.
+    /// When supplied, large-chunk allocations flow through the bounded
+    /// LOH recycler instead of the GC, eliminating the gen-2 retention
+    /// pressure that B36 surfaced after B30/B33/B34 landed. Pass
+    /// <c>null</c> to keep the pre-B37 GC-managed behaviour for tests
+    /// and ad-hoc single-file callers.
+    /// </summary>
+    public async Task<bool> BackupFileAsync(
+        string filePath,
+        IProgress<(long current, long total)>? progress,
+        MemoryBudget? memoryBudget,
+        LargeChunkBufferPool? largeChunkPool,
         CancellationToken cancellationToken = default)
     {
         var diag = new FileOperationDiagnostics(filePath, "Backup", DiagnosticsDirectory);
@@ -683,8 +700,15 @@ public partial class BackupOrchestrator : IAsyncDisposable
                     // charged at rent time. The consumer below no longer
                     // re-charges -- it only releases the amount the
                     // producer charged, which is carried on the payload.
+                    // B37: pass the operation-scoped LargeChunkBufferPool
+                    // so large-chunk allocations flow through the bounded
+                    // LOH recycler instead of `new byte[]`, removing the
+                    // gen-2 retention pressure from the heap. The
+                    // consumer mirrors the producer's pool decision via
+                    // `ChunkPayload.LargeChunkPool` so the buffer goes
+                    // back to the right place after upload.
                     var (producedChunks, producedHash) = await _chunkingService.ChunkAndStreamChangedAsync(
-                        filePath, existingHashes, channel.Writer, cdcProgress, memoryBudget, cancellationToken);
+                        filePath, existingHashes, channel.Writer, cdcProgress, memoryBudget, largeChunkPool, cancellationToken);
                     return (producedChunks, producedHash);
                 }
                 finally

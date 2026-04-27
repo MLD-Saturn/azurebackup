@@ -300,7 +300,7 @@ public class BackupOrchestratorTests : IAsyncLifetime
         SynchronousProgress<(long current, long total)> progress = new(p => progressReports.Add(p));
 
         // Act
-        await _orchestrator.BackupFileAsync(filePath, progress);
+        await _orchestrator.BackupFileAsync(filePath, progress, memoryBudget: null);
 
         // Assert
         Assert.NotEmpty(progressReports);

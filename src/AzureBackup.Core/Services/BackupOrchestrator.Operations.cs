@@ -272,6 +272,9 @@ public partial class BackupOrchestrator
         {
             var config = _databaseService.GetConfiguration();
             using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
+            // B37: a single LargeChunkBufferPool spans the entire
+            // operation so the recycler is shared across files.
+            using var largeChunkPool = new LargeChunkBufferPool();
             // B36: emit a periodic memory snapshot through StatusChanged so
             // the always-visible log pane records budget vs working-set
             // drift during the operation. Wired before BackupFilesCoreAsync
@@ -279,7 +282,8 @@ public partial class BackupOrchestrator
             using var memReporter = new BackupMemoryReporter(
                 memoryBudget,
                 opLabel: "mirror",
-                emit: line => StatusChanged?.Invoke(this, line));
+                emit: line => StatusChanged?.Invoke(this, line),
+                largeChunkPool: largeChunkPool);
 
             Log($"MirrorSyncToAzureAsync: Backing up {filesToBackup.Count} new/modified files " +
                 $"(max {EffectiveMaxParallelFileBackups} concurrent, " +
@@ -314,7 +318,7 @@ public partial class BackupOrchestrator
             try
             {
                 (completed, failed, bytes) = await BackupFilesCoreAsync(
-                    filesToBackup, memoryBudget, adaptedProgress, cancellationToken);
+                    filesToBackup, memoryBudget, largeChunkPool, adaptedProgress, cancellationToken);
             }
             catch (Exception ex) when (TryExtractAuthFailure(ex, out var auth))
             {
@@ -580,13 +584,17 @@ public partial class BackupOrchestrator
 
         var config = _databaseService.GetConfiguration();
         using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
+        // B37: pool lives at operation scope; reporter reads its
+        // residency in each emitted line.
+        using var largeChunkPool = new LargeChunkBufferPool();
         // B36: see MirrorSyncToAzureAsync for the rationale; same pattern
         // here so any backup operation -- not just mirror -- gets the
         // periodic memory snapshot in the always-visible log pane.
         using var memReporter = new BackupMemoryReporter(
             memoryBudget,
             opLabel: "backup",
-            emit: line => StatusChanged?.Invoke(this, line));
+            emit: line => StatusChanged?.Invoke(this, line),
+            largeChunkPool: largeChunkPool);
 
         Log($"BackupFilesAsync: Starting parallel backup of {filePaths.Count} files " +
             $"(max {EffectiveMaxParallelFileBackups} concurrent, " +
@@ -613,7 +621,7 @@ public partial class BackupOrchestrator
         try
         {
             (completed, failed, processedBytes) = await BackupFilesCoreAsync(
-                filePaths, memoryBudget, progress, cancellationToken);
+                filePaths, memoryBudget, largeChunkPool, progress, cancellationToken);
         }
         catch (Exception ex) when (TryExtractAuthFailure(ex, out var auth))
         {
@@ -666,6 +674,7 @@ public partial class BackupOrchestrator
     private async Task<(int completed, int failed, long processedBytes)> BackupFilesCoreAsync(
         IList<string> filePaths,
         MemoryBudget memoryBudget,
+        LargeChunkBufferPool largeChunkPool,
         IProgress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -748,7 +757,7 @@ public partial class BackupOrchestrator
                             p.current, currentFileSize));
                     });
 
-                    var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, ct);
+                    var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, largeChunkPool, ct);
 
                     if (success)
                     {

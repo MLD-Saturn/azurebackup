@@ -73,6 +73,7 @@ public sealed class BackupMemoryReporter : IDisposable
     private readonly int _gen0Start;
     private readonly int _gen1Start;
     private readonly int _gen2Start;
+    private readonly LargeChunkBufferPool? _largeChunkPool;
 
     private long _previousStallCount;
     private long _previousOversizedCount;
@@ -102,7 +103,8 @@ public sealed class BackupMemoryReporter : IDisposable
         MemoryBudget budget,
         string opLabel,
         Action<string> emit,
-        TimeSpan? interval = null)
+        TimeSpan? interval = null,
+        LargeChunkBufferPool? largeChunkPool = null)
     {
         ArgumentNullException.ThrowIfNull(budget);
         ArgumentException.ThrowIfNullOrWhiteSpace(opLabel);
@@ -112,6 +114,7 @@ public sealed class BackupMemoryReporter : IDisposable
         _opLabel = opLabel;
         _emit = emit;
         _interval = interval ?? TimeSpan.FromSeconds(30);
+        _largeChunkPool = largeChunkPool;
 
         // Cache the Process handle. Process.GetCurrentProcess() allocates
         // and snapshots OS-level state on each call; reusing the handle
@@ -184,12 +187,16 @@ public sealed class BackupMemoryReporter : IDisposable
             : $"used={used / MB} MB / {total / MB} MB ({(double)used / total * 100:F1}%)";
 
         var prefix = initial ? "[mem-start]" : "[mem]";
+        var poolText = _largeChunkPool != null
+            ? $" | lohPool={_largeChunkPool.TotalBytesCached / MB} MB cached, hit={_largeChunkPool.HitRate:P0}"
+            : string.Empty;
         var line =
             $"{prefix} {_opLabel} t+{elapsed.TotalSeconds:F0}s | budget {budgetText} | " +
             $"stalls +{stallDelta} (total {stalls}) | oversized +{oversizedDelta} (total {oversized}) | " +
             $"gcHeap={gcHeap / MB} MB | gcLoad={gcInfo.MemoryLoadBytes / MB} MB | " +
             $"workingSet={workingSet / MB} MB | privateMem={privateMem / MB} MB | " +
-            $"unaccounted={unaccounted / MB} MB | gcCollections=[{gen0Delta},{gen1Delta},{gen2Delta}]";
+            $"unaccounted={unaccounted / MB} MB | gcCollections=[{gen0Delta},{gen1Delta},{gen2Delta}]" +
+            poolText;
 
         _emit(line);
     }
