@@ -226,7 +226,7 @@ Notes:
 
 | Hash | Message |
 |---|---|
-| `<B28_HASH>` | B28: fix empty Local pane on startup; document Avalonia TreeView+Reset-event footgun |
+| `e67951e` | B28: fix empty Local pane on startup; document Avalonia TreeView+Reset-event footgun |
 | `4364faf` | B27: fix AGENT_CONTEXT self-reference of B27 commit hash |
 | `fee6622` | B27: 16-way file concurrency, MemoryLimit defaults on/8 GB, InMemoryBlobService discard mode, big-scale benchmark result tables |
 | `b9d5744` | B26: UI small-file threshold reads RestoreService constant; remove 100 MB hard-code |
