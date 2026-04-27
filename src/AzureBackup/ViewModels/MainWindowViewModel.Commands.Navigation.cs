@@ -461,11 +461,39 @@ public partial class MainWindowViewModel
 
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
-                // Bulk-rebuild via ReplaceAll so each bound view raises one
-                // Reset event instead of N Add events. See BulkObservableCollection.
-                LocalFileTreeRoots.ReplaceAll(roots);
+                // B28: the tree-roots collection uses Clear() + per-item
+                // Add() instead of BulkObservableCollection.ReplaceAll's
+                // single Reset event. Avalonia's TreeView with a
+                // HierarchicalDataTemplate drops Reset events that arrive
+                // before the control is first laid out, which is exactly
+                // the startup-unlock sequence: TryUnlockWithPasswordAsync
+                // fills LocalFileTreeRoots while SyncView is still
+                // IsVisible="False" (CurrentView only flips to "Sync"
+                // AFTER unlock returns), so a single Reset fired during
+                // the invisible window is silently lost and the user sees
+                // an empty left pane until they click Refresh manually.
+                // Add events queued before first layout are picked up
+                // correctly when the TreeView later measures, which is
+                // why the right-pane Azure tree (BuildFileTree, also
+                // Clear+Add) works on startup. The flat list below keeps
+                // ReplaceAll because the ListBox does NOT drop Reset
+                // events the same way and the per-item-Add cost matters
+                // there at scale (the flat list can hold tens of
+                // thousands of files; the tree roots cap at the
+                // watched-folder count, typically <20).
+                LocalFileTreeRoots.Clear();
+                foreach (var root in roots)
+                {
+                    LocalFileTreeRoots.Add(root);
+                }
+
                 LocalFilesFlatList.ReplaceAll(flatFiles);
 
+                // Mirror the right-pane invalidation in RefreshFromAzureAsync
+                // (line 378). Without this the flat-list view bound to
+                // FilteredLocalFiles does not re-evaluate after the
+                // underlying LocalFilesFlatList is rebuilt.
+                OnPropertyChanged(nameof(FilteredLocalFiles));
                 OnPropertyChanged(nameof(LocalFilesSummary));
                 AddLog($"Found {LocalFileTreeRoots.Sum(r => r.TotalFileCount)} local files");
             });
