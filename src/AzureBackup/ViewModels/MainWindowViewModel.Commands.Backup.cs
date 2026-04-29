@@ -312,6 +312,27 @@ public partial class MainWindowViewModel
     /// Shows a backup preview dialog and filters out files the user excluded.
     /// Returns the filtered file list and the preview, or null if cancelled/no changes.
     /// </summary>
+    /// <remarks>
+    /// B31: the returned file list contains ONLY the files the orchestrator
+    /// actually needs to back up (preview's <c>FilesToCreate</c> and
+    /// <c>FilesToOverwrite</c> with <c>IsIncluded</c>=true). Files the preview
+    /// classified as <c>FilesToSkip</c> (unchanged) are removed here, BEFORE
+    /// being passed to <see cref="BackupOrchestrator.BackupFilesAsync"/>.
+    /// <para/>
+    /// Why this matters: the orchestrator computes its own <c>totalFiles</c>
+    /// and <c>totalBytes</c> from whatever list it receives, and its internal
+    /// metadata-skip path reports an unchanged file's full size as
+    /// "completed bytes" the moment it is detected. If the unchanged files
+    /// were left in the input list, the progress UI's numerator
+    /// (<c>TotalBytesProcessed</c>, sourced from the orchestrator) would
+    /// exceed its denominator (<c>TotalBytes</c>, sourced from the preview's
+    /// <c>TotalBytesToTransfer</c>) and you would see e.g. "200 / 100 files"
+    /// and "2 TB / 1 TB" with progress over 100%, plus a wildly wrong
+    /// upload-speed estimate because the unchanged files' bytes flow into
+    /// the running total essentially instantly. Pre-filtering here keeps the
+    /// preview's "what we promised the user" set as the single source of
+    /// truth for both numerator and denominator.
+    /// </remarks>
     private async Task<(List<string> files, OperationPreview preview)?> ConfirmAndFilterBackupFilesAsync(
         List<string> filePaths,
         CancellationToken cancellationToken)
@@ -333,22 +354,24 @@ public partial class MainWindowViewModel
             return null;
         }
 
-        // Remove files the user excluded in the preview dialog
-        var excluded = preview.ExcludedFilePaths;
-        if (excluded.Count > 0)
-        {
-            filePaths = filePaths
-                .Where(f => !excluded.Contains(f))
-                .ToList();
-        }
+        // B31: rebuild the file list from the preview's included-create and
+        // included-overwrite sets. This naturally excludes:
+        //   - Files the preview classified as FilesToSkip (unchanged) - they
+        //     would otherwise drive the progress numerator past the denominator.
+        //   - Files the user unchecked in the preview dialog (IsIncluded=false).
+        // See xmldoc above for the bug this prevents.
+        var includedFiles = preview.FilesToCreate.Where(f => f.IsIncluded)
+            .Concat(preview.FilesToOverwrite.Where(f => f.IsIncluded))
+            .Select(f => f.FilePath)
+            .ToList();
 
-        if (filePaths.Count == 0)
+        if (includedFiles.Count == 0)
         {
             AddLog("All files were excluded - nothing to backup");
             return null;
         }
 
-        return (filePaths, preview);
+        return (includedFiles, preview);
     }
 
     /// <summary>

@@ -939,6 +939,144 @@ public class BackupOrchestratorTests : IAsyncLifetime
     }
 
     #endregion
+
+    #region B31: Pre-filtering unchanged files keeps progress numerator <= denominator
+
+    /// <summary>
+    /// B31 characterization: BackupFilesAsync's metadata-skip path reports an
+    /// unchanged file's full size as "completed bytes" the moment it detects
+    /// the size+mtime match (BackupOrchestrator.cs WaitForFileAsync block,
+    /// `progress?.Report((fileInfo.Length, fileInfo.Length))`). This is the
+    /// behaviour relied on by callers that pass the full input set and expect
+    /// the orchestrator to do its own change detection (e.g. the file watcher
+    /// path).
+    /// <para>
+    /// Pinning this behaviour here is the OTHER half of the B31 fix: the UI
+    /// path (<c>MainWindowViewModel.ConfirmAndFilterBackupFilesAsync</c>) was
+    /// changed to pre-filter the input list to only changed files BEFORE
+    /// calling BackupFilesAsync. Without that pre-filter, the orchestrator's
+    /// reported <c>bytesProcessed</c> would exceed the UI's preview-derived
+    /// <c>TotalBytes</c> denominator, producing 200%-style progress and a
+    /// wildly wrong upload-speed estimate.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task BackupFilesAsync_UnchangedFileInInputList_OrchestratorReportsItsBytesAsCompleted()
+    {
+        // Arrange: back up a file once so it is "known" to the database.
+        await _orchestrator.InitializeAsync(TestPassword);
+        var unchangedPath = Path.Combine(_sourceDirectory, "unchanged.bin");
+        var content = CreateRandomContent(256 * 1024); // 256 KB
+        await File.WriteAllBytesAsync(unchangedPath, content);
+        await _orchestrator.BackupFilesAsync(new List<string> { unchangedPath });
+
+        // Act: backup again with the same file in the list. The orchestrator
+        // will hit the metadata-skip path and report bytesProcessed == fileSize.
+        long lastReportedBytes = 0;
+        long lastReportedTotal = 0;
+        var progress = new Progress<(int fileIndex, int totalFiles, string fileName,
+            long bytesProcessed, long totalBytes,
+            long currentFileBytes, long currentFileSize)>(p =>
+        {
+            Volatile.Write(ref lastReportedBytes, p.bytesProcessed);
+            Volatile.Write(ref lastReportedTotal, p.totalBytes);
+        });
+
+        await _orchestrator.BackupFilesAsync(new List<string> { unchangedPath }, progress);
+        await Task.Delay(100); // let Progress<T> dispatcher continuations drain
+
+        // Assert: the orchestrator counted the unchanged file's full size into
+        // bytesProcessed, AND its self-computed totalBytes equals the same value.
+        // Numerator == denominator at the orchestrator level, even for an unchanged
+        // file. This is by design and is the behaviour the file-watcher path relies on.
+        Assert.Equal(content.LongLength, Volatile.Read(ref lastReportedTotal));
+        Assert.Equal(content.LongLength, Volatile.Read(ref lastReportedBytes));
+    }
+
+    /// <summary>
+    /// B31 regression: when the caller passes a mixed list of changed and
+    /// unchanged files, the orchestrator's running <c>bytesProcessed</c>
+    /// will reach the SUM of all files' sizes (changed + unchanged). The UI
+    /// is responsible for not handing the orchestrator unchanged files in
+    /// the first place; this test pins the orchestrator-side behaviour the
+    /// UI fix relies on.
+    /// </summary>
+    [Fact]
+    public async Task BackupFilesAsync_MixedChangedAndUnchanged_BytesProcessedSumsAllInputs()
+    {
+        await _orchestrator.InitializeAsync(TestPassword);
+
+        // Arrange: 4 files, all initially backed up.
+        var files = new List<string>();
+        var totalSize = 0L;
+        for (var i = 0; i < 4; i++)
+        {
+            var path = Path.Combine(_sourceDirectory, $"mixed_{i}.bin");
+            var data = CreateRandomContent(256 * 1024);
+            await File.WriteAllBytesAsync(path, data);
+            files.Add(path);
+            totalSize += data.LongLength;
+        }
+        await _orchestrator.BackupFilesAsync(files);
+
+        // Modify only files 0 and 1; files 2 and 3 stay unchanged.
+        // Sleep briefly so mtime moves outside the orchestrator's 2-second tolerance.
+        await Task.Delay(2100);
+        var modifiedSize = 0L;
+        for (var i = 0; i < 2; i++)
+        {
+            var data = CreateRandomContent(256 * 1024);
+            await File.WriteAllBytesAsync(files[i], data);
+            modifiedSize += data.LongLength;
+        }
+
+        // Act: backup with the FULL list of 4 files (caller did NOT pre-filter).
+        long maxBytesProcessed = 0;
+        long lastTotalBytes = 0;
+        var progress = new Progress<(int fileIndex, int totalFiles, string fileName,
+            long bytesProcessed, long totalBytes,
+            long currentFileBytes, long currentFileSize)>(p =>
+        {
+            // Use Interlocked.MemoryBarrier-equivalent via Volatile to capture the high-water mark.
+            var current = p.bytesProcessed;
+            var prev = Volatile.Read(ref maxBytesProcessed);
+            while (current > prev)
+            {
+                var observed = Interlocked.CompareExchange(ref maxBytesProcessed, current, prev);
+                if (observed == prev) break;
+                prev = observed;
+            }
+            Volatile.Write(ref lastTotalBytes, p.totalBytes);
+        });
+
+        await _orchestrator.BackupFilesAsync(files, progress);
+        await Task.Delay(200);
+
+        // Assert: orchestrator's totalBytes is at least the sum of all file sizes
+        // (it is computed by enumerating the input list, not by consulting the
+        // database for what's actually changed), and bytesProcessed reaches at
+        // least that same sum (the 2 unchanged files' sizes flow in via the
+        // metadata-skip path on top of the 2 changed files' real upload bytes).
+        // The exact byte equality is not asserted because the orchestrator's
+        // internal byte accumulation can include small per-chunk overhead that
+        // is incidental to this test. The bug-class invariant is the inequality
+        // below: a UI that used the preview-derived modifiedSize as its
+        // denominator would observe maxBytesProcessed exceed that denominator
+        // by roughly the sum of unchanged file sizes, producing 200%-style
+        // progress. B31 prevents this at the UI layer by pre-filtering the
+        // input list to only changed files before calling BackupFilesAsync.
+        var observedMax = Volatile.Read(ref maxBytesProcessed);
+        var observedTotal = Volatile.Read(ref lastTotalBytes);
+        Assert.True(observedTotal >= totalSize,
+            $"orchestrator totalBytes ({observedTotal}) should be >= sum of all input file sizes ({totalSize})");
+        Assert.True(observedMax >= totalSize,
+            $"orchestrator bytesProcessed ({observedMax}) should reach at least the sum of all input file sizes ({totalSize})");
+        Assert.True(observedMax > modifiedSize * 2,
+            $"orchestrator bytesProcessed ({observedMax}) should significantly exceed the changed-only sum ({modifiedSize}); " +
+            "a UI that derived its denominator from FilesToOverwrite would see >100% progress without the B31 pre-filter");
+    }
+
+    #endregion
 }
 
 /// <summary>
