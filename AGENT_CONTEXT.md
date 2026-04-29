@@ -64,12 +64,13 @@ These come from `.github/copilot-instructions.md` and from explicit user instruc
 
 ### Documentation trust policy
 
-**Treat every Markdown documentation file in this repo as stale until proven current** — with two specific exceptions noted below. This policy covers any `README.md`, `AGENT_CONTEXT.md` (yes, even this file — verify its claims before relying on them), anything under `docs/` such as `stress-test-plan.md` and the `option-c-c3-results-*.md` series, and any `CONTRIBUTING.md` / similar that may appear later.
+**Treat every Markdown documentation file in this repo as stale until proven current** — with exceptions noted below.
 
 **Verified-current docs (treat as authoritative, but maintain rigorously):**
 
 - `docs/SETUP.md` — verified accurate against source on 2026-04-24. Covers Azure provisioning, build-from-source, single-file publish, portable mode (`portable.marker`), encryption envelope, per-extension chunking config, storage tiers, `AppMode.DataDirectory` paths, and a verified "Technical specifications" table.
 - `docs/USER_GUIDE.md` — verified accurate against source on 2026-04-24. Covers every view (`SyncView`, `SettingsView`, `StorageHealthView`, `TierMigrationView`, `DataIntegrityView`, `LogsView`), the diagnostic-bundle export flow, the memory-limit slider, and all four storage tiers (Hot/Cool/Cold/Archive).
+- `AGENT_CONTEXT.md` - verified accurate against source on 2026-04-27. Covers project layout, architectural facts, workstream state, and the conventions for commits, terminal commands, and tool usage that every future session MUST follow.
 
 **Mandatory maintenance protocol for the verified-current docs:** every commit that touches one of the things they describe MUST update them in the same commit. Specifically:
 
@@ -94,7 +95,7 @@ This file (`AGENT_CONTEXT.md`) is the one doc that future sessions are *required
 - **Single physical line, always.** Chain with `;`. No here-strings, no backticks, no multi-line.
 - The user's shell is **PowerShell 7+ (`pwsh.exe`)**. Other shells will be flagged immediately.
 - Length is not a concern — correctness and single-line execution are.
-- Occasionally a tooling display artifact mangles the leading characters of the command in the echoed output (e.g. `Set-Location` shown as `t-Location`). The command **still runs correctly**; check the actual output / git state, not the echo.
+- Occasionally a tooling display artifact mangles the leading characters of the command in the echoed output (e.g. `Set-Location` shown as `t-Location`). This indicates the command was not run through the terminal tool as intended. If you see this, stop and fix the command rather than proceeding with a broken one.
 
 ### Git commits
 
@@ -102,8 +103,7 @@ This file (`AGENT_CONTEXT.md`) is the one doc that future sessions are *required
 - Use `git add .; git commit -m "..."` chained on one line, with multiple `-m` flags (one per paragraph). **Never** write the message to a file. **Never** use `git commit -F`.
 - **No emoji, no non-ASCII** in commit messages.
 - Escape `"` and `\` properly so the command parses cleanly.
-- Commit message convention in this repo: `B<number>: <imperative summary>` (or the older `C-<number>:`). Pick the next free B-number — see `git log --oneline | Select-Object -First 1`.
-- **Never run `git push` under any circumstances.** Pushing is a manual step the user performs. Leave commits local; do not invoke `git push`, `git push origin <branch>`, or any equivalent. If the user is about to switch machines, remind them to push manually rather than doing it for them.
+- **Never run `git push` under any circumstances.** Pushing is a manual step the user performs. Leave commits local; do not invoke `git push`, `git push origin <branch>`, or any equivalent.
 
 ### Tool usage
 
@@ -112,13 +112,6 @@ This file (`AGENT_CONTEXT.md`) is the one doc that future sessions are *required
 - The `nuget_get-nuget-solver*` and `start_modernization` tools are NEVER appropriate for this project's typical work — do not invoke them unless the user explicitly asks for a package upgrade or .NET version change.
 - Do not call `code_search` in parallel; do not call `run_command_in_terminal` in parallel.
 - Long-running operations (benchmarks, large test sweeps) may exceed the terminal tool's timeout (whatever it is in the current environment). BenchmarkDotNet writes its result artifacts on each child-process completion, so even when the orchestrating call appears to time out you can usually find the artifacts under `BenchmarkDotNet.Artifacts/results/`. Always check there before assuming a benchmark didn't run.
-
-### Same-hardware benchmark discipline (added in the B27 session)
-
-- **Never compare a benchmark number from one PC against a benchmark number from a different PC.** Absolute timings (BDN `Mean`), peak working set, and SQLite write-lock contention all vary materially with CPU model, core count, RAM, disk, and OS scheduler. Cross-PC comparison is the single biggest way to draw a wrong conclusion from these benchmarks.
-- The four pre-B27 benchmark classes (`BackupThroughputBenchmark`, `TwoTierFileSplitBenchmark`, `LargestFirstSchedulingBenchmark`, `AdaptiveChunkConcurrencyBenchmark`) have result tables embedded in their xmldoc that were captured on an Intel i7-9700K. Treat those numbers as **historical context from different hardware, directionally informative only**. Do not quantitatively compare them against numbers captured on any other machine.
-- When making a recommendation that depends on a benchmark delta (e.g. "ship 16-way file concurrency"), make sure the baseline AND the candidate were measured **in the same BDN session on the same machine**. The B27 design-decision benchmarks all enforce this by putting the baseline (today's production default) and the candidate values in the same `[Params]` matrix so BDN runs them back-to-back.
-- If the agent or the user wants to re-run a pre-B27 benchmark to compare against a B27 number, the rule is: re-run the pre-B27 benchmark in the same session as the B27 benchmark, and compare the two fresh sets. The xmldoc table from the i7-9700K is not a substitute.
 
 ---
 
@@ -193,32 +186,6 @@ Follow-ups deferred from B27 (each can become its own future workstream when pri
 
 If running from inside Visual Studio (which is the typical user environment), the `run_tests` / `get_tests` MCP tools work directly against Test Explorer. Use `Project=AzureBackup.Tests` as the filter.
 
-### Benchmarks
-
-```
-dotnet build benchmarks/AzureBackup.Benchmarks/AzureBackup.Benchmarks.csproj -c Release
-dotnet run -c Release --no-build --project benchmarks/AzureBackup.Benchmarks -- --filter "AzureBackup.Benchmarks.<ClassName>.*"
-```
-
-Each benchmark generates a synthetic workload on disk under the OS temp directory (path of the form `%TEMP%/azbk-backup-bench-<guid>/`) then runs the backup pipeline against `InMemoryBlobService`. The base class `BackupBenchmarkBase` cleans up stale `azbk-backup-bench-*` directories at the top of `[GlobalSetup]` so a previous run's leak (e.g. from a disk-full crash) does not poison the next run.
-
-Results land under `BenchmarkDotNet.Artifacts/results/<BenchmarkClassName>-report-github.md` (markdown table) and `.csv` / `.html` siblings. Per-iteration peak working-set is emitted to the BDN console log under `BenchmarkDotNet.Artifacts/*.log` with the prefix `[peakWS workload=...]` because BDN's built-in `MemoryDiagnoser` reports cumulative allocated bytes, not peak resident.
-
-Notes:
-- BenchmarkDotNet 0.15.8's `-p Workload=<value>` filter is **silently ignored** — the full param matrix runs regardless. Plan benchmark cost as if every (param × iteration) combo will execute.
-- Disk usage scales with workload size. Check the workload definitions in `BackupBenchmarkBase.cs` and lower the file-count or per-file-size caps locally before running on a constrained machine. The `realistic-large-200` workload is the largest of the standard set.
-- Workloads are deterministic (`Random` seeded with `42`) so re-running on different hardware produces identical input bytes. **Absolute timings AND deltas between configurations both vary with hardware**; do not compare numbers from different machines (see "Same-hardware benchmark discipline" under Hard Rules above). The deterministic seeding exists to make a single machine's runs reproducible across re-runs, not to license cross-PC comparison.
-
----
-
-## Open questions / things future sessions might ask
-
-- "Why didn't largest-first work like theory said it would?" → the W1/B27 work folds this in via `LargestFirstSchedulingBigScaleBenchmark.huge-outlier-mixed`. The pre-B27 i7-9700K result is informative but not quantitatively comparable to a fresh run on different hardware; treat it as a hypothesis to test, not a finding.
-- "Should we change the production default to 16-way file concurrency?" → the pre-B27 i7-9700K data said yes, but per the same-hardware discipline rule that recommendation must be re-validated by `TwoTierFileSplitBigScaleBenchmark` on the actual deployment hardware before B27a ships.
-- "Should we implement adaptive chunk concurrency for backup like restore has?" → the pre-B27 i7-9700K data was directionally suggestive but compromised because `realistic-large-200` files were capped at 100 MB (only ~2 chunks per file). `AdaptiveChunkConcurrencyBigScaleBenchmark.media-library-500` is the test that actually exercises the regime this knob was designed for; B27b is gated on that result.
-- "Can I re-run the benchmarks on this machine and compare?" → yes, results are under `BenchmarkDotNet.Artifacts/results/`. Comparing your new run against the xmldoc tables embedded in the pre-B27 benchmark files is a CROSS-PC COMPARISON and is forbidden by the same-hardware discipline rule. To compare a candidate configuration against today's production default, run them BOTH in the same BDN session (the design-decision benchmarks are structured to do this automatically via `[Params]`).
-- "Why does the WPF project fail to build on this machine?" → trick question. The UI is **Avalonia 11.3.12**, not WPF, and it targets bare `net10.0` so it builds on Windows, macOS, and Linux. If you saw an older AGENT_CONTEXT version claim WPF / Windows-only, that was wrong and is now corrected.
-- "What does `MemoryLimitMB` map to in the UI?" → a toggle plus stepped slider in `SettingsView.axaml` (search for `MemoryLimitEnabled` / `MemoryLimitSliderIndex`). Soft cap on in-flight chunk buffers; **toggle defaults to enabled, slider default is hardware-aware** (`min(round_down_to_step(0.25 * total_physical_RAM), 8192 MB)` -- 512 MB on a 2 GB host through 8 GB on hosts with 32 GB or more, computed by `SystemMemoryHelper.GetRecommendedDefaultLimitMB` at config-read time when the schema column is NULL). Existing user databases keep their stored value; the hardware-aware rule only fires on fresh installs. See `docs/USER_GUIDE.md` "Memory limit" — verified accurate.
 
 ---
 
