@@ -169,6 +169,57 @@ public class SqliteBackendSmokeTests : IDisposable
     }
 
     [Fact]
+    public void Initialize_ManyDistinctWrongPasswords_AlwaysThrowInvalidPassword()
+    {
+        // Regression for the "SQLite Error 11: database disk image is malformed"
+        // unlock-screen failure observed by the tester after the B47 LiteDB-probe
+        // removal stopped masking the underlying classifier gap.
+        //
+        // SQLCipher's wrong-key surface is non-deterministic across passwords:
+        // the page-1 decrypt produces uniform-random-looking bytes, and the
+        // sqlite_master probe in OpenAndUnlockCore can therefore hit any of
+        //   * SqliteException(SQLITE_NOTADB = 26) -- "file is not a database"
+        //   * SqliteException(SQLITE_CORRUPT = 11) -- "database disk image is
+        //     malformed" (was the unmapped surface; now mapped)
+        //   * OverflowException / ArgumentOutOfRangeException / IndexOutOfRangeException
+        //     -- garbage header values overflow the M.D.Sqlite parsing path
+        //
+        // All four shapes mean "wrong password" at unlock time. Any path that
+        // leaks the raw exception sends the user to the password screen with a
+        // baffling error string. Running 50 distinct wrong passwords against the
+        // same SQLCipher database is a probabilistically-saturated cover of
+        // every garbage-decrypt surface; pre-fix this test failed with the
+        // SqliteException(11) leak in well under 50 iterations on typical
+        // hardware.
+        const string correctPassword = "CorrectClassifierProbe123!";
+        using (var first = new SqliteBackend())
+        {
+            first.Initialize(_dbPath, correctPassword.AsSpan());
+        }
+
+        var leaks = new List<(int attempt, string type, string message)>();
+        for (var i = 0; i < 50; i++)
+        {
+            var wrong = $"wrong-classifier-probe-{i}-{Guid.NewGuid():N}";
+            using var backend = new SqliteBackend();
+            var ex = Record.Exception(() => backend.Initialize(_dbPath, wrong.AsSpan()));
+            if (ex is null)
+            {
+                leaks.Add((i, "<no exception>", "wrong password silently accepted"));
+                continue;
+            }
+            if (ex is not InvalidPasswordException)
+            {
+                leaks.Add((i, ex.GetType().Name, ex.Message));
+            }
+        }
+
+        Assert.True(leaks.Count == 0,
+            "Wrong-password classifier let non-InvalidPasswordException shapes leak: " +
+            string.Join(" | ", leaks.Select(l => $"#{l.attempt} {l.type}: {l.message}")));
+    }
+
+    [Fact]
     public void GetPendingChanges_WithIntMaxValueBatchSize_DoesNotOom()
     {
         // B17 regression: pre-fix, GetPendingChanges(int.MaxValue) tried

@@ -300,9 +300,29 @@ internal sealed partial class SqliteBackend
                 catch (SqliteException ex)
                 {
                     connection.Dispose();
+                    // Wrong-key classification on the FIRST page-1 read after
+                    // PRAGMA key. SQLCipher rejects bad keys cleanly as
+                    // SQLITE_NOTADB (26) only when the decrypt produces bytes
+                    // that obviously don't look like a SQLite header. When the
+                    // garbage decrypt happens to parse as a partially-valid
+                    // header but with internally inconsistent b-tree pointers
+                    // SQLite raises SQLITE_CORRUPT (11) "database disk image
+                    // is malformed" instead. Both shapes mean "wrong password"
+                    // here -- a real on-disk corruption would not have shifted
+                    // its surface based on whether the user typed the right or
+                    // wrong password. Real bug observed by tester after the
+                    // B47 LiteDB-probe removal stopped masking this exception.
+                    //
+                    // Anything code 11 surfaces from LATER reads (the schema-
+                    // creation pass below, ApplyPragmas, or steady-state
+                    // queries) is genuine plaintext-image corruption and
+                    // propagates unchanged; only the validate-key probe
+                    // remaps it to InvalidPasswordException.
                     if (ex.SqliteErrorCode == 26 ||
+                        ex.SqliteErrorCode == 11 ||
                         (ex.Message?.Contains("not a database", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                        (ex.Message?.Contains("file is encrypted", StringComparison.OrdinalIgnoreCase) ?? false))
+                        (ex.Message?.Contains("file is encrypted", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                        (ex.Message?.Contains("database disk image is malformed", StringComparison.OrdinalIgnoreCase) ?? false))
                     {
                         throw new InvalidPasswordException("Invalid password. Please try again.", ex);
                     }
