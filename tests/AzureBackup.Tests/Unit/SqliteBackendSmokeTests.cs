@@ -414,4 +414,28 @@ public class SqliteBackendSmokeTests : IDisposable
             "Mixed read/write workload leaked exceptions (B23 regression): " +
             string.Join(" | ", exceptions.Select(e => $"{e.GetType().Name}: {e.Message}")));
     }
+
+    [Fact]
+    public void CheckDatabaseFileIntegrity_OnHealthyDatabase_ReportsBothPragmasOk()
+    {
+        // B44: a freshly initialised database must pass both
+        // SQLCipher's per-page HMAC check and SQLite's b-tree check.
+        // SQLCipher's cipher_integrity_check returns ZERO rows on success
+        // (one per failing page otherwise), the opposite of stock SQLite's
+        // integrity_check which always returns a single "ok" row on
+        // success. The result contract that the Storage Health tab
+        // depends on must reflect both shapes correctly.
+        using var backend = new SqliteBackend();
+        backend.Initialize(_dbPath, "DiagnosticPassword123!".AsSpan());
+
+        var result = backend.CheckDatabaseFileIntegrity();
+
+        Assert.True(result.CipherOk,
+            "cipher_integrity_check reported failures on a fresh DB. Got: " +
+            string.Join(" | ", result.CipherIntegrityMessages));
+        Assert.True(result.SqliteOk,
+            "integrity_check did not return a single 'ok' row on a fresh DB. Got: " +
+            string.Join(" | ", result.SqliteIntegrityMessages));
+        Assert.True(result.IsHealthy);
+    }
 }

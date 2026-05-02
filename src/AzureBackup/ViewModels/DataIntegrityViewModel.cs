@@ -493,6 +493,14 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
             CheckCompleted?.Invoke(this, new CheckCompletedEventArgs(result));
             RefreshHistory();
         }
+        catch (DatabaseFileCorruptException ex)
+        {
+            // B44: the integrity-check engine never ran -- the local catalog
+            // file is corrupted on disk and we could not even record the run.
+            // Surface the actionable guidance from the exception verbatim;
+            // the engine's message already names the Storage Health remediation.
+            StatusMessage = $"Check could not start: {ex.Message}";
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Check failed: {ex.GetType().Name}: {ex.Message}";
@@ -562,6 +570,10 @@ public partial class DataIntegrityViewModel : ViewModelBase, IDisposable
                 : $"Re-check: {totalFailures} of {result.Run.FilesChecked} files still failing.";
             CheckCompleted?.Invoke(this, new CheckCompletedEventArgs(result));
             RefreshHistory();
+        }
+        catch (DatabaseFileCorruptException ex)
+        {
+            StatusMessage = $"Re-check could not start: {ex.Message}";
         }
         catch (Exception ex)
         {

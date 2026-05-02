@@ -145,3 +145,38 @@ public class HashCollisionException : Exception
         ChunkHash = chunkHash;
     }
 }
+
+/// <summary>
+/// B44: thrown when an operation against the local SQLite/SQLCipher
+/// catalog file fails because the file itself is corrupted on disk
+/// (SQLite error 11, <c>SQLITE_CORRUPT</c>, "database disk image is
+/// malformed", or SQLite error 26, <c>SQLITE_NOTADB</c>, raised on a
+/// page fetch rather than at PRAGMA-key time).
+///
+/// <para>
+/// Distinct from <see cref="DataIntegrityException"/> on purpose:
+/// <see cref="DataIntegrityException"/> describes the user's backed-up
+/// files failing verification against Azure storage, whereas this
+/// exception describes the local catalog file itself being unreadable.
+/// The repair paths are completely different -- the user-visible Data
+/// Integrity feature cannot fix this; the user must run the
+/// "Verify Database File" diagnostic on the Storage Health tab and
+/// follow its guidance (typically: restore the catalog from a backup
+/// or rebuild it from Azure metadata).
+/// </para>
+/// </summary>
+public class DatabaseFileCorruptException : Exception
+{
+    /// <summary>
+    /// Underlying SQLite error code (e.g. 11 for SQLITE_CORRUPT,
+    /// 26 for SQLITE_NOTADB) when the cause was a SqliteException;
+    /// 0 otherwise.
+    /// </summary>
+    public int SqliteErrorCode { get; }
+
+    public DatabaseFileCorruptException(string message, int sqliteErrorCode, Exception innerException)
+        : base(message, innerException)
+    {
+        SqliteErrorCode = sqliteErrorCode;
+    }
+}

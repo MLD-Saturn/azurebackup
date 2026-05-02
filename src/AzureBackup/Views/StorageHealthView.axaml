@@ -204,10 +204,10 @@
                 <Border Classes="card">
                     <StackPanel Spacing="12">
                         <TextBlock Text="Index Management" FontSize="18" FontWeight="SemiBold"/>
-                        
+
                         <TextBlock Text="The chunk index tracks which files reference which chunks. This enables orphan detection and deduplication tracking."
                                    TextWrapping="Wrap" Opacity="0.7" FontSize="12"/>
-                        
+
                         <Grid ColumnDefinitions="*,*" RowDefinitions="Auto">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="Azure Backup" FontWeight="SemiBold"/>
@@ -220,7 +220,7 @@
                                             IsEnabled="{Binding CanRunOperations}"/>
                                 </StackPanel>
                             </StackPanel>
-                            
+
                             <StackPanel Grid.Column="1" Spacing="8" Margin="16,0,0,0">
                                 <TextBlock Text="Rebuild Index" FontWeight="SemiBold"/>
                                 <TextBlock Text="Rebuild the index by scanning all metadata blobs in Azure. Use this if the index is corrupted or out of sync."
@@ -229,6 +229,31 @@
                                         IsEnabled="{Binding CanRunOperations}"/>
                             </StackPanel>
                         </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- B44: Catalog Database File Diagnostic -->
+                <Border Classes="card">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Catalog Database File" FontSize="18" FontWeight="SemiBold"/>
+
+                        <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                                   Text="Verifies the local catalog database file itself (NOT your backed-up files in Azure -- that is what the Data Integrity tab does). Run this when an operation against the catalog fails with SQLite error 11 ('database disk image is malformed') to confirm whether the catalog file is corrupted on disk."/>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Content="Verify Database File" Command="{Binding VerifyDatabaseFileCommand}"
+                                    IsEnabled="{Binding CanRunOperations}"
+                                    ToolTip.Tip="Runs PRAGMA cipher_integrity_check (SQLCipher per-page HMAC) and PRAGMA integrity_check (SQLite b-tree structure) and reports the result."/>
+                        </StackPanel>
+
+                        <Border BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                                CornerRadius="4" Padding="8" IsVisible="{Binding HasDatabaseFileReport}">
+                            <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Auto">
+                                <SelectableTextBlock Text="{Binding DatabaseFileReport}"
+                                                     FontFamily="Consolas" FontSize="12"
+                                                     TextWrapping="NoWrap"/>
+                            </ScrollViewer>
+                        </Border>
                     </StackPanel>
                 </Border>
             </StackPanel>

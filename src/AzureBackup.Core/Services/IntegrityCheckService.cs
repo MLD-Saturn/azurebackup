@@ -172,7 +172,35 @@ public sealed class IntegrityCheckService
             ScopeSummary = options.ScopeSummary,
             ParentRunId = options.ParentRunId
         };
-        var runId = _databaseService.InsertIntegrityCheckRun(run);
+        int runId;
+        try
+        {
+            runId = _databaseService.InsertIntegrityCheckRun(run);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex) when (
+            ex.SqliteErrorCode == 11 /* SQLITE_CORRUPT */ ||
+            ex.SqliteErrorCode == 26 /* SQLITE_NOTADB */)
+        {
+            // B44: the FIRST write into the run table hit on-disk
+            // corruption of the local catalog file. The integrity-check
+            // engine has no way to repair this -- it only repairs
+            // backed-up files against the local catalog. Translate
+            // into a typed exception so the UI can present a clear,
+            // actionable message instead of a raw SQLite error code.
+            Log($"InsertIntegrityCheckRun failed with SQLite error {ex.SqliteErrorCode}: {ex.Message}. " +
+                $"Translating to DatabaseFileCorruptException.");
+            throw new DatabaseFileCorruptException(
+                "The local backup catalog database file is corrupted on disk. " +
+                "The Data Integrity check verifies your backed-up files against Azure storage, " +
+                "but it could not even record the start of this run because the catalog file " +
+                "itself is unreadable. Open the Storage Health tab and click " +
+                "\"Verify Database File\" to confirm the corruption and capture the affected " +
+                "pages, then restore the catalog from a recent backup or rebuild it from " +
+                "Azure metadata. " +
+                $"(Underlying error: SQLite Error {ex.SqliteErrorCode}: {ex.Message})",
+                ex.SqliteErrorCode,
+                ex);
+        }
         // The new run's failures table starts empty; stale rows from prior
         // runs go away here so the "Failures (latest run)" UI is bounded.
         _databaseService.DeleteIntegrityCheckFailuresExcept(runId);

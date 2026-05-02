@@ -303,6 +303,24 @@ Orphaned chunks are blobs in Azure that no file references. They waste storage.
 | Restore from Azure | Download the index from Azure (e.g. after reinstalling) |
 | Rebuild from Azure | Rebuild the index by scanning all metadata blobs in Azure. Use this if the index is corrupted or out of sync. |
 
+### Catalog database file
+
+The **Catalog Database File** card runs a low-level diagnostic against the encrypted SQLite/SQLCipher catalog file on disk. This is **not** the same as the Data Integrity check — that one verifies your backed-up files in Azure, while this one verifies the local catalog file itself.
+
+| Action | What it does |
+|---|---|
+| Verify Database File | Runs `PRAGMA cipher_integrity_check` (SQLCipher per-page HMAC) and `PRAGMA integrity_check` (SQLite b-tree structure) against the open catalog and shows the report below the button. |
+
+When to use it:
+
+- An action against the catalog (e.g. starting a Data Integrity check, saving a backed-up file row) fails with `SQLite Error 11: 'database disk image is malformed'` or a similar SQLite/SQLCipher error.
+- The Data Integrity tab shows `Check could not start: The local backup catalog database file is corrupted on disk…` — that message is the typed signal that the catalog itself, not your backed-up files, is the problem.
+
+How to read the report:
+
+- A healthy catalog shows `ok (no failing pages)` for the cipher pragma and a single `ok` row for the SQLite pragma. SQLCipher emits zero rows on success, so the empty-list shape is what "healthy" looks like.
+- Any other lines describe the affected page or b-tree node. Copy the report into a support request and treat the catalog as untrustworthy until repaired (restore it from a recent backup, or rebuild the chunk index from Azure metadata via **Rebuild from Azure** above).
+
 ---
 
 ## Tier Migration view

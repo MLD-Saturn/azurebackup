@@ -460,6 +460,114 @@ public partial class StorageHealthViewModel : ViewModelBase
         OnPropertyChanged(nameof(SelectedOrphanSize));
     }
 
+    #region B44: Database file integrity diagnostic
+
+    /// <summary>
+    /// Multi-line report from the most recent
+    /// <see cref="VerifyDatabaseFileAsync"/> run, or empty when no run has
+    /// been performed in this session. Surfaced in the Storage Health
+    /// view so the user can copy the cipher- and SQLite-pragma output
+    /// into a support request.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDatabaseFileReport))]
+    private string _databaseFileReport = string.Empty;
+
+    public bool HasDatabaseFileReport => !string.IsNullOrEmpty(DatabaseFileReport);
+
+    /// <summary>
+    /// B44: runs SQLCipher's <c>cipher_integrity_check</c> and SQLite's
+    /// <c>integrity_check</c> against the local catalog database file
+    /// and reports the result. Use this when an operation against the
+    /// catalog (e.g. starting a Data Integrity check) fails with
+    /// SQLite error 11 ("database disk image is malformed") to confirm
+    /// whether the catalog file is corrupted.
+    ///
+    /// <para>
+    /// This DOES NOT verify backed-up files in Azure -- that is what
+    /// the Data Integrity tab does. The two checks are independent:
+    /// the catalog can be healthy while individual backups fail
+    /// verification, or vice versa.
+    /// </para>
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanRunOperations))]
+    private async Task VerifyDatabaseFileAsync()
+    {
+        IsOperationInProgress = true;
+        StatusMessage = "Verifying local catalog database file...";
+        DatabaseFileReport = string.Empty;
+
+        try
+        {
+            // Both pragmas walk every page; run on a worker so the UI
+            // stays responsive on a large catalog. The pragma execution
+            // already serialises against writers via the backend's
+            // write lock.
+            var result = await Task.Run(() => _databaseService.CheckDatabaseFileIntegrity());
+
+            DatabaseFileReport = FormatDatabaseFileReport(result);
+            StatusMessage = result.IsHealthy
+                ? "Catalog database file is healthy (cipher_integrity_check and integrity_check both reported ok)."
+                : "Catalog database file reported problems -- see report below.";
+        }
+        catch (NotSupportedException ex)
+        {
+            DatabaseFileReport = ex.Message;
+            StatusMessage = "Verification not supported on this backend.";
+        }
+        catch (Exception ex)
+        {
+            DatabaseFileReport =
+                $"Verification failed: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}" +
+                $"{Environment.NewLine}" +
+                $"This usually means the catalog file is so badly corrupted that even the " +
+                $"SQLCipher / SQLite integrity pragmas cannot read it. Restore the catalog " +
+                $"from a recent backup, or rebuild it from Azure metadata via the " +
+                $"\"Rebuild Index\" action above.";
+            StatusMessage = $"Verification failed: {ex.Message}";
+        }
+        finally
+        {
+            IsOperationInProgress = false;
+        }
+    }
+
+    private static string FormatDatabaseFileReport(
+        AzureBackup.Core.Services.Backends.DatabaseFileIntegrityResult result)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("--- PRAGMA cipher_integrity_check (SQLCipher per-page HMAC) ---");
+        if (result.CipherIntegrityMessages.Count == 0)
+        {
+            // SQLCipher returns no rows on success - that is the healthy
+            // shape, not "no rows ran". Spell it out for the user.
+            sb.AppendLine("ok (no failing pages)");
+        }
+        else
+        {
+            foreach (var msg in result.CipherIntegrityMessages)
+            {
+                sb.AppendLine(msg);
+            }
+        }
+        sb.AppendLine();
+        sb.AppendLine("--- PRAGMA integrity_check (SQLite b-tree structure) ---");
+        if (result.SqliteIntegrityMessages.Count == 0)
+        {
+            sb.AppendLine("(no rows returned)");
+        }
+        else
+        {
+            foreach (var msg in result.SqliteIntegrityMessages)
+            {
+                sb.AppendLine(msg);
+            }
+        }
+        return sb.ToString();
+    }
+
+    #endregion
+
     }
 
     /// <summary>

@@ -880,6 +880,33 @@ public partial class LocalDatabaseService : IDisposable
     public bool IntegrityCheckSupported => _sqliteBackend != null;
 
     /// <summary>
+    /// B44: runs SQLCipher's <c>cipher_integrity_check</c> and SQLite's
+    /// <c>integrity_check</c> against the open database file. Returns
+    /// the structured result so callers can present cipher-level vs
+    /// SQLite-level diagnostics separately.
+    ///
+    /// <para>
+    /// This verifies the on-disk database FILE itself, NOT the user's
+    /// backed-up files. Use it when an operation against the local
+    /// catalog fails with SQLite error 11
+    /// (<c>SQLITE_CORRUPT</c>, "database disk image is malformed") to
+    /// confirm whether the catalog file is the cause.
+    /// </para>
+    /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// Thrown when the active backend is not SQLite (the LiteDB legacy
+    /// backend has no equivalent pragma).
+    /// </exception>
+    public DatabaseFileIntegrityResult CheckDatabaseFileIntegrity()
+    {
+        if (_sqliteBackend != null) return _sqliteBackend.CheckDatabaseFileIntegrity();
+        throw new NotSupportedException(
+            "Database file integrity check requires the SQLite backend. " +
+            "The LiteDB legacy backend does not expose the SQLCipher / SQLite " +
+            "integrity-pragma surface.");
+    }
+
+    /// <summary>
     /// D6: persists the upload-time encrypted-blob MD5 for a chunk so
     /// the cheap T1 integrity tier can compare against the live
     /// Azure-side ContentHash.
