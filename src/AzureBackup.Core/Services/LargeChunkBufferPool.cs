@@ -103,9 +103,9 @@ public sealed class LargeChunkBufferPool : IDisposable
     /// without unbounded growth. The bucket caps multiply against
     /// <see cref="BucketSizes"/> to give the worst-case pool
     /// residency: 32 × (16 + 32 + 64 + 128 + 256) MB = 32 × 496 MB
-    /// = 15.5 GB. That is the absolute residency ceiling the pool
-    /// can imprint on the heap, and it lives entirely within a
-    /// reasonable 16 GB+ budget.
+    /// = 15.5 GB. That worst-case is the per-bucket ceiling; the
+    /// B52 global byte cap (see <see cref="MaxCachedBytes"/>) is the
+    /// stricter ceiling that production callers actually use.
     /// </para>
     /// <para>
     /// Tuning knob: if the production memory-log shows the pool's
@@ -119,24 +119,79 @@ public sealed class LargeChunkBufferPool : IDisposable
 
     private readonly ConcurrentBag<byte[]>[] _buckets;
     private readonly int[] _bucketCounts;
+    private readonly long _maxCachedBytes;
     private long _totalBytesCached;
     private long _totalRents;
     private long _totalRentsFromPool;
     private long _totalReturns;
     private long _totalReturnsAccepted;
+    private long _totalReturnsDroppedForCap;
     private int _disposed;
 
     /// <summary>
-    /// Creates a new, empty pool. Buckets fill on demand through
-    /// <see cref="Rent"/>/<see cref="Return"/>.
+    /// Creates a new, empty pool with no global byte cap (only the
+    /// per-bucket cap applies). Equivalent to
+    /// <c>new LargeChunkBufferPool(long.MaxValue)</c>; preserved for
+    /// pre-B52 test and benchmark callers that want the historical
+    /// 15.5 GB ceiling.
     /// </summary>
-    public LargeChunkBufferPool()
+    public LargeChunkBufferPool() : this(long.MaxValue)
     {
+    }
+
+    /// <summary>
+    /// B52: creates a new, empty pool whose total cached residency
+    /// across all buckets is bounded by <paramref name="maxCachedBytes"/>.
+    /// When a <see cref="Return"/> would push
+    /// <see cref="TotalBytesCached"/> above the cap the buffer is
+    /// dropped on the floor (the GC reclaims it) instead of being
+    /// cached, mirroring the per-bucket overflow behaviour. The
+    /// per-bucket cap (<see cref="PerBucketCap"/>) still applies
+    /// independently.
+    /// <para>
+    /// Production callers in <see cref="BackupOrchestrator"/> derive
+    /// the cap from the active <see cref="MemoryBudget"/> so the
+    /// pool's hidden residency cannot drift past a fraction of the
+    /// configured memory limit. The pre-B52 ceiling
+    /// (32 × 496 MB = 15.5 GB) was independent of the budget, which
+    /// allowed an 8 GB-budget run to retain ~12 GB of LOH buffers in
+    /// production. Passing <see cref="long.MaxValue"/> restores the
+    /// pre-B52 behaviour for tests and benchmarks that explicitly want
+    /// it.
+    /// </para>
+    /// </summary>
+    /// <param name="maxCachedBytes">
+    /// Maximum total bytes the pool may keep cached across every
+    /// bucket. Must be positive. Pass <see cref="long.MaxValue"/>
+    /// to disable the global cap.
+    /// </param>
+    public LargeChunkBufferPool(long maxCachedBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCachedBytes);
+
+        _maxCachedBytes = maxCachedBytes;
         _buckets = new ConcurrentBag<byte[]>[BucketSizes.Length];
         _bucketCounts = new int[BucketSizes.Length];
         for (int i = 0; i < BucketSizes.Length; i++)
             _buckets[i] = new ConcurrentBag<byte[]>();
     }
+
+    /// <summary>
+    /// B52: maximum total bytes the pool may keep cached across all
+    /// buckets. Returns <see cref="long.MaxValue"/> when no global
+    /// cap was configured.
+    /// </summary>
+    public long MaxCachedBytes => _maxCachedBytes;
+
+    /// <summary>
+    /// B52: number of returned buffers dropped because accepting them
+    /// would have pushed <see cref="TotalBytesCached"/> above
+    /// <see cref="MaxCachedBytes"/>. A non-zero value confirms the
+    /// global cap is binding; when this is consistently zero the
+    /// pool's residency is under the cap and the cap is not the
+    /// limiting factor.
+    /// </summary>
+    public long TotalReturnsDroppedForCap => Volatile.Read(ref _totalReturnsDroppedForCap);
 
     /// <summary>
     /// Total bytes currently cached across all buckets. Snapshot only;
@@ -222,10 +277,12 @@ public sealed class LargeChunkBufferPool : IDisposable
 
     /// <summary>
     /// Returns a buffer to the pool. The buffer is cached IF its
-    /// length matches a bucket size AND the bucket is below its cap;
-    /// otherwise the buffer is dropped on the floor (the GC will
-    /// reclaim it). The latter is the back-pressure mechanism that
-    /// keeps the pool's total residency bounded.
+    /// length matches a bucket size, the bucket is below its
+    /// per-bucket cap, AND accepting it would not push the pool's
+    /// total residency above <see cref="MaxCachedBytes"/>; otherwise
+    /// the buffer is dropped on the floor (the GC will reclaim it).
+    /// The combined per-bucket and global caps are the back-pressure
+    /// mechanism that keeps the pool's total residency bounded.
     /// </summary>
     /// <param name="buffer">The buffer to return.</param>
     public void Return(byte[] buffer)
@@ -251,7 +308,24 @@ public sealed class LargeChunkBufferPool : IDisposable
             return;
         }
 
-        // Capacity guard: increment only if we are below the cap.
+        var bucketSize = BucketSizes[bucketIndex];
+
+        // B52 global cap: refuse to cache the buffer when accepting
+        // it would push the pool's total residency above
+        // _maxCachedBytes. The check is a snapshot read against a
+        // possibly-stale total; under contention two concurrent
+        // returns can both see a sub-cap value and both proceed to
+        // cache. The overshoot is bounded by the size of one bucket
+        // entry per concurrent return, which is well below the
+        // overall budget headroom this cap is protecting.
+        if (_maxCachedBytes != long.MaxValue &&
+            Volatile.Read(ref _totalBytesCached) + bucketSize > _maxCachedBytes)
+        {
+            Interlocked.Increment(ref _totalReturnsDroppedForCap);
+            return;
+        }
+
+        // Capacity guard: increment only if we are below the per-bucket cap.
         // Compare-and-swap loop avoids serializing the bucket and
         // matches the unsynchronized ConcurrentBag pattern.
         while (true)

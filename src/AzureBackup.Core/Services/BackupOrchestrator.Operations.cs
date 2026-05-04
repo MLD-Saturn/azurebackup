@@ -284,7 +284,10 @@ public partial class BackupOrchestrator
             using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
             // B37: a single LargeChunkBufferPool spans the entire
             // operation so the recycler is shared across files.
-            using var largeChunkPool = new LargeChunkBufferPool();
+            // B52: cap the pool's cached residency at 25% of the
+            // configured budget so the recycler cannot drift past
+            // the user's MemoryLimitMB ceiling.
+            using var largeChunkPool = new LargeChunkBufferPool(ComputePoolCapBytes(memoryBudget));
             // B36: emit a periodic memory snapshot through StatusChanged so
             // the always-visible log pane records budget vs working-set
             // drift during the operation. Wired before BackupFilesCoreAsync
@@ -611,7 +614,9 @@ public partial class BackupOrchestrator
         using var memoryBudget = MemoryBudget.FromConfig(config, CdcBufferOverhead);
         // B37: pool lives at operation scope; reporter reads its
         // residency in each emitted line.
-        using var largeChunkPool = new LargeChunkBufferPool();
+        // B52: cap the pool's cached residency at 25% of the
+        // configured budget (see ComputePoolCapBytes).
+        using var largeChunkPool = new LargeChunkBufferPool(ComputePoolCapBytes(memoryBudget));
         // B36: see MirrorSyncToAzureAsync for the rationale; same pattern
         // here so any backup operation -- not just mirror -- gets the
         // periodic memory snapshot in the always-visible log pane.

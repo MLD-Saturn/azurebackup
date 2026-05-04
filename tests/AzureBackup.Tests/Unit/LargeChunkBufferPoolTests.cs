@@ -256,4 +256,97 @@ public class LargeChunkBufferPoolTests
 
         Assert.Throws<ArgumentNullException>(() => pool.Return(null!));
     }
+
+    // ---- B52: global byte-cap behaviour ----
+
+    [Fact]
+    public void DefaultConstructor_HasUnlimitedGlobalCap()
+    {
+        using var pool = new LargeChunkBufferPool();
+
+        Assert.Equal(long.MaxValue, pool.MaxCachedBytes);
+    }
+
+    [Fact]
+    public void GlobalCap_DropsReturnsThatWouldExceedCap()
+    {
+        // Cap at 32 MB: the smallest bucket is 16 MB, so two
+        // returns at 16 MB each fit, the third must be dropped.
+        using var pool = new LargeChunkBufferPool(maxCachedBytes: 32L * MB);
+
+        pool.Return(new byte[16 * MB]); // accepted: cached=16 MB
+        pool.Return(new byte[16 * MB]); // accepted: cached=32 MB
+        pool.Return(new byte[16 * MB]); // dropped: would push to 48 MB > 32 MB cap
+
+        Assert.Equal(3, pool.TotalReturns);
+        Assert.Equal(2, pool.TotalReturnsAccepted);
+        Assert.Equal(1, pool.TotalReturnsDroppedForCap);
+        Assert.Equal(32L * MB, pool.TotalBytesCached);
+    }
+
+    [Fact]
+    public void GlobalCap_AcceptsAgainAfterRentDrainsResidency()
+    {
+        // Same cap: 32 MB. Fill, then rent one back to drop residency
+        // to 16 MB, then a fresh return must be accepted again.
+        using var pool = new LargeChunkBufferPool(maxCachedBytes: 32L * MB);
+        pool.Return(new byte[16 * MB]);
+        pool.Return(new byte[16 * MB]);
+
+        var (rented, fromPool) = pool.Rent(16 * MB);
+        Assert.True(fromPool);
+        Assert.Equal(16L * MB, pool.TotalBytesCached);
+
+        pool.Return(new byte[16 * MB]); // back to 32 MB cap
+        Assert.Equal(32L * MB, pool.TotalBytesCached);
+        // Three accepted across the run: two on the initial fill, one
+        // after the residency drained back below the cap.
+        Assert.Equal(3, pool.TotalReturnsAccepted);
+        Assert.Equal(0, pool.TotalReturnsDroppedForCap);
+    }
+
+    [Fact]
+    public void GlobalCap_PerBucketCapStillApplies()
+    {
+        // Generous global cap (1 GB), tiny per-bucket cap defaults
+        // to 32. A 33rd 16 MB return must still be dropped per the
+        // per-bucket rule, even though the global cap has plenty of
+        // headroom. Drops in this case are NOT counted under
+        // TotalReturnsDroppedForCap because they are per-bucket
+        // rejections, not global-cap rejections.
+        using var pool = new LargeChunkBufferPool(maxCachedBytes: 1024L * MB);
+        for (int i = 0; i < 33; i++)
+            pool.Return(new byte[16 * MB]);
+
+        Assert.Equal(33, pool.TotalReturns);
+        Assert.Equal(32, pool.TotalReturnsAccepted);
+        Assert.Equal(0, pool.TotalReturnsDroppedForCap);
+        Assert.Equal(32L * 16 * MB, pool.TotalBytesCached);
+    }
+
+    [Fact]
+    public void GlobalCapZero_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new LargeChunkBufferPool(maxCachedBytes: 0));
+    }
+
+    [Fact]
+    public void GlobalCapNegative_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new LargeChunkBufferPool(maxCachedBytes: -1));
+    }
+
+    [Fact]
+    public void Dispose_ResetsResidencyButRetainsCap()
+    {
+        var pool = new LargeChunkBufferPool(maxCachedBytes: 64L * MB);
+        pool.Return(new byte[16 * MB]);
+
+        pool.Dispose();
+
+        Assert.Equal(0, pool.TotalBytesCached);
+        Assert.Equal(64L * MB, pool.MaxCachedBytes);
+    }
 }

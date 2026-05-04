@@ -122,6 +122,45 @@ public partial class BackupOrchestrator : IAsyncDisposable
     // </para>
     private const long CdcBufferOverhead = 16L * 1024 * 1024;
 
+    /// <summary>
+    /// B52: derive the global byte cap for an operation-scoped
+    /// <see cref="LargeChunkBufferPool"/> from the active
+    /// <see cref="MemoryBudget"/>. The pool was previously sized only
+    /// by its per-bucket cap, which under default settings allows
+    /// ~15.5 GB of LOH residency -- well above any real-world
+    /// <c>MemoryLimitMB</c> setting. After B52 the pool's cached
+    /// residency is bounded by 25 percent of the configured budget,
+    /// so a user with an 8 GB budget caps the recycler at ~2 GB and
+    /// the remaining 6 GB stays available for in-flight chunk work.
+    /// <para>
+    /// 25 percent was chosen because the pool exists to recycle
+    /// buffers across chunks, not to hold work in flight; the
+    /// in-flight work is what the <see cref="MemoryBudget"/> itself
+    /// throttles. A higher fraction would let the cache grow at the
+    /// expense of admission, increasing stalls; a lower fraction
+    /// would force more fresh allocations and undo the recycler's
+    /// purpose. A floor of one largest-bucket-size keeps the cap
+    /// useful even on a tiny budget.
+    /// </para>
+    /// <para>
+    /// Unlimited budgets fall through to <see cref="long.MaxValue"/>
+    /// so existing benchmark and test harnesses that opt out of the
+    /// budget are unaffected.
+    /// </para>
+    /// </summary>
+    private static long ComputePoolCapBytes(MemoryBudget budget)
+    {
+        ArgumentNullException.ThrowIfNull(budget);
+        if (budget.IsUnlimited)
+            return long.MaxValue;
+        var quarter = budget.TotalBytes / 4;
+        // Floor: at least one buffer of the largest bucket so the
+        // cap is never so small that the pool is effectively
+        // disabled on a small budget.
+        var floor = 256L * 1024 * 1024;
+        return Math.Max(quarter, floor);
+    }
+
     public event EventHandler<BackupProgressEventArgs>? ProgressChanged;
     public event EventHandler<string>? StatusChanged;
     public event EventHandler<string>? ErrorOccurred;
