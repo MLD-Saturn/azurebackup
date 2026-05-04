@@ -104,4 +104,39 @@ public class AzureBlobServiceTransferOptionsTests
         Assert.Equal(32L * MB, Staging(32 * MB));      // 4x8
         Assert.Equal(64L * MB, Staging(64 * MB));      // 8x8 (unchanged from pre-B53)
     }
+
+    // ---- B55 (W3 Phase D): EstimateUploadStagingBytes ----
+
+    [Theory]
+    [InlineData(1 * MB, 1L * MB)]
+    [InlineData(8 * MB, 8L * MB)]
+    [InlineData(16 * MB, 16L * MB)]
+    [InlineData(32 * MB, 32L * MB)]
+    [InlineData(64 * MB, 64L * MB)]
+    [InlineData(128 * MB, 64L * MB)]
+    [InlineData(256 * MB, 64L * MB)]
+    public void EstimateUploadStagingBytes_MatchesTransferOptionsProduct(int encryptedLength, long expected)
+    {
+        // The estimate must equal MaximumConcurrency * MaximumTransferSize
+        // from the same helper, so the producer-side budget charge in
+        // ChunkingService cannot drift away from the actual SDK staging
+        // shape used at the upload site.
+        var actual = AzureBlobService.EstimateUploadStagingBytes(encryptedLength);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void EstimateUploadStagingBytes_ZeroLength_Throws()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => AzureBlobService.EstimateUploadStagingBytes(0));
+    }
+
+    [Fact]
+    public void EstimateUploadStagingBytes_NegativeLength_Throws()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => AzureBlobService.EstimateUploadStagingBytes(-1));
+    }
 }

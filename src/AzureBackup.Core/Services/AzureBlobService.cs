@@ -117,6 +117,43 @@ public partial class AzureBlobService : IBlobStorageService
         return DefaultTransferOptions;
     }
 
+    /// <summary>
+    /// B55 (W3 Phase D): upper bound on the per-upload staging residency
+    /// the Azure SDK retains while a single
+    /// <see cref="UploadEncryptedChunkAsync"/> call is in flight, in
+    /// bytes. Computed as
+    /// <c>MaximumConcurrency × MaximumTransferSize</c> from the same
+    /// helper that <see cref="UploadEncryptedChunkAsync"/> hands to the
+    /// SDK -- the two numbers move in lockstep by construction.
+    /// <para>
+    /// Why this matters: the staging buffers live entirely outside the
+    /// existing producer-side <see cref="MemoryBudget"/> charge that
+    /// <c>ChunkingService.AcquireChunkBufferAsync</c> issues for the
+    /// chunk payload + encrypt buffer. Pre-B55 the budget could read
+    /// near-empty while the SDK held tens of MB of staging per in-flight
+    /// chunk; <c>ChunkingService</c> now folds this estimate into its
+    /// producer-side acquire so the budget reflects the real per-chunk
+    /// residency.
+    /// </para>
+    /// </summary>
+    /// <param name="encryptedLength">
+    /// Length of the encrypted payload that will be uploaded, in bytes.
+    /// Must be positive. Same input as
+    /// <see cref="ComputeUploadTransferOptions"/>.
+    /// </param>
+    internal static long EstimateUploadStagingBytes(int encryptedLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(encryptedLength);
+
+        var options = ComputeUploadTransferOptions(encryptedLength);
+        // Both fields are populated for every band (the helper sets a
+        // concrete value rather than leaving the field null), so the
+        // GetValueOrDefault is a defensive read.
+        var concurrency = options.MaximumConcurrency.GetValueOrDefault(1);
+        var size = options.MaximumTransferSize.GetValueOrDefault(encryptedLength);
+        return (long)concurrency * size;
+    }
+
     // Retry settings for upload failures. We retry on transient failures (MD5 mismatch
     // from in-transit corruption, 5xx, 408, 429, socket / IO errors, timeouts) but NOT
     // on permanent failures (auth, not found, forbidden) which should surface immediately.

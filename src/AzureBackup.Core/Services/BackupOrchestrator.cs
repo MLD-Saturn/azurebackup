@@ -125,6 +125,22 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// budgets where the configured ceiling no longer fits.
     /// </para>
     /// <para>
+    /// B55 note: the producer-side charge per chunk now ALSO includes
+    /// the Azure SDK staging estimate from
+    /// <c>AzureBlobService.EstimateUploadStagingBytes</c>, so the
+    /// effective per-chunk charge is larger than the
+    /// payload+encrypt sum that drove the pre-B55 math. The
+    /// per-file estimate is intentionally NOT widened in lockstep;
+    /// raising it would over-throttle file fan-out and re-introduce
+    /// the pre-B27 admission stalls. Instead, the budget itself
+    /// admits fewer concurrent chunks per file when staging is
+    /// charged, which converges to the same in-flight residency
+    /// without the orchestrator-side over-correction. The file-level
+    /// fan-out only needs an estimate accurate enough to prevent
+    /// over-admission at the file boundary; finer per-chunk control
+    /// is the budget's job.
+    /// </para>
+    /// <para>
     /// The estimate is intentionally conservative -- the real
     /// budget enforcement still happens inside
     /// <see cref="MemoryBudget"/>, which throttles admission when the
