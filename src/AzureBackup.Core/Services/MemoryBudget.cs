@@ -22,6 +22,7 @@ public sealed class MemoryBudget : IDisposable
     private readonly long _totalBytes;
     private readonly bool _isUnlimited;
     private long _usedBytes;
+    private long _peakUsedBytes;
     private int _waitersCount;
     private long _stallCount;
     private long _oversizedAdmissions;
@@ -33,6 +34,17 @@ public sealed class MemoryBudget : IDisposable
     {
         get { lock (_lock) { return _usedBytes; } }
     }
+
+    /// <summary>
+    /// B56 (W3 Phase F): high-water mark of <see cref="UsedBytes"/> over
+    /// the lifetime of this budget. Updated inside the same critical
+    /// section that mutates <c>_usedBytes</c> so the value is always
+    /// internally consistent. Surfaced through
+    /// <see cref="BackupMemoryReporter"/> so a post-hoc reading of the
+    /// log line shows whether the operation actually saturated the
+    /// configured ceiling, distinct from the instantaneous current usage.
+    /// </summary>
+    public long PeakUsedBytes => Volatile.Read(ref _peakUsedBytes);
 
     /// <summary>Bytes remaining in the budget.</summary>
     public long RemainingBytes => _totalBytes - UsedBytes;
@@ -111,6 +123,7 @@ public sealed class MemoryBudget : IDisposable
             if (_usedBytes + bytes <= _totalBytes)
             {
                 _usedBytes += bytes;
+                if (_usedBytes > _peakUsedBytes) _peakUsedBytes = _usedBytes;
                 return;
             }
 
@@ -121,6 +134,7 @@ public sealed class MemoryBudget : IDisposable
             if (bytes > _totalBytes && _usedBytes == 0)
             {
                 _usedBytes += bytes;
+                if (_usedBytes > _peakUsedBytes) _peakUsedBytes = _usedBytes;
                 Interlocked.Increment(ref _oversizedAdmissions);
                 return;
             }
@@ -140,12 +154,14 @@ public sealed class MemoryBudget : IDisposable
                     if (_usedBytes + bytes <= _totalBytes)
                     {
                         _usedBytes += bytes;
+                        if (_usedBytes > _peakUsedBytes) _peakUsedBytes = _usedBytes;
                         return;
                     }
 
                     if (bytes > _totalBytes && _usedBytes == 0)
                     {
                         _usedBytes += bytes;
+                        if (_usedBytes > _peakUsedBytes) _peakUsedBytes = _usedBytes;
                         Interlocked.Increment(ref _oversizedAdmissions);
                         return;
                     }

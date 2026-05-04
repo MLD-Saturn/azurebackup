@@ -121,6 +121,7 @@ public sealed class LargeChunkBufferPool : IDisposable
     private readonly int[] _bucketCounts;
     private readonly long _maxCachedBytes;
     private long _totalBytesCached;
+    private long _peakBytesCached;
     private long _totalRents;
     private long _totalRentsFromPool;
     private long _totalReturns;
@@ -198,6 +199,17 @@ public sealed class LargeChunkBufferPool : IDisposable
     /// useful for diagnostics and the B36 memory-log emitter.
     /// </summary>
     public long TotalBytesCached => Volatile.Read(ref _totalBytesCached);
+
+    /// <summary>
+    /// B56 (W3 Phase F): high-water mark of <see cref="TotalBytesCached"/>
+    /// over the lifetime of this pool. Updated on every accepted
+    /// <see cref="Return"/> via a lock-free CAS-max loop. Surfaced
+    /// through <see cref="BackupMemoryReporter"/> so the operator can
+    /// see whether the pool's cap was actually approached during the
+    /// operation, distinct from the instantaneous current cached bytes
+    /// (which can have been drained by a recent rent).
+    /// </summary>
+    public long PeakBytesCached => Volatile.Read(ref _peakBytesCached);
 
     /// <summary>Number of rent calls (pool-served + fresh-allocation).</summary>
     public long TotalRents => Volatile.Read(ref _totalRents);
@@ -346,7 +358,20 @@ public sealed class LargeChunkBufferPool : IDisposable
         Array.Clear(buffer);
 
         _buckets[bucketIndex].Add(buffer);
-        Interlocked.Add(ref _totalBytesCached, BucketSizes[bucketIndex]);
+        var newTotal = Interlocked.Add(ref _totalBytesCached, BucketSizes[bucketIndex]);
+
+        // CAS-max update of the peak. The loop terminates on the
+        // first iteration in the uncontended case and is bounded by
+        // the number of concurrent Returns that observed a smaller
+        // peak.
+        long oldPeak;
+        do
+        {
+            oldPeak = Volatile.Read(ref _peakBytesCached);
+            if (newTotal <= oldPeak) break;
+        }
+        while (Interlocked.CompareExchange(ref _peakBytesCached, newTotal, oldPeak) != oldPeak);
+
         Interlocked.Increment(ref _totalReturnsAccepted);
     }
 

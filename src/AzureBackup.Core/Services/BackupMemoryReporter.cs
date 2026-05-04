@@ -172,23 +172,38 @@ public sealed class BackupMemoryReporter : IDisposable
         var gen2Delta = GC.CollectionCount(2) - _gen2Start;
 
         var used = _budget.UsedBytes;
+        var peakUsed = _budget.PeakUsedBytes;
         var total = _budget.TotalBytes;
         var workingSet = _process.WorkingSet64;
         var privateMem = _process.PrivateMemorySize64;
         var elapsed = _stopwatch.Elapsed;
 
-        // Unaccounted = workingSet - budget.UsedBytes. Negative values can
-        // occur briefly when the budget was just charged but the
-        // allocation has not yet caused a working-set bump; treat as 0.
-        var unaccounted = Math.Max(0, workingSet - used);
+        // B56 (W3 Phase F): post-B55 the budget includes Azure SDK
+        // upload staging, so the unaccounted gap (workingSet - used)
+        // now reflects only the residency the budget genuinely cannot
+        // see (managed-object overhead, file-watcher state, the
+        // SqliteBackend connection pool, the LOH recycler's cached
+        // buffers if a pool is wired). To make the LOH-pool component
+        // explicit rather than hide it inside unaccounted, the line
+        // also reports the pool's current and peak cached residency
+        // when a pool is wired; the unaccounted figure subtracts the
+        // pool residency so the residual is the truly-uncovered
+        // remainder. Negative values can occur briefly when the
+        // budget was just charged but the allocation has not yet
+        // caused a working-set bump; treat as 0.
+        var poolCachedNow = _largeChunkPool?.TotalBytesCached ?? 0L;
+        var unaccounted = Math.Max(0, workingSet - used - poolCachedNow);
 
         var budgetText = _budget.IsUnlimited
-            ? $"used={used / MB} MB / unlimited"
-            : $"used={used / MB} MB / {total / MB} MB ({(double)used / total * 100:F1}%)";
+            ? $"used={used / MB} MB / unlimited (peak={peakUsed / MB} MB)"
+            : $"used={used / MB} MB / {total / MB} MB ({(double)used / total * 100:F1}%, peak={peakUsed / MB} MB)";
 
         var prefix = initial ? "[mem-start]" : "[mem]";
         var poolText = _largeChunkPool != null
-            ? $" | lohPool={_largeChunkPool.TotalBytesCached / MB} MB cached, hit={_largeChunkPool.HitRate:P0}"
+            ? $" | lohPool={_largeChunkPool.TotalBytesCached / MB} MB cached" +
+              $" (peak={_largeChunkPool.PeakBytesCached / MB} MB," +
+              $" dropped={_largeChunkPool.TotalReturnsDroppedForCap}," +
+              $" hit={_largeChunkPool.HitRate:P0})"
             : string.Empty;
         var line =
             $"{prefix} {_opLabel} t+{elapsed.TotalSeconds:F0}s | budget {budgetText} | " +

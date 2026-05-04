@@ -190,4 +190,70 @@ public class BackupMemoryReporterTests
         Assert.Throws<ArgumentException>(() =>
             new BackupMemoryReporter(budget, "", _ => { }));
     }
+
+    // ---- B56 (W3 Phase F): peak-aware telemetry ----
+
+    [Fact]
+    public async Task ReportLineIncludesBudgetPeak()
+    {
+        // After acquiring then releasing more than half the budget,
+        // the next emitted sample MUST advertise the peak alongside
+        // the (now-lower) current usage so the operator can see how
+        // close the operation came to saturating the configured ceiling.
+        using var budget = new MemoryBudget(1024 * 1024);
+        var lines = new List<string>();
+
+        await budget.AcquireAsync(800 * 1024);
+        budget.Release(800 * 1024);
+
+        using var reporter = new BackupMemoryReporter(
+            budget,
+            opLabel: "test",
+            emit: lines.Add,
+            interval: TimeSpan.FromMinutes(10));
+
+        Assert.Contains("peak=", lines[0]);
+    }
+
+    [Fact]
+    public void ReportLineIncludesPoolTelemetryWhenPoolWired()
+    {
+        // When a LargeChunkBufferPool is wired, the [mem] line MUST
+        // surface its current cached residency, peak cached residency,
+        // global-cap drop count, and hit rate so the user can see the
+        // pool's contribution to the reported unaccounted gap.
+        using var budget = new MemoryBudget(1024 * 1024);
+        using var pool = new LargeChunkBufferPool(maxCachedBytes: 64L * 1024 * 1024);
+        var lines = new List<string>();
+
+        using var reporter = new BackupMemoryReporter(
+            budget,
+            opLabel: "test",
+            emit: lines.Add,
+            interval: TimeSpan.FromMinutes(10),
+            largeChunkPool: pool);
+
+        Assert.Contains("lohPool=", lines[0]);
+        Assert.Contains("peak=", lines[0]);
+        Assert.Contains("dropped=", lines[0]);
+        Assert.Contains("hit=", lines[0]);
+    }
+
+    [Fact]
+    public void ReportLineOmitsPoolTelemetryWhenPoolNotWired()
+    {
+        // When no pool is wired the line MUST NOT include the lohPool
+        // segment; emitting "lohPool=0 MB" would mislead callers into
+        // thinking the pool is wired but unused.
+        using var budget = new MemoryBudget(1024 * 1024);
+        var lines = new List<string>();
+
+        using var reporter = new BackupMemoryReporter(
+            budget,
+            opLabel: "test",
+            emit: lines.Add,
+            interval: TimeSpan.FromMinutes(10));
+
+        Assert.DoesNotContain("lohPool=", lines[0]);
+    }
 }

@@ -349,4 +349,74 @@ public class LargeChunkBufferPoolTests
         Assert.Equal(0, pool.TotalBytesCached);
         Assert.Equal(64L * MB, pool.MaxCachedBytes);
     }
+
+    // ---- B56 (W3 Phase F): peak cached residency ----
+
+    [Fact]
+    public void NewPool_PeakIsZero()
+    {
+        using var pool = new LargeChunkBufferPool();
+
+        Assert.Equal(0, pool.PeakBytesCached);
+    }
+
+    [Fact]
+    public void AcceptedReturn_AdvancesPeak()
+    {
+        using var pool = new LargeChunkBufferPool();
+
+        pool.Return(new byte[16 * MB]);
+        Assert.Equal(16L * MB, pool.PeakBytesCached);
+
+        pool.Return(new byte[32 * MB]);
+        Assert.Equal((16L + 32) * MB, pool.PeakBytesCached);
+    }
+
+    [Fact]
+    public void RentBelowPeak_PeakStays()
+    {
+        // Peak must be a high-water mark; renting cached buffers
+        // back out of the pool drops TotalBytesCached but the peak
+        // must remain so a post-hoc reading of the [mem] log shows
+        // the worst-case residency the pool ever held.
+        using var pool = new LargeChunkBufferPool();
+        pool.Return(new byte[16 * MB]);
+        pool.Return(new byte[16 * MB]);
+        Assert.Equal(32L * MB, pool.PeakBytesCached);
+
+        pool.Rent(16 * MB);
+        Assert.Equal(16L * MB, pool.TotalBytesCached);
+        Assert.Equal(32L * MB, pool.PeakBytesCached);
+    }
+
+    [Fact]
+    public void DroppedForCap_DoesNotAdvancePeak()
+    {
+        // A return rejected by the global cap is NOT cached, so it
+        // must not contribute to the high-water mark.
+        using var pool = new LargeChunkBufferPool(maxCachedBytes: 16L * MB);
+        pool.Return(new byte[16 * MB]);
+        Assert.Equal(16L * MB, pool.PeakBytesCached);
+
+        pool.Return(new byte[16 * MB]); // dropped
+        Assert.Equal(16L * MB, pool.PeakBytesCached);
+        Assert.Equal(1, pool.TotalReturnsDroppedForCap);
+    }
+
+    [Fact]
+    public void Dispose_DoesNotResetPeak()
+    {
+        // Dispose drains the live buckets but the peak record of
+        // what the pool held during its lifetime must survive so a
+        // dispose-time [mem] sample can still report it.
+        var pool = new LargeChunkBufferPool();
+        pool.Return(new byte[16 * MB]);
+        pool.Return(new byte[32 * MB]);
+        Assert.Equal((16L + 32) * MB, pool.PeakBytesCached);
+
+        pool.Dispose();
+
+        Assert.Equal(0, pool.TotalBytesCached);
+        Assert.Equal((16L + 32) * MB, pool.PeakBytesCached);
+    }
 }
