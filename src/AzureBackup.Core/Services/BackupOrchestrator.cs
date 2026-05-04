@@ -103,6 +103,84 @@ public partial class BackupOrchestrator : IAsyncDisposable
     private int EffectiveMaxParallelFileBackups
         => MaxParallelFileBackupsOverride ?? MaxParallelFileBackups;
 
+    /// <summary>
+    /// B54 (W3 Phase C): per-file residency estimate used by
+    /// <see cref="ComputeEffectiveFileConcurrency"/> to decide how
+    /// far the file-level fan-out can scale before the
+    /// <see cref="MemoryBudget"/> would be over-subscribed.
+    /// <para>
+    /// Sizing: the worst-case per-file producer-side charge is
+    /// <c>MaxParallelChunkUploads (6) × MaxChunkSize (64 MB)</c>
+    /// = 384 MB of in-flight chunk payload, plus the per-operation
+    /// <see cref="CdcBufferOverhead"/> (16 MB) and assorted
+    /// per-file pipeline overhead (rolling-hash window, scratch
+    /// buffers, channel slots, IncrementalHash state) which together
+    /// round up to roughly 512 MB. That value also matches the
+    /// existing B27 sizing comment on <see cref="MaxParallelFileBackups"/>:
+    /// the recommended <c>MemoryLimitMB=8192</c> default was chosen
+    /// to leave headroom for 16-way × 6 chunks per file, i.e.
+    /// 8192 ÷ 16 = 512 MB per file. This constant therefore makes the
+    /// formal scaling rule agree with the historical hand-picked one
+    /// at the production default; it only changes behaviour at smaller
+    /// budgets where the configured ceiling no longer fits.
+    /// </para>
+    /// <para>
+    /// The estimate is intentionally conservative -- the real
+    /// budget enforcement still happens inside
+    /// <see cref="MemoryBudget"/>, which throttles admission when the
+    /// actual in-flight bytes approach the cap. Reducing fan-out at
+    /// this level only prevents the orchestrator from STARTING work it
+    /// would immediately have to stall on, and from inflating Azure
+    /// SDK staging residency by spinning up too many parallel uploads
+    /// against a cap they cannot all fit under.
+    /// </para>
+    /// </summary>
+    private const long EstimatedPerFileResidencyBytes = 512L * 1024 * 1024;
+
+    /// <summary>
+    /// B54 (W3 Phase C): clamp the configured file-level concurrency
+    /// against the active <see cref="MemoryBudget"/> so a small
+    /// memory limit reduces the file-level fan-out instead of
+    /// admitting many files that would all immediately stall.
+    /// <para>
+    /// Returns <see cref="long.MaxValue"/>-equivalent (i.e. the full
+    /// configured ceiling) when the budget is unlimited.
+    /// Otherwise returns
+    /// <c>clamp(budget.TotalBytes / EstimatedPerFileResidencyBytes,
+    /// 1, configuredCeiling)</c>. The floor of one preserves the
+    /// invariant that backups must always make some forward progress
+    /// even on a tiny budget; the budget itself will throttle
+    /// admission inside the per-file pipeline.
+    /// </para>
+    /// </summary>
+    /// <param name="budget">
+    /// Active memory budget for the operation. The cap is derived
+    /// from this budget so a slider change for a future operation
+    /// produces a different effective concurrency without touching
+    /// any constants.
+    /// </param>
+    /// <param name="configuredCeiling">
+    /// The hard ceiling from
+    /// <see cref="EffectiveMaxParallelFileBackups"/> (which already
+    /// honours the <see cref="MaxParallelFileBackupsOverride"/>
+    /// benchmark seam). The result is never larger than this value.
+    /// </param>
+    internal static int ComputeEffectiveFileConcurrency(MemoryBudget budget, int configuredCeiling)
+    {
+        ArgumentNullException.ThrowIfNull(budget);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(configuredCeiling);
+
+        if (budget.IsUnlimited)
+            return configuredCeiling;
+
+        var byBudget = budget.TotalBytes / EstimatedPerFileResidencyBytes;
+        if (byBudget < 1)
+            return 1;
+        if (byBudget > configuredCeiling)
+            return configuredCeiling;
+        return (int)byBudget;
+    }
+
     // Batch size for the background backup monitoring loop
     private const int BackupLoopBatchSize = 50;
 
@@ -1339,15 +1417,21 @@ public partial class BackupOrchestrator : IAsyncDisposable
                     var batchConfig = _databaseService.GetConfiguration();
                     using var batchBudget = MemoryBudget.FromConfig(batchConfig, CdcBufferOverhead);
 
+                    // B54: clamp file-level fan-out against the per-batch
+                    // budget so a small MemoryLimitMB does not over-subscribe
+                    // in-flight residency in the background loop either.
+                    var batchFileConcurrency =
+                        ComputeEffectiveFileConcurrency(batchBudget, EffectiveMaxParallelFileBackups);
+
                     Log($"RunBackupLoopAsync: Processing {backups.Count} files in parallel " +
-                        $"(max {EffectiveMaxParallelFileBackups}, " +
+                        $"(max {batchFileConcurrency}, " +
                         $"memoryBudget={(!batchBudget.IsUnlimited ? $"{batchConfig.MemoryLimitMB} MB" : "unlimited")})");
 
                     await Parallel.ForEachAsync(
                         backups,
                         new ParallelOptions
                         {
-                            MaxDegreeOfParallelism = EffectiveMaxParallelFileBackups,
+                            MaxDegreeOfParallelism = batchFileConcurrency,
                             CancellationToken = cancellationToken
                         },
                         async (change, ct) =>

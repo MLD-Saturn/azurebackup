@@ -278,6 +278,9 @@ public partial class BackupOrchestrator
         // Phase 4: Backup new and modified files using the shared parallel core.
         // This gives MirrorSyncToAzureAsync the same parallelism, memory budget,
         // and per-file metrics recording as BackupFilesAsync.
+        // B54: hoist effective file concurrency out of the if-block so the
+        // post-loop metrics record the same value the loop actually used.
+        var effectiveFileConcurrency = EffectiveMaxParallelFileBackups;
         if (filesToBackup.Count > 0)
         {
             var config = _databaseService.GetConfiguration();
@@ -298,8 +301,13 @@ public partial class BackupOrchestrator
                 emit: line => StatusChanged?.Invoke(this, line),
                 largeChunkPool: largeChunkPool);
 
+            // B54: clamp file-level fan-out against the active budget so a
+            // small MemoryLimitMB does not over-subscribe in-flight residency.
+            effectiveFileConcurrency =
+                ComputeEffectiveFileConcurrency(memoryBudget, EffectiveMaxParallelFileBackups);
+
             Log($"MirrorSyncToAzureAsync: Backing up {filesToBackup.Count} new/modified files " +
-                $"(max {EffectiveMaxParallelFileBackups} concurrent, " +
+                $"(max {effectiveFileConcurrency} concurrent, " +
                 $"memoryBudget={(!memoryBudget.IsUnlimited ? $"{config.MemoryLimitMB} MB" : "unlimited")})");
 
             Metrics?.RecordContext("mirror-to-azure", config.MemoryLimitEnabled ? config.MemoryLimitMB : 0, config.MemoryLimitEnabled);
@@ -331,7 +339,8 @@ public partial class BackupOrchestrator
             try
             {
                 (completed, failed, bytes) = await BackupFilesCoreAsync(
-                    filesToBackup, memoryBudget, largeChunkPool, adaptedProgress, forceReupload: false, cancellationToken);
+                    filesToBackup, memoryBudget, largeChunkPool, adaptedProgress,
+                    forceReupload: false, effectiveFileConcurrency, cancellationToken);
             }
             catch (Exception ex) when (TryExtractAuthFailure(ex, out var auth))
             {
@@ -400,7 +409,7 @@ public partial class BackupOrchestrator
             Bytes = result.BytesTransferred,
             ElapsedSeconds = mirrorElapsed,
             ThroughputMBps = mirrorElapsed > 0 ? result.BytesTransferred / mirrorElapsed / (1024 * 1024) : 0,
-            FileConcurrency = EffectiveMaxParallelFileBackups,
+            FileConcurrency = effectiveFileConcurrency,
             MemoryBudgetMb = filesToBackup.Count > 0 ? (int)(_databaseService.GetConfiguration().MemoryLimitMB) : 0,
             CrcFailCount = (int)(_blobService.TotalCrcFailures - crcFailStart),
             CrcRetryCount = (int)(_blobService.TotalCrcRetries - crcRetryStart)
@@ -626,8 +635,15 @@ public partial class BackupOrchestrator
             emit: line => StatusChanged?.Invoke(this, line),
             largeChunkPool: largeChunkPool);
 
+        // B54: clamp file-level fan-out against the active budget so a
+        // small MemoryLimitMB does not admit more files than the budget
+        // can sustain. Snapshot once per operation so the value cannot
+        // drift mid-flight.
+        var effectiveFileConcurrency =
+            ComputeEffectiveFileConcurrency(memoryBudget, EffectiveMaxParallelFileBackups);
+
         Log($"BackupFilesAsync: Starting parallel backup of {filePaths.Count} files " +
-            $"(max {EffectiveMaxParallelFileBackups} concurrent, " +
+            $"(max {effectiveFileConcurrency} concurrent, " +
             $"memoryBudget={(!memoryBudget.IsUnlimited ? $"{config.MemoryLimitMB} MB" : "unlimited")})");
 
         Metrics?.RecordContext("backup", config.MemoryLimitEnabled ? config.MemoryLimitMB : 0, config.MemoryLimitEnabled);
@@ -641,6 +657,7 @@ public partial class BackupOrchestrator
         {
             ["files"] = filePaths.Count,
             ["maxParallelFileBackups"] = EffectiveMaxParallelFileBackups,
+            ["effectiveFileConcurrency"] = effectiveFileConcurrency,
             ["memoryBudgetMb"] = memoryBudget.IsUnlimited ? "unlimited" : (memoryBudget.TotalBytes / (1024 * 1024)).ToString(),
             ["memoryBudgetEnabled"] = config.MemoryLimitEnabled,
             ["processors"] = Environment.ProcessorCount
@@ -651,7 +668,8 @@ public partial class BackupOrchestrator
         try
         {
             (completed, failed, processedBytes) = await BackupFilesCoreAsync(
-                filePaths, memoryBudget, largeChunkPool, progress, forceReupload, cancellationToken);
+                filePaths, memoryBudget, largeChunkPool, progress, forceReupload,
+                effectiveFileConcurrency, cancellationToken);
         }
         catch (Exception ex) when (TryExtractAuthFailure(ex, out var auth))
         {
@@ -673,7 +691,7 @@ public partial class BackupOrchestrator
             Bytes = processedBytes,
             ElapsedSeconds = opElapsed,
             ThroughputMBps = opElapsed > 0 ? processedBytes / opElapsed / (1024 * 1024) : 0,
-            FileConcurrency = EffectiveMaxParallelFileBackups,
+            FileConcurrency = effectiveFileConcurrency,
             MemoryBudgetMb = memoryBudget.IsUnlimited ? 0 : (int)(memoryBudget.TotalBytes / (1024 * 1024)),
             CrcFailCount = (int)(_blobService.TotalCrcFailures - crcFailStart),
             CrcRetryCount = (int)(_blobService.TotalCrcRetries - crcRetryStart)
@@ -696,17 +714,24 @@ public partial class BackupOrchestrator
 
     /// <summary>
     /// Core parallel backup logic shared by <see cref="BackupFilesAsync"/> and
-    /// <see cref="MirrorSyncToAzureAsync"/>. Backs up files using <see cref="MaxParallelFileBackups"/>
-    /// concurrent workers with a shared <see cref="MemoryBudget"/>.
-    /// Does NOT record operation-level metrics — callers are responsible.
+    /// <see cref="MirrorSyncToAzureAsync"/>. Backs up files using
+    /// <paramref name="effectiveFileConcurrency"/> concurrent workers with a
+    /// shared <see cref="MemoryBudget"/>. Does NOT record operation-level
+    /// metrics — callers are responsible.
     /// </summary>
+    /// <param name="effectiveFileConcurrency">
+    /// B54: budget-clamped file-level fan-out. Callers compute this once per
+    /// operation via <see cref="ComputeEffectiveFileConcurrency"/> so the
+    /// loop, the metrics, and the log line all agree on the same value.
+    /// </param>
     /// <returns>Tuple of (completedFiles, failedFiles, totalBytesProcessed).</returns>
     private async Task<(int completed, int failed, long processedBytes)> BackupFilesCoreAsync(
         IList<string> filePaths,
         MemoryBudget memoryBudget,
         LargeChunkBufferPool largeChunkPool,
-        IProgress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>? progress = null,
-        bool forceReupload = false,
+        IProgress<(int fileIndex, int totalFiles, string fileName, long bytesProcessed, long totalBytes, long currentFileBytes, long currentFileSize)>? progress,
+        bool forceReupload,
+        int effectiveFileConcurrency,
         CancellationToken cancellationToken = default)
     {
         var totalFiles = filePaths.Count;
@@ -747,7 +772,7 @@ public partial class BackupOrchestrator
             filePaths.Select((path, idx) => (path, idx)),
             new ParallelOptions
             {
-                MaxDegreeOfParallelism = EffectiveMaxParallelFileBackups,
+                MaxDegreeOfParallelism = effectiveFileConcurrency,
                 CancellationToken = cancellationToken
             },
             async (item, ct) =>
