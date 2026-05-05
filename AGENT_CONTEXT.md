@@ -216,7 +216,7 @@ Follow-ups deferred from B27 (each can become its own future workstream when pri
 
 ## Completed workstreams (recent)
 
-- **B60 (commit `<pending>`, 2026-04-27)**: Phase 3 Commit 2 of W4 (LiteDB-compatibility removal -- retire residual LiteDB surface and the LiteDB NuGet package). Closes W4.
+- **B60 (commit `e245594`, 2026-04-27)**: Phase 3 Commit 2 of W4 (LiteDB-compatibility removal -- retire residual LiteDB surface and the LiteDB NuGet package). Closes W4.
 
 - **B59 (commit `93aea60`, 2026-04-27)**: Phase 3 Commit 1 of W4 (LiteDB-compatibility removal -- collapse SQLite-vs-LiteDB selection seam).
 
@@ -278,7 +278,7 @@ If running from inside Visual Studio (which is the typical user environment), th
 
 | Hash | Message |
 |---|---|
-| `<pending>` | B60: W4 Phase 3 Commit 2 -- retire residual LiteDB surface; LiteDbBackend.cs + LocalDatabaseService.Locking.cs deleted; LocalDatabaseService.cs + LocalDatabaseService.ChunkIndex.cs rewritten as pure SQLite forwarders (LiteDB collection fields, _dbLock, _checkpointTimer, EnsureInitialized, OverwriteSensitiveData, two-branch _sqliteBackend pattern all removed); BackendContractTests.cs deleted; eight backend-comparison benchmarks deleted; BenchDataHelper extracted into its own file; LiteDB attributes stripped from ConfigurationModels/FileModels/ChunkIndexModels; DiagnosticBundleExporter loses .upgrade-pending and .litedb-backup awareness; LiteDB 5.0.21 PackageReference removed; 859/859 tests pass |
+| `e245594` | B60: W4 Phase 3 Commit 2 -- retire residual LiteDB surface;
 | `93aea60` | B59: W4 Phase 3 Commit 1 -- collapse SQLite-vs-LiteDB selection seam;
 | `04e55e6` | B58: W4 Phase 2 -- delete orphaned LiteDB migration helpers and tests;
 | `ca5d628` | B57: W4 Phase 1 -- remove legacy LiteDB migration branches from auth/startup viewmodels (MainWindowViewModel.Commands.Auth.cs, MainWindowViewModel.cs, MainWindowViewModel.Commands.Navigation.cs); 3 files, +33/-276; 921/921 tests pass |
