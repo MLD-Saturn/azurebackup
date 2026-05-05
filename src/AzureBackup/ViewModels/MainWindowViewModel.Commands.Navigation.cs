@@ -275,14 +275,8 @@ public partial class MainWindowViewModel
                 LocalFileTreeRoots.Clear();
                 LocalFilesFlatList.Clear();
 
-                // Drop the cached Azure file-path snapshot so a subsequent
-                // reconnect to a different storage account does not filter
-                // local files against stale data.
                 _cachedAzureFilePaths = null;
 
-                // Reset migration flag (fresh database won't need migration)
-                _needsMigration = false;
-                
                 // Notify property changes
                 OnPropertyChanged(nameof(RestorableFilesEmpty));
                 OnPropertyChanged(nameof(RestorableFilesCount));
@@ -292,7 +286,6 @@ public partial class MainWindowViewModel
                 OnPropertyChanged(nameof(SelectedFilesText));
                 OnPropertyChanged(nameof(NeedsConfiguration));
                 OnPropertyChanged(nameof(NeedsUnlock));
-                OnPropertyChanged(nameof(NeedsMigration));
                 OnPropertyChanged(nameof(IsNewUser));
                 OnPropertyChanged(nameof(PasswordSectionTitle));
                 OnPropertyChanged(nameof(InitializeButtonText));
@@ -415,7 +408,6 @@ public partial class MainWindowViewModel
                 LocalFilesFlatList.Clear();
 
                 _cachedAzureFilePaths = null;
-                _needsMigration = false;
 
                 OnPropertyChanged(nameof(RestorableFilesEmpty));
                 OnPropertyChanged(nameof(RestorableFilesCount));
@@ -425,7 +417,6 @@ public partial class MainWindowViewModel
                 OnPropertyChanged(nameof(SelectedFilesText));
                 OnPropertyChanged(nameof(NeedsConfiguration));
                 OnPropertyChanged(nameof(NeedsUnlock));
-                OnPropertyChanged(nameof(NeedsMigration));
                 OnPropertyChanged(nameof(IsNewUser));
                 OnPropertyChanged(nameof(PasswordSectionTitle));
                 OnPropertyChanged(nameof(InitializeButtonText));

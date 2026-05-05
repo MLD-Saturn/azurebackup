@@ -178,17 +178,8 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>
     /// True if the application is configured but locked (needs password).
-    /// Includes migration case - migration is handled automatically during unlock.
     /// </summary>
     public bool NeedsUnlock => HasExistingConfig && !IsInitialized;
-
-    /// <summary>
-    /// True if migration from unencrypted database is required.
-    /// </summary>
-    public bool NeedsMigration => _needsMigration;
-
-    // Flag to track if migration from legacy encrypted database is needed (raw password, no Argon2id)
-    private bool _needsLegacyMigration;
 
     [ObservableProperty]
     private bool _isOperationInProgress;
@@ -946,38 +937,9 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         // Check database state for returning vs new user
         var dbPath = AppMode.DatabasePath;
 
-        // Crash-safety: if a previous launch died mid-encryption-upgrade,
-        // finish the rename chain before we probe for database existence
-        // or migration state. The recovery is a no-op when no sentinel
-        // file is present, so this is cheap on the happy path.
-        try
-        {
-            if (LocalDatabaseService.RecoverInterruptedUpgrade(dbPath))
-            {
-                AddLog("Recovered an interrupted encryption upgrade from a prior session.");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            AddLog($"Could not recover prior upgrade state: {ex.Message}. " +
-                "Inspect the database directory before continuing.");
-        }
-
         HasExistingConfig = LocalDatabaseService.DatabaseExists(dbPath);
-        
-        // Check what type of migration is needed (if any)
-        _needsMigration = HasExistingConfig && LocalDatabaseService.IsUnencryptedDatabase(dbPath);
-        _needsLegacyMigration = HasExistingConfig && LocalDatabaseService.IsLegacyEncryptedDatabase(dbPath);
-        
-        if (_needsMigration)
-        {
-            AddLog("Legacy unencrypted database detected - will migrate to encrypted format");
-        }
-        else if (_needsLegacyMigration)
-        {
-            AddLog("Legacy encrypted database detected - will upgrade to stronger Argon2id encryption");
-        }
-        else if (HasExistingConfig)
+
+        if (HasExistingConfig)
         {
             AddLog("Encrypted database found - enter password to unlock");
         }
@@ -986,9 +948,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             AddLog("No existing configuration - set up a new password to get started");
         }
     }
-    
-    // Flag to track if migration from unencrypted database is needed
-    private bool _needsMigration;
 
     /// <summary>
     /// Saves memory limit settings to the database when changed.

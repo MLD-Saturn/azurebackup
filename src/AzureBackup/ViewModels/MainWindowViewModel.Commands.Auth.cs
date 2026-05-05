@@ -262,15 +262,15 @@ public partial class MainWindowViewModel
             return;
         }
 
-        // For new setup or migration, require password confirmation
-        if (!HasExistingConfig || _needsMigration)
+        // For new setup, require password confirmation.
+        if (!HasExistingConfig)
         {
             if (string.IsNullOrWhiteSpace(PasswordConfirm))
             {
                 AddLog("Please confirm your password");
                 return;
             }
-            
+
             if (Password != PasswordConfirm)
             {
                 AddLog("Passwords do not match");
@@ -286,76 +286,7 @@ public partial class MainWindowViewModel
         Password.AsSpan().CopyTo(passwordChars);
         try
         {
-            // Step 1: Handle migration from unencrypted database if needed
-            if (_needsMigration)
-            {
-                AddLog("Migrating database to encrypted format...");
-                var tempPath = AppMode.DatabasePath + ".encrypted";
-
-                try
-                {
-                    // Migrate to encrypted format
-                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, passwordChars);
-
-                    // Close any existing connections and swap files
-                    _databaseService.Close();
-
-                    // Crash-safe atomic swap. Sentinel at
-                    // {DatabasePath}.upgrade-pending guards every rename so
-                    // a process crash mid-rename is recoverable on next
-                    // launch via LocalDatabaseService.RecoverInterruptedUpgrade.
-                    // Matches the pattern already used by the same migration
-                    // step in UnlockAndConnectAsync and TryUnlockWithPasswordAsync;
-                    // this site was missed in commit 9902ac1.
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".unencrypted.bak");
-
-                    AddLog("Database migration completed successfully");
-                    _needsMigration = false;
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Migration failed: {ex.Message}");
-                    // Failed-mid-write encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return;
-                }
-            }
-
-            // Step 2: Handle migration from legacy encrypted database (raw password) to Argon2id
-            if (_needsLegacyMigration)
-            {
-                AddLog("Upgrading database encryption to Argon2id...");
-                var tempPath = AppMode.DatabasePath + ".upgraded";
-
-                try
-                {
-                    LocalDatabaseService.MigrateLegacyEncrypted(AppMode.DatabasePath, tempPath, passwordChars);
-                    _databaseService.Close();
-
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".legacy.bak");
-
-                    AddLog("Database encryption upgraded to Argon2id successfully");
-                    _needsLegacyMigration = false;
-                }
-                catch (AzureBackup.Core.InvalidPasswordException)
-                {
-                    AddLog("Invalid password - please try again");
-                    return;
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Encryption upgrade failed: {ex.Message}");
-                    // Failed-mid-write Argon2id-encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return;
-                }
-            }
-
-            // Step 3: Initialize the encrypted database with password
+            // Initialize the encrypted database with password.
             try
             {
                 _databaseService.Initialize(AppMode.DatabasePath, passwordChars.AsSpan());
@@ -457,51 +388,48 @@ public partial class MainWindowViewModel
         }
 
         var isNewSetup = !HasExistingConfig;
-        
+
         // Save user input before LoadConfiguration potentially overwrites it
         // This is needed for new setups where config is empty
         var userConnectionString = ConnectionString;
         var userContainerName = ContainerName;
         var userStorageAccountName = StorageAccountName;
 
-        // For new setup or migration, require password confirmation
-        if (isNewSetup || _needsMigration)
+        // For new setup, require password confirmation.
+        if (isNewSetup)
         {
             if (string.IsNullOrWhiteSpace(PasswordConfirm))
             {
                 AddLog("Please confirm your password");
                 return;
             }
-            
+
             if (Password != PasswordConfirm)
             {
                 AddLog("Passwords do not match");
                 return;
             }
 
-            // Validate storage configuration for new users (not for migration)
-            if (isNewSetup && !_needsMigration)
+            // Validate storage configuration for new users.
+            if (UseEntraIdAuth)
             {
-                if (UseEntraIdAuth)
+                if (string.IsNullOrWhiteSpace(userStorageAccountName))
                 {
-                    if (string.IsNullOrWhiteSpace(userStorageAccountName))
-                    {
-                        AddLog("Please enter a storage account name");
-                        return;
-                    }
-                    if (!_orchestrator.IsEntraIdAuthenticated)
-                    {
-                        AddLog("Please sign in with Microsoft Entra ID first");
-                        return;
-                    }
+                    AddLog("Please enter a storage account name");
+                    return;
                 }
-                else
+                if (!_orchestrator.IsEntraIdAuthenticated)
                 {
-                    if (string.IsNullOrWhiteSpace(userConnectionString) || userConnectionString.StartsWith("[Encrypted", StringComparison.Ordinal))
-                    {
-                        AddLog("Please enter a connection string");
-                        return;
-                    }
+                    AddLog("Please sign in with Microsoft Entra ID first");
+                    return;
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(userConnectionString) || userConnectionString.StartsWith("[Encrypted", StringComparison.Ordinal))
+                {
+                    AddLog("Please enter a connection string");
+                    return;
                 }
             }
         }
@@ -513,70 +441,7 @@ public partial class MainWindowViewModel
         Password.AsSpan().CopyTo(passwordChars);
         try
         {
-            // Step 1: Handle migration from unencrypted database if needed
-            if (_needsMigration)
-            {
-                AddLog("Migrating database to encrypted format...");
-                var tempPath = AppMode.DatabasePath + ".encrypted";
-
-                try
-                {
-                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, passwordChars);
-                    _databaseService.Close();
-
-                    // Crash-safe atomic swap. Sentinel at
-                    // {DatabasePath}.upgrade-pending guards every rename so
-                    // a process crash mid-rename is recoverable on next
-                    // launch via LocalDatabaseService.RecoverInterruptedUpgrade.
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".unencrypted.bak");
-
-                    AddLog("Database migration completed successfully");
-                    _needsMigration = false;
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Migration failed: {ex.Message}");
-                    // Failed-mid-write encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return;
-                }
-            }
-
-            // Step 1b: Handle migration from legacy encrypted database to Argon2id
-            if (_needsLegacyMigration)
-            {
-                AddLog("Upgrading database encryption to Argon2id...");
-                var tempPath = AppMode.DatabasePath + ".upgraded";
-                
-                try
-                {
-                    LocalDatabaseService.MigrateLegacyEncrypted(AppMode.DatabasePath, tempPath, passwordChars);
-                    _databaseService.Close();
-
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".legacy.bak");
-
-                    AddLog("Database encryption upgraded to Argon2id successfully");
-                    _needsLegacyMigration = false;
-                }
-                catch (AzureBackup.Core.InvalidPasswordException)
-                {
-                    AddLog("Invalid password for existing database - please try again");
-                    return;
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Encryption upgrade failed: {ex.Message}");
-                    // Failed-mid-write Argon2id-encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return;
-                }
-            }
-
-            // Step 2: Initialize the encrypted database with password
+            // Step 1: Initialize the encrypted database with password.
             try
             {
                 _databaseService.Initialize(AppMode.DatabasePath, passwordChars.AsSpan());
@@ -589,7 +454,7 @@ public partial class MainWindowViewModel
 
             await EnsureReverseChunkIndexBuiltAsync();
 
-            // Step 3: Load configuration from the now-unlocked database
+            // Step 2: Load configuration from the now-unlocked database
             LoadConfiguration();
 
             // For new setups, restore user input that LoadConfiguration may have overwritten
@@ -601,7 +466,7 @@ public partial class MainWindowViewModel
                 StorageAccountName = userStorageAccountName;
             }
 
-            // Step 4: Initialize encryption service for backup operations
+            // Step 3: Initialize encryption service for backup operations
             var success = await _orchestrator.InitializeAsync(passwordChars.AsMemory());
             if (!success)
             {
@@ -611,13 +476,13 @@ public partial class MainWindowViewModel
 
             IsInitialized = true;
             AddLog("Encryption initialized successfully!");
-            
+
             // Clear sensitive password data from UI
             Password = string.Empty;
             PasswordConfirm = string.Empty;
 
-            // Step 5: Save and connect to storage (for new users with storage config)
-            if (isNewSetup && !_needsMigration)
+            // Step 4: Save and connect to storage (for new users with storage config)
+            if (isNewSetup)
             {
                 // Save watched folders
                 var config = _databaseService.GetConfiguration();
@@ -722,65 +587,7 @@ public partial class MainWindowViewModel
 
         try
         {
-            // Step 1: Handle migration from unencrypted database if needed
-            if (_needsMigration)
-            {
-                AddLog("Migrating database to encrypted format...");
-                var tempPath = AppMode.DatabasePath + ".encrypted";
-
-                try
-                {
-                    LocalDatabaseService.MigrateToEncrypted(AppMode.DatabasePath, tempPath, passwordMemory.Span);
-                    _databaseService.Close();
-
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".unencrypted.bak");
-
-                    AddLog("Database migration completed successfully");
-                    _needsMigration = false;
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Migration failed: {ex.Message}");
-                    // Failed-mid-write encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return (false, $"Migration failed: {ex.Message}");
-                }
-            }
-
-            // Step 1b: Handle migration from legacy encrypted database to Argon2id
-            if (_needsLegacyMigration)
-            {
-                AddLog("Upgrading database encryption to Argon2id...");
-                var tempPath = AppMode.DatabasePath + ".upgraded";
-
-                try
-                {
-                    LocalDatabaseService.MigrateLegacyEncrypted(AppMode.DatabasePath, tempPath, passwordMemory.Span);
-                    _databaseService.Close();
-
-                    LocalDatabaseService.CommitDatabaseUpgrade(
-                        AppMode.DatabasePath, tempPath, ".legacy.bak");
-
-                    AddLog("Database encryption upgraded to Argon2id successfully");
-                    _needsLegacyMigration = false;
-                }
-                catch (AzureBackup.Core.InvalidPasswordException)
-                {
-                    return (false, "Invalid password for existing database");
-                }
-                catch (System.Exception ex)
-                {
-                    AddLog($"Encryption upgrade failed: {ex.Message}");
-                    // Failed-mid-write Argon2id-encrypted DB + its salt -- secret-bearing.
-                    FileSystemHelper.TrySecureDelete(tempPath);
-                    FileSystemHelper.TrySecureDelete(tempPath + ".salt");
-                    return (false, $"Encryption upgrade failed: {ex.Message}");
-                }
-            }
-
-            // Step 2: Initialize the encrypted database with password
+            // Step 1: Initialize the encrypted database with password
             AddLog("Unlock step 2: opening encrypted database...");
             try
             {
