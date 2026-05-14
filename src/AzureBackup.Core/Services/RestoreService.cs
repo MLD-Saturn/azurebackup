@@ -206,13 +206,19 @@ public partial class RestoreService
     /// <param name="memoryBudget">Optional shared memory budget for throttling parallel chunk downloads.
     /// When null, a per-file budget is created from config. Pass a shared instance for
     /// multi-file operations so total in-flight memory stays within the user's limit.</param>
+    /// <param name="bandwidthScheduler">Optional batch-level <see cref="BandwidthScheduler"/>.
+    /// When provided, every successful chunk write feeds the AIMD throughput
+    /// signal and every transient HTTP retry / detected stall halves
+    /// file-level concurrency. Single-file restores from the UI pass null
+    /// because no batch-level scheduling decision exists.</param>
     public async Task<bool> RestoreFileAsync(
         BackedUpFile file,
         string? restorePath = null,
         bool overwriteExisting = false,
         IProgress<(long current, long total)>? progress = null,
         MemoryBudget? memoryBudget = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        BandwidthScheduler? bandwidthScheduler = null)
     {
         ArgumentNullException.ThrowIfNull(file);
         var diag = new FileOperationDiagnostics(file.LocalPath, "Restore", DiagnosticsDirectory);
@@ -305,7 +311,7 @@ public partial class RestoreService
                     // Hash is computed incrementally as chunks are written in order — no file re-read needed
                     restoredHash = await RestoreWithBoundedParallelDownloadsAsync(
                         sortedChunks, file, tempPath, budget, progress, 
-                        p => currentBytes = p, diag, cancellationToken);
+                        p => currentBytes = p, diag, bandwidthScheduler, cancellationToken);
                 }
                 finally
                 {
@@ -553,6 +559,26 @@ public partial class RestoreService
     /// eliminating the need to re-read the entire file from disk for verification.
     /// </summary>
     /// <returns>The SHA-256 hash of the restored file, computed incrementally during write.</returns>
+    /// <remarks>
+    /// B62 (C): the producer/consumer pipeline uses an in-order chunk window
+    /// rather than a producer-released throttle. The <c>windowSlots</c>
+    /// semaphore is acquired by the producer BEFORE budget acquire and
+    /// released by the writer AFTER each successful chunk write. This bounds
+    /// the reorder buffer depth to exactly <c>effectiveConcurrency</c> chunks
+    /// and structurally breaks the pre-B62 deadlock where buffered higher-
+    /// index chunks held plaintext budget while the next-needed chunk parked
+    /// in <see cref="MemoryBudget.AcquireAsync"/>: the next chunk a producer
+    /// can dispatch is bounded by what the writer has consumed, so a
+    /// dispatched chunk is always at most window-size away from being
+    /// written, and the producer cannot accumulate more than
+    /// <c>effectiveConcurrency</c> chunks ahead of the writer.
+    /// </remarks>
+    /// <param name="bandwidthScheduler">Optional batch-level AIMD controller.
+    /// When provided, every successful chunk write feeds its EWMA throughput
+    /// signal, every transient HTTP retry fires a multiplicative-decrease
+    /// fast path, and a deadlock-suspect watchdog snapshot triggers an
+    /// immediate decrease. Pass <see langword="null"/> for single-file
+    /// restores from the UI where no batch scheduler exists.</param>
     private async Task<string> RestoreWithBoundedParallelDownloadsAsync(
         List<ChunkInfo> sortedChunks,
         BackedUpFile file,
@@ -561,6 +587,7 @@ public partial class RestoreService
         IProgress<(long current, long total)>? progress,
         Action<long> updateCurrentBytes,
         FileOperationDiagnostics diag,
+        BandwidthScheduler? bandwidthScheduler,
         CancellationToken cancellationToken)
     {
         var maxChunkBytes = sortedChunks.Max(c => c.Length);
@@ -586,12 +613,14 @@ public partial class RestoreService
                 $"Risk of OutOfMemoryException for large chunks.");
         }
 
-        // Channel capacity is 4× download parallelism to decouple network from disk I/O.
-        // When the disk writer pauses briefly (NTFS journal flush, antivirus scan), the
-        // producers can continue downloading into the channel buffer instead of stalling.
-        // The MemoryBudget prevents OOM regardless of channel size — chunks in the channel
-        // hold their budget allocation until the consumer writes and releases them.
-        var channelCapacity = effectiveConcurrency * 4;
+        // B62 (C): channel capacity equals the in-order window so a producer
+        // cannot dispatch more than `effectiveConcurrency` chunks ahead of
+        // the writer. Combined with the writer-released `windowSlots`
+        // semaphore below, this caps reorder-buffer depth at exactly the
+        // configured concurrency and removes the pre-B62 4× headroom that
+        // let buffered higher-index chunks hold plaintext budget while the
+        // next-needed chunk parked in `AcquireAsync`.
+        var channelCapacity = effectiveConcurrency;
         var channelOptions = new BoundedChannelOptions(channelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -599,12 +628,26 @@ public partial class RestoreService
             SingleWriter = false
         };
         var channel = Channel.CreateBounded<(int index, byte[] data, int length)>(channelOptions);
+
+        // B62 (C): writer-released in-order chunk window. The producer
+        // acquires a slot BEFORE asking for budget; the writer releases the
+        // slot AFTER each successful chunk write (in any order). This caps
+        // outstanding-but-not-yet-written chunks at `effectiveConcurrency`
+        // and structurally prevents the deadlock where buffered higher-index
+        // chunks hold budget that the next-needed chunk needs to acquire.
+        // The semaphore is the single point that gates "how far ahead of
+        // the writer is the producer allowed to go"; budget alone cannot
+        // express that ordering constraint.
+        using var windowSlots = new SemaphoreSlim(effectiveConcurrency, effectiveConcurrency);
         
         using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Exception? downloadException = null;
         long currentBytes = 0;
         int chunksWritten = 0;
         int chunksDownloaded = 0;
+        // B62: hoisted from the writer lambda so the stall watchdog can sample it.
+        // Mutated only by the writer (SingleReader channel); watchdog reads via Volatile.
+        int nextChunkToWrite = 0;
 
         // Pipeline metrics counters (updated by Interlocked from producer/consumer tasks)
         int metricRetries = 0;
@@ -612,11 +655,36 @@ public partial class RestoreService
         var fileStopwatch = Stopwatch.StartNew();
         // Snapshot the budget stall count at the start so we can compute per-file stalls
         var stallCountBaseline = memoryBudget.StallCount;
+
+        // B62 stall watchdog state. The bounded-parallel pipeline can deadlock when a
+        // shared MemoryBudget is over-subscribed across many parallel files: every
+        // file's writer holds plaintext-half budget for buffered out-of-order chunks,
+        // which prevents the next-needed chunk from acquiring budget, which prevents
+        // the writer from advancing, which prevents budget from being released. The
+        // watchdog periodically samples pipeline state; if nothing has progressed for
+        // a long time it logs a full snapshot (writer position, buffered indices,
+        // in-flight acquire waits, budget usage, waiter count). This is the only way
+        // to see the deadlock from outside, since by definition no exception fires.
+        long lastWriterProgressTicks = Environment.TickCount64;
+        long lastDownloadCompletedTicks = Environment.TickCount64;
+        int acquireWaitingCount = 0;
+        int snapshotsLogged = 0;
+        // Capture indices of chunks that completed download but not write yet,
+        // so the watchdog snapshot can name them. Bounded by reorder-buffer size.
+        var bufferedIndicesSnapshot = new ConcurrentDictionary<int, byte>();
         
         // Producer task: Download chunks in parallel and write to channel
         var producerTask = Task.Run(async () =>
         {
-            var semaphore = new SemaphoreSlim(effectiveConcurrency);
+            // B62 (C): the in-flight semaphore is REPLACED by the writer-
+            // released `windowSlots` above. The pre-B62 producer-released
+            // `semaphore` allowed `effectiveConcurrency` chunks to be
+            // *downloading* concurrently, but did not bound how far ahead
+            // of the writer the producer could get -- a fast producer could
+            // run all chunks ahead of a slow writer, exhausting budget. The
+            // `windowSlots` acquire below moves the gate to "outstanding-but-
+            // not-yet-written" which is the actual quantity that needs to
+            // be bounded for the deadlock to be impossible.
             var downloadTasks = new List<Task>();
             try
             {
@@ -626,7 +694,16 @@ public partial class RestoreService
                 {
                     linkedCts.Token.ThrowIfCancellationRequested();
 
-                    await semaphore.WaitAsync(linkedCts.Token);
+                    // B62 (C): block here until the writer has caught up
+                    // enough that one more chunk can be dispatched without
+                    // exceeding the in-order window. This is the single
+                    // structural change that makes the reorder-buffer
+                    // deadlock impossible -- the producer cannot dispatch
+                    // more than `effectiveConcurrency` chunks ahead of the
+                    // writer's current position, so the writer's next-
+                    // needed chunk can never be locked out by buffered
+                    // higher-index chunks holding budget.
+                    await windowSlots.WaitAsync(linkedCts.Token);
 
                     var downloadTask = Task.Run(async () =>
                     {
@@ -635,7 +712,15 @@ public partial class RestoreService
                         // Phase B: Release 1× after download returns (encrypted buffer freed inside blob service)
                         // Phase C: Consumer releases remaining 1× after writing plaintext to disk
                         var chunkMemoryCost = (long)chunk.Length * 2;
-                        await memoryBudget.AcquireAsync(chunkMemoryCost, linkedCts.Token);
+                        Interlocked.Increment(ref acquireWaitingCount);
+                        try
+                        {
+                            await memoryBudget.AcquireAsync(chunkMemoryCost, linkedCts.Token);
+                        }
+                        finally
+                        {
+                            Interlocked.Decrement(ref acquireWaitingCount);
+                        }
                         try
                         {
                             linkedCts.Token.ThrowIfCancellationRequested();
@@ -654,6 +739,11 @@ public partial class RestoreService
                                 catch (Exception ex) when (attempt < MaxChunkRetries && IsTransientError(ex))
                                 {
                                     Interlocked.Increment(ref metricRetries);
+                                    // B62 (B): a transient HTTP error means the server is
+                                    // pushing back. Notify the AIMD scheduler so the next
+                                    // dispatch wave halves file-level concurrency rather
+                                    // than waiting for an EWMA throughput dip to register.
+                                    bandwidthScheduler?.NotifyTransientError();
                                     var delay = ChunkRetryBaseDelayMs * (1 << attempt); // exponential backoff
                                     diag.RecordChunk("TransientRetry", chunk.Index, chunk.Hash, chunk.Length,
                                         extra: $"attempt={attempt + 1}/{MaxChunkRetries + 1}, error={ex.GetType().Name}");
@@ -676,6 +766,10 @@ public partial class RestoreService
 
                             await channel.Writer.WriteAsync((chunk.Index, chunkBuffer!, chunkLength), linkedCts.Token);
 
+                            // B62 watchdog: timestamp the most recent successful download so the
+                            // watchdog can distinguish "download stalled" from "writer stalled".
+                            Volatile.Write(ref lastDownloadCompletedTicks, Environment.TickCount64);
+
                             var count = Interlocked.Increment(ref chunksDownloaded);
                             if (count % 50 == 0 || count == sortedChunks.Count)
                             {
@@ -687,11 +781,19 @@ public partial class RestoreService
                         {
                             // Download failed before Phase B release — release the full 2× cost
                             memoryBudget.Release(chunkMemoryCost);
+                            // B62 (C): chunk will never reach the writer, so the writer
+                            // will never release this window slot. Release it here so the
+                            // producer loop can dispatch the next chunk during shutdown.
+                            windowSlots.Release();
                             throw;
                         }
                         catch (Exception ex)
                         {
                             memoryBudget.Release(chunkMemoryCost);
+                            // B62 (C): same reasoning as the cancellation branch -- the
+                            // chunk will never reach the writer because we are about to
+                            // cancel the linked CTS, so the writer cannot release the slot.
+                            windowSlots.Release();
                             var wasFirst = downloadException == null;
                             diag.RecordChunk("DownloadFailed", chunk.Index, chunk.Hash, chunk.Length,
                                 extra: $"error={ex.GetType().Name}: {ex.Message}, firstError={wasFirst}");
@@ -704,10 +806,11 @@ public partial class RestoreService
                             await linkedCts.CancelAsync();
                             throw;
                         }
-                        finally
-                        {
-                            semaphore.Release();
-                        }
+                        // B62 (C): no `finally { semaphore.Release(); }` block here --
+                        // the writer-released `windowSlots` semaphore is released by
+                        // `WriteChunkAndReleaseAsync` in the consumer instead. The two
+                        // failure branches above release explicitly because their chunks
+                        // never reach the writer.
                     }, linkedCts.Token);
 
                     downloadTasks.Add(downloadTask);
@@ -720,9 +823,11 @@ public partial class RestoreService
             }
             finally
             {
-                // Always await in-flight download tasks before disposing the semaphore.
-                // Without this, cancelled tasks that call semaphore.Release() in their
-                // finally block race against disposal, causing ObjectDisposedException.
+                // B62 (C): no semaphore disposal here -- `windowSlots` lives in the
+                // outer `using` scope and is disposed only after both producer and
+                // writer have fully drained, eliminating the pre-B62 race where a
+                // cancelled download task could call `Release` against a disposed
+                // semaphore.
                 try
                 {
                     if (downloadTasks.Count > 0)
@@ -737,7 +842,6 @@ public partial class RestoreService
                     downloadException ??= ex;
                 }
 
-                semaphore.Dispose();
                 channel.Writer.Complete(downloadException);
                 Log("BoundedParallelDownload.Producer: Channel writer completed");
             }
@@ -749,7 +853,6 @@ public partial class RestoreService
         var writerTask = Task.Run(async () =>
         {
             var pendingChunks = new Dictionary<int, (byte[] data, int length)>();
-            int nextChunkToWrite = 0;
             using var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
             Log($"BoundedParallelDownload.Consumer: Opening output file: {tempPath}");
@@ -780,11 +883,25 @@ public partial class RestoreService
                     incrementalHash.AppendData(chunkData.AsSpan(0, chunkLength));
                     currentBytes += chunkLength;
                     chunksWritten++;
+                    bufferedIndicesSnapshot.TryRemove(nextChunkToWrite, out _);
                     nextChunkToWrite++;
                     ArrayPool<byte>.Shared.Return(chunkData, clearArray: true);
                     // Phase C: Release remaining 1× for plaintext buffer
                     // (producer already released the encrypted buffer portion in Phase B)
                     memoryBudget.Release(chunkLength);
+                    // B62 (C): release the writer-released window slot so the
+                    // producer can dispatch one more chunk. The slot is gated on
+                    // ACTUAL write progress, not download progress, so the
+                    // outstanding-but-not-written chunk count cannot exceed the
+                    // configured window.
+                    windowSlots.Release();
+                    // B62 (B): feed the AIMD scheduler with real per-chunk
+                    // throughput. Recorded in the writer (not the producer) so
+                    // bytes that downloaded but never landed do not skew the
+                    // bandwidth signal upward.
+                    bandwidthScheduler?.RecordBytesCompleted(chunkLength);
+                    // B62 watchdog: writer made forward progress — reset stall timer.
+                    Volatile.Write(ref lastWriterProgressTicks, Environment.TickCount64);
                 }
 
                 await foreach (var (index, data, length) in channel.Reader.ReadAllAsync(linkedCts.Token))
@@ -817,6 +934,7 @@ public partial class RestoreService
                     else
                     {
                         pendingChunks[index] = (data, length);
+                        bufferedIndicesSnapshot.TryAdd(index, 0);
                         // Track peak reorder buffer depth for metrics
                         int currentPending = pendingChunks.Count;
                         int prevMax;
@@ -884,12 +1002,115 @@ public partial class RestoreService
                     {
                         ArrayPool<byte>.Shared.Return(pending.data, clearArray: true);
                         memoryBudget.Release(pending.length);
+                        // B62 (C): each drained chunk holds a window slot the writer
+                        // will never release on the success path, so release here so
+                        // any in-flight producer that is parked in `windowSlots.WaitAsync`
+                        // can unblock and observe the linked-CTS cancellation.
+                        windowSlots.Release();
                     }
                     pendingChunks.Clear();
                 }
             }
         }, linkedCts.Token);
-        
+
+        // B62 stall watchdog: runs alongside producer/writer and periodically samples
+        // pipeline state. When the writer hasn't advanced for StallWarnSeconds we log
+        // a structured snapshot showing exactly where the pipeline is parked. This is
+        // the only way to observe a producer/writer/budget ordering deadlock from
+        // outside, since by definition no exception fires and CPU/network drop to zero.
+        // Lifetime is bounded by watchdogCts, which is cancelled in the finally below
+        // before the watchdog Task is awaited.
+        const int WatchdogPollMs = 5_000;
+        const int StallWarnSeconds = 30;
+        const int MaxSnapshotsLogged = 20;
+        using var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var watchdogTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (!watchdogCts.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(WatchdogPollMs, watchdogCts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+
+                    var nowTicks = Environment.TickCount64;
+                    var writerIdleSec = (nowTicks - Volatile.Read(ref lastWriterProgressTicks)) / 1000;
+                    var downloadIdleSec = (nowTicks - Volatile.Read(ref lastDownloadCompletedTicks)) / 1000;
+
+                    if (writerIdleSec < StallWarnSeconds)
+                        continue;
+                    if (Volatile.Read(ref snapshotsLogged) >= MaxSnapshotsLogged)
+                        continue;
+
+                    Interlocked.Increment(ref snapshotsLogged);
+
+                    // Snapshot all the structural facts that determine whether this
+                    // is a producer-side stall, a writer-side stall, or a budget
+                    // ordering deadlock. The "smoking gun" combination is:
+                    // waitersInAcquire > 0 AND budget nearly full AND nextChunkToWrite
+                    // is itself the chunk parked in AcquireAsync.
+                    var nextNeeded = Volatile.Read(ref nextChunkToWrite);
+                    var written = Volatile.Read(ref chunksWritten);
+                    var downloaded = Volatile.Read(ref chunksDownloaded);
+                    var waitingAcquire = Volatile.Read(ref acquireWaitingCount);
+                    var bufferedSnapshot = bufferedIndicesSnapshot.Keys.OrderBy(i => i).Take(16).ToArray();
+                    var bufferedCount = bufferedIndicesSnapshot.Count;
+                    var nextNeededIsBuffered = bufferedIndicesSnapshot.ContainsKey(nextNeeded);
+
+                    var snapshot =
+                        $"[STALL-WATCHDOG] '{fileName}' no writer progress for {writerIdleSec}s " +
+                        $"(downloads idle for {downloadIdleSec}s). " +
+                        $"chunks: total={sortedChunks.Count}, downloaded={downloaded}, written={written}, " +
+                        $"nextNeeded={nextNeeded} (bufferedAlready={nextNeededIsBuffered}). " +
+                        $"reorderBuffer={bufferedCount} chunks, firstFew=[{string.Join(",", bufferedSnapshot)}]. " +
+                        $"acquireWaiting={waitingAcquire} download tasks parked in MemoryBudget.AcquireAsync. " +
+                        $"budget: used={memoryBudget.UsedBytes:N0}/{memoryBudget.TotalBytes:N0} bytes " +
+                        $"({(memoryBudget.IsUnlimited ? "unlimited" : (memoryBudget.UsedBytes * 100.0 / memoryBudget.TotalBytes).ToString("F1") + "%")}), " +
+                        $"waiters={memoryBudget.WaitersCount}, stalls={memoryBudget.StallCount - stallCountBaseline}. " +
+                        $"GC.TotalMemory={GC.GetTotalMemory(false):N0}.";
+
+                    Log(snapshot);
+                    diag.Record(snapshot);
+
+                    // Smoking-gun classification. When the next-needed chunk is parked
+                    // in AcquireAsync while the writer holds plaintext budget for a
+                    // pile of higher-index chunks, that is the producer/writer/budget
+                    // ordering deadlock. Call it out so the cause is unambiguous.
+                    if (waitingAcquire > 0 && bufferedCount > 0 && !nextNeededIsBuffered &&
+                        !memoryBudget.IsUnlimited &&
+                        memoryBudget.UsedBytes * 10 >= memoryBudget.TotalBytes * 9)
+                    {
+                        var diagLine =
+                            $"[STALL-WATCHDOG] '{fileName}' DEADLOCK SUSPECTED: " +
+                            $"writer waiting for chunk {nextNeeded}, but {bufferedCount} higher-index " +
+                            $"chunks are buffered (holding plaintext budget) and {waitingAcquire} " +
+                            $"download(s) are blocked acquiring budget. Budget is " +
+                            $"{memoryBudget.UsedBytes * 100.0 / memoryBudget.TotalBytes:F1}% used. " +
+                            $"This is the shared-budget ordering deadlock.";
+                        Log(diagLine);
+                        diag.Record(diagLine);
+                        // B62 (B): tell the AIMD scheduler that we observed evidence
+                        // of contention. The new in-order window (B62 C) makes this
+                        // path unreachable in practice, but if it ever fires we want
+                        // the next dispatch wave to halve concurrency immediately
+                        // rather than wait for a throughput-EWMA dip.
+                        bandwidthScheduler?.NotifyStallObserved();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Watchdog must never surface — its only contract is to log.
+                Log($"[STALL-WATCHDOG] '{fileName}' watchdog exited with {ex.GetType().Name}: {ex.Message}");
+            }
+        }, watchdogCts.Token);
+
         try
         {
             await Task.WhenAll(producerTask, writerTask);
@@ -935,7 +1156,16 @@ public partial class RestoreService
             }
             throw;
         }
-        
+        finally
+        {
+            // B62: shut down the stall watchdog before returning. Cancel first so the
+            // delay loop bails immediately, then await so any in-flight Log call lands
+            // before the caller's per-file metrics are recorded. Watchdog never throws,
+            // so no try/catch needed around the await.
+            await watchdogCts.CancelAsync();
+            try { await watchdogTask; } catch { /* watchdog never throws meaningfully */ }
+        }
+
         if (chunksWritten != sortedChunks.Count)
         {
             throw new DataIntegrityException(

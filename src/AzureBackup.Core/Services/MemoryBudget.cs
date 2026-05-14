@@ -62,6 +62,15 @@ public sealed class MemoryBudget : IDisposable
     public long StallCount => Volatile.Read(ref _stallCount);
 
     /// <summary>
+    /// B62: live count of acquirers currently parked in <see cref="AcquireAsync"/>'s slow
+    /// path waiting for budget to free up. Surfaced so a stall watchdog can distinguish a
+    /// "budget saturated, waiters parked" deadlock from a "no one is asking" idle pipeline.
+    /// A non-zero value while no chunks are being written is a structural deadlock signal.
+    /// Thread-safe.
+    /// </summary>
+    public int WaitersCount => Volatile.Read(ref _waitersCount);
+
+    /// <summary>
     /// B34: number of acquisitions that bypassed the cap because a single
     /// request exceeded the entire budget (and would otherwise deadlock).
     /// A non-zero value means the user's configured ceiling was breached

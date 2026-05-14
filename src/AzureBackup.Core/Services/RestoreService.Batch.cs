@@ -425,12 +425,13 @@ public partial class RestoreService
         IProgress<(long current, long total)>? fileProgress,
         string logPrefix,
         MemoryBudget? memoryBudget,
+        BandwidthScheduler? bandwidthScheduler,
         CancellationToken cancellationToken)
     {
         try
         {
             var success = await RestoreFileAsync(file, targetPath, overwriteExisting,
-                fileProgress, memoryBudget, cancellationToken);
+                fileProgress, memoryBudget, cancellationToken, bandwidthScheduler);
 
             if (success)
             {
@@ -802,8 +803,14 @@ public partial class RestoreService
     /// <summary>
     /// Core two-tier parallel restore logic shared by <see cref="RestoreFilesWithRemappingAsync"/>
     /// and <see cref="MirrorSyncToLocalAsync"/>.
-    /// Uses size-aware parallelism: small files (≤16 MB) at 32× concurrency,
-    /// large files at <see cref="MaxParallelFileRestores"/>× with size-descending scheduling.
+    /// Uses size-aware parallelism: small files (≤16 MB) dispatch with a
+    /// fixed small-file ceiling; large files dispatch through the new
+    /// <see cref="BandwidthScheduler"/> AIMD controller (see B62 fact in
+    /// AGENT_CONTEXT) so file-level concurrency converges on the upstream
+    /// link's actual capacity rather than always running at
+    /// <see cref="MaxParallelFileRestores"/>. The same scheduler is then
+    /// passed into every per-file restore so per-chunk throughput / retries
+    /// feed back into the next dispatch wave.
     /// Does NOT create a memory budget or record operation-level metrics — callers are responsible.
     /// </summary>
     private async Task<RestoreResult> RestoreFilesBatchCoreAsync(
@@ -835,8 +842,20 @@ public partial class RestoreService
 
         largeFiles.Sort((a, b) => b.file.FileSize.CompareTo(a.file.FileSize));
 
+        // B62 (B): per-batch AIMD scheduler. Initial concurrency is 4 -- low
+        // enough to never overshoot a 100 Mbps household link on the first
+        // probe, but high enough to keep the pipeline busy. The ceiling is
+        // capped at MaxParallelFileRestores so an existing stress test that
+        // assumes a known maximum stays valid; the floor is 2 so a tiny link
+        // still has some forward progress without serializing.
+        var bandwidthScheduler = new BandwidthScheduler(
+            initialConnections: Math.Min(4, MaxParallelFileRestores),
+            minConnections: Math.Min(2, MaxParallelFileRestores),
+            maxConnections: MaxParallelFileRestores);
+
         Log($"RestoreFilesBatchCoreAsync: {smallFiles.Count} small files (≤{SmallFileThreshold / (1024 * 1024)} MB, max {MaxParallelSmallFiles} concurrent), " +
-            $"{largeFiles.Count} large files (max {MaxParallelFileRestores} concurrent)");
+            $"{largeFiles.Count} large files (AIMD start={bandwidthScheduler.CurrentConnections}, " +
+            $"min={bandwidthScheduler.MinConnections}, max={bandwidthScheduler.MaxConnections})");
 
         List<Task> restoreTasks = [];
 
@@ -855,30 +874,57 @@ public partial class RestoreService
                     await RestoreOneFileWithRemappingAsync(
                         item.file, item.targetPath, item.originalIndex, totalFiles,
                         overwriteExisting, progress, fileByteProgress, result, resultLock,
-                        completedFiles, memoryBudget, ct);
+                        completedFiles, memoryBudget, bandwidthScheduler, ct);
                 }));
         }
 
         if (largeFiles.Count > 0)
         {
-            StatusChanged?.Invoke(this, $"Restoring {largeFiles.Count} large files...");
-            restoreTasks.Add(Parallel.ForEachAsync(
-                largeFiles,
-                new ParallelOptions
+            StatusChanged?.Invoke(this, $"Restoring {largeFiles.Count} large files (bandwidth-adaptive)...");
+            // B62 (B): bandwidth-adaptive dispatcher. Replaces the fixed
+            // `Parallel.ForEachAsync(MaxDegreeOfParallelism = MaxParallelFileRestores)`
+            // shape with a per-file slot acquire against the AIMD controller.
+            // Slots are released by the slot handle's DisposeAsync, so a
+            // multiplicative-decrease step naturally lets in-flight files
+            // finish without a hard kill while preventing new files from
+            // entering the pipeline above the new ceiling.
+            restoreTasks.Add(Task.Run(async () =>
+            {
+                var perFileTasks = new List<Task>(largeFiles.Count);
+                foreach (var item in largeFiles)
                 {
-                    MaxDegreeOfParallelism = MaxParallelFileRestores,
-                    CancellationToken = cancellationToken
-                },
-                async (item, ct) =>
-                {
-                    await RestoreOneFileWithRemappingAsync(
-                        item.file, item.targetPath, item.originalIndex, totalFiles,
-                        overwriteExisting, progress, fileByteProgress, result, resultLock,
-                        completedFiles, memoryBudget, ct);
-                }));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var slot = await bandwidthScheduler.AcquireSlotAsync(cancellationToken);
+                    var captured = item;
+                    perFileTasks.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await RestoreOneFileWithRemappingAsync(
+                                captured.file, captured.targetPath, captured.originalIndex, totalFiles,
+                                overwriteExisting, progress, fileByteProgress, result, resultLock,
+                                completedFiles, memoryBudget, bandwidthScheduler, cancellationToken);
+                        }
+                        finally
+                        {
+                            await slot.DisposeAsync();
+                        }
+                    }, cancellationToken));
+                }
+                await Task.WhenAll(perFileTasks);
+            }, cancellationToken));
         }
 
         await Task.WhenAll(restoreTasks);
+
+        Log($"RestoreFilesBatchCoreAsync: scheduler summary -- " +
+            $"finalConnections={bandwidthScheduler.CurrentConnections}, " +
+            $"increases={bandwidthScheduler.AdditiveIncreases}, " +
+            $"decreases={bandwidthScheduler.MultiplicativeDecreases}, " +
+            $"holds={bandwidthScheduler.Holds}, " +
+            $"stallSignals={bandwidthScheduler.StallSignals}, " +
+            $"errorSignals={bandwidthScheduler.ErrorSignals}, " +
+            $"ewmaBps={bandwidthScheduler.EwmaBytesPerSecond:F0}");
 
         return result;
     }
@@ -899,6 +945,7 @@ public partial class RestoreService
         object resultLock,
         int[] completedFiles,
         MemoryBudget? memoryBudget,
+        BandwidthScheduler? bandwidthScheduler,
         CancellationToken cancellationToken)
     {
         var done = Interlocked.Increment(ref completedFiles[0]);
@@ -935,7 +982,7 @@ public partial class RestoreService
 
         var logPrefix = $"RestoreFilesWithRemappingAsync: [{done}/{totalFiles}]";
         var (outcome, recoveredPath, unrecoverableChunks) = await RestoreFileWithRecoveryAsync(
-            file, normalizedPath, overwriteExisting, individualFileProgress, logPrefix, memoryBudget, cancellationToken);
+            file, normalizedPath, overwriteExisting, individualFileProgress, logPrefix, memoryBudget, bandwidthScheduler, cancellationToken);
 
         lock (resultLock)
         {
