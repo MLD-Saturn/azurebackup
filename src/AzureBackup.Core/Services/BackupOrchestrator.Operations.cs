@@ -299,6 +299,7 @@ public partial class BackupOrchestrator
                 memoryBudget,
                 opLabel: "mirror",
                 emit: line => StatusChanged?.Invoke(this, line),
+                interval: MemoryReporterIntervalOverride,
                 largeChunkPool: largeChunkPool);
 
             // B54: clamp file-level fan-out against the active budget so a
@@ -633,6 +634,7 @@ public partial class BackupOrchestrator
             memoryBudget,
             opLabel: "backup",
             emit: line => StatusChanged?.Invoke(this, line),
+            interval: MemoryReporterIntervalOverride,
             largeChunkPool: largeChunkPool);
 
         // B54: clamp file-level fan-out against the active budget so a

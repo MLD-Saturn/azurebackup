@@ -86,6 +86,25 @@ public partial class BackupOrchestrator : IAsyncDisposable
     public int? MaxParallelFileBackupsOverride { get; set; }
 
     /// <summary>
+    /// W5 Phase 1: optional per-instance override for the
+    /// <see cref="BackupMemoryReporter"/> sampling cadence. The
+    /// production default of 30 s (see the reporter's class summary)
+    /// is appropriate for long-running backups but loses sub-30s
+    /// peaks during a benchmark iteration. Setting this to e.g.
+    /// <c>TimeSpan.FromMilliseconds(100)</c> gives the
+    /// <c>MemoryFidelityCollector</c> in the benchmark project a
+    /// dense enough sample stream to derive defensible
+    /// <c>MaxUnaccounted_MB</c> and <c>OvershootRatio</c> columns.
+    /// Defaults to <c>null</c> -- production behaviour is unchanged
+    /// when the property is left unset, and the reporter falls back
+    /// to its 30 s default. Intended for benchmarks only; do NOT
+    /// set this on a production orchestrator instance, the cost of
+    /// 10 samples / second is negligible per-call but the resulting
+    /// log volume is not.
+    /// </summary>
+    public TimeSpan? MemoryReporterIntervalOverride { get; set; }
+
+    /// <summary>
     /// Effective per-file chunk-upload concurrency. Reads
     /// <see cref="MaxParallelChunkUploadsOverride"/> when set,
     /// falls back to the production constant. Snapshotted once at

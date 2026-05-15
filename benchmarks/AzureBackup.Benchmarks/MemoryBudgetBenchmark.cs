@@ -89,10 +89,23 @@ namespace AzureBackup.Benchmarks;
 /// </para>
 /// </summary>
 [MemoryDiagnoser]
+[Config(typeof(MemoryFidelityConfig))]
 [SimpleJob(RunStrategy.Throughput, warmupCount: 1, iterationCount: 2, invocationCount: 1)]
 public class MemoryBudgetBenchmark : BackupBenchmarkBase
 {
-    [Params("media-library-500")]
+    /// <summary>
+    /// W5 Phase 1 (B64): the media-library-500 row stays as the
+    /// pre-W5 anchor so the result table in this xmldoc remains
+    /// directly comparable. The three adversarial-* rows are the
+    /// new W5 workloads designed to actually bind the budget; see
+    /// <see cref="BackupBenchmarkBase.AdversarialWorkloads"/> for
+    /// what each one stresses.
+    /// </summary>
+    [Params(
+        "media-library-500",
+        "adversarial-large-chunks",
+        "adversarial-pool-churn",
+        "adversarial-mixed")]
     public override string Workload { get; set; } = "media-library-500";
 
     /// <summary>
@@ -101,7 +114,7 @@ public class MemoryBudgetBenchmark : BackupBenchmarkBase
     /// All other values are applied verbatim as <c>MemoryLimitMB</c>
     /// with <c>MemoryLimitEnabled=true</c>.
     /// </summary>
-    [Params(0, 16384, 8192, 4096)]
+    [Params(0, 16384, 8192, 4096, 2048)]
     public int MemoryLimitParam { get; set; }
 
     protected override int? MemoryLimitMBOverride =>
@@ -113,17 +126,33 @@ public class MemoryBudgetBenchmark : BackupBenchmarkBase
     // the in-memory destination's; see InMemoryBlobService summary.
     protected override bool RetainBlobPayloads => false;
 
-    [Benchmark(Description = "Backup on media-library-500 at parametric MemoryBudget")]
+    /// <summary>
+    /// W5 Phase 1 (B64): opt into the new BDN fidelity columns so
+    /// every row in this benchmark's summary reports
+    /// <c>PeakWS_MB</c>, <c>MaxUnacc_MB</c>, <c>PeakBudget_MB</c>,
+    /// <c>Overshoot</c>, <c>Stalls/GB</c>, and <c>Oversized</c>
+    /// alongside <c>Mean</c> and <c>Allocated</c>.
+    /// </summary>
+    protected override bool EnableMemoryFidelityTracking => true;
+
+    [Benchmark(Description = "Backup at parametric MemoryBudget with W5 fidelity tracking")]
     public async Task Backup()
     {
         StartPeakWorkingSetCapture();
+        StartFidelityIteration(MemoryLimitParam);
+        var totalBytes = 0L;
         try
         {
+            // Capture the workload total before BackupFilesAsync so
+            // EndFidelityIteration can compute Stalls/GB even if the
+            // operation throws partway through.
+            foreach (var p in FilePaths) totalBytes += new FileInfo(p).Length;
             await Orchestrator!.BackupFilesAsync(FilePaths);
         }
         finally
         {
             EmitPeakWorkingSet($"MemoryLimitMB={MemoryLimitParam}");
+            EndFidelityIteration(totalBytes);
         }
     }
 }

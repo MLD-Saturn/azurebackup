@@ -75,6 +75,8 @@ public abstract class BackupBenchmarkBase
     private string _dbPath = string.Empty;
     private byte[] _derivedKey = [];
     private long _peakWorkingSetBaselineBytes;
+    private IDisposable? _fidelityHookHandle;
+    private EventHandler<string>? _fidelityHook;
 
     /// <summary>
     /// File paths for the current Workload, in input order. Subclasses
@@ -202,6 +204,26 @@ public abstract class BackupBenchmarkBase
             _databaseService, _encryptionService, _chunkingService,
             _blobService, _fileWatcherService);
 
+        // W5 Phase 1 (B64): when the subclass opts into memory-fidelity
+        // tracking, drive the BackupMemoryReporter at the dense
+        // benchmark cadence so per-iteration peaks are not lost
+        // between samples, and wire the StatusChanged stream into the
+        // collector so the BDN columns can read the high-water marks
+        // after the iteration ends. Subclasses that don't opt in keep
+        // their pre-W5 behaviour: the reporter ticks at its 30 s
+        // production cadence and the collector observes nothing.
+        if (EnableMemoryFidelityTracking)
+        {
+            Orchestrator.MemoryReporterIntervalOverride = MemoryReporterIntervalOverride;
+            _fidelityHook = MemoryFidelityCollector.Instance.CreateLineHandler();
+            Orchestrator.StatusChanged += _fidelityHook;
+            _fidelityHookHandle = new ActionDisposable(() =>
+            {
+                if (_fidelityHook != null && Orchestrator != null)
+                    Orchestrator.StatusChanged -= _fidelityHook;
+            });
+        }
+
         // Subclasses may need to apply per-iteration overrides (e.g.
         // setting MaxParallelFileBackupsOverride for the two-tier
         // benchmark). Hook for them.
@@ -243,6 +265,63 @@ public abstract class BackupBenchmarkBase
     /// run against the unmodified orchestrator).
     /// </summary>
     protected virtual void ConfigureOrchestrator(BackupOrchestrator orchestrator) { }
+
+    /// <summary>
+    /// W5 Phase 1 (B64): when <c>true</c>, the per-iteration setup
+    /// dials the <see cref="BackupMemoryReporter"/> sampling cadence
+    /// down to <see cref="MemoryReporterIntervalOverride"/> (default
+    /// 100 ms) and subscribes the
+    /// <see cref="MemoryFidelityCollector"/> to
+    /// <see cref="BackupOrchestrator.StatusChanged"/> so the BDN
+    /// fidelity columns can report the per-iteration high-water
+    /// marks. Default <c>false</c> so pre-W5 benchmarks keep their
+    /// pre-W5 console-output format and 30 s sampling cadence.
+    /// </summary>
+    protected virtual bool EnableMemoryFidelityTracking => false;
+
+    /// <summary>
+    /// W5 Phase 1 (B64): the sampling cadence applied to
+    /// <see cref="BackupMemoryReporter"/> when
+    /// <see cref="EnableMemoryFidelityTracking"/> is <c>true</c>.
+    /// Default 100 ms, which is dense enough to capture sub-30s peaks
+    /// during a benchmark iteration without measurably perturbing the
+    /// workload (one <see cref="System.Diagnostics.Process.Refresh"/>
+    /// + one <see cref="GC.GetGCMemoryInfo"/> per sample is
+    /// sub-millisecond).
+    /// </summary>
+    protected virtual TimeSpan MemoryReporterIntervalOverride => TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// W5 Phase 1 (B64): convenience for subclasses that opt into
+    /// fidelity tracking. Call at the very top of every
+    /// <c>[Benchmark]</c> method, BEFORE the first orchestrator
+    /// operation runs. The
+    /// <paramref name="memoryLimitMB"/> argument is the configured
+    /// budget for this iteration (subclasses typically pass
+    /// <see cref="MemoryLimitMBOverride"/>; <c>MemoryBudgetBenchmark</c>
+    /// passes its own <c>MemoryLimitParam</c>).
+    /// </summary>
+    protected void StartFidelityIteration(int memoryLimitMB)
+    {
+        if (!EnableMemoryFidelityTracking) return;
+        MemoryFidelityCollector.Instance.StartIteration(GetType().Name, Workload, memoryLimitMB);
+    }
+
+    /// <summary>
+    /// W5 Phase 1 (B64): paired with
+    /// <see cref="StartFidelityIteration"/>; call from the benchmark
+    /// method's <c>finally</c> block so cancelled iterations still
+    /// record what they observed. The
+    /// <paramref name="bytesProcessed"/> argument is used to derive
+    /// the <c>Stalls/GB</c> column; pass the workload's known total
+    /// bytes (<c>FilePaths.Sum(p =&gt; new FileInfo(p).Length)</c>)
+    /// or the orchestrator's reported byte count.
+    /// </summary>
+    protected void EndFidelityIteration(long bytesProcessed)
+    {
+        if (!EnableMemoryFidelityTracking) return;
+        MemoryFidelityCollector.Instance.EndIteration(bytesProcessed);
+    }
 
     [IterationCleanup]
     public void BaseIterationCleanup()
@@ -314,6 +393,7 @@ public abstract class BackupBenchmarkBase
 
     private void DisposeIterationServices()
     {
+        try { _fidelityHookHandle?.Dispose(); _fidelityHookHandle = null; _fidelityHook = null; } catch { }
         try { Orchestrator = null; } catch { }
         try { _blobService = null; } catch { }
         try { _fileWatcherService?.Dispose(); _fileWatcherService = null; } catch { }
@@ -358,6 +438,14 @@ public abstract class BackupBenchmarkBase
         "media-library-500" => ("media-library", 500),
         "production-scale-3000" => ("production-scale", 3000),
         "huge-outlier-mixed" => ("huge-outlier", 500),
+        // W5 Phase 1 (B64): adversarial workloads designed to make
+        // the MemoryBudget actually bind. Used by MemoryBudgetBenchmark
+        // and any future redesign-validation benchmark; not part of
+        // BigWorkloads so the existing big-scale benchmarks are
+        // unaffected. See AdversarialWorkloads for selection.
+        "adversarial-large-chunks" => ("adversarial-large-chunks", 32),
+        "adversarial-pool-churn" => ("adversarial-pool-churn", 4000),
+        "adversarial-mixed" => ("adversarial-mixed", 200),
         _ => throw new ArgumentException($"Unknown workload: {workload}", nameof(workload)),
     };
 
@@ -413,6 +501,41 @@ public abstract class BackupBenchmarkBase
     ];
 
     /// <summary>
+    /// W5 Phase 1 (B64): three adversarial workloads designed to
+    /// expose memory-budget honesty (or lack of it). Each one
+    /// targets a different failure mode the existing big-scale
+    /// workloads fail to exercise:
+    /// <list type="bullet">
+    ///   <item><c>adversarial-large-chunks</c>: 32 large media-style
+    ///     files (~2 GB each, total ~64 GB on disk) where each file
+    ///     produces 30+ chunks of 32-64 MB. The in-flight ceiling
+    ///     (16 files x 6 chunks x 64 MB = 6 GB plus per-chunk Azure
+    ///     SDK staging) is high enough to bind a 4 GB budget but not
+    ///     a 16 GB one, so the fidelity sweep should show a clear
+    ///     <c>OvershootRatio</c> band across budget values.</item>
+    ///   <item><c>adversarial-pool-churn</c>: 4,000 small files
+    ///     drawn from values immediately above and below
+    ///     <c>LargeChunkBufferPool</c> tier boundaries
+    ///     (65,537 / 1,048,577 / 4,194,305 bytes) so the rent-
+    ///     oversize gap and the pool's bucket-eviction policy are
+    ///     exercised at high frequency. Total ~12 GB on disk.</item>
+    ///   <item><c>adversarial-mixed</c>: 200 files with a 10:1 size
+    ///     ratio between the largest and smallest, intentionally
+    ///     interleaved by deterministic ordering so the orchestrator
+    ///     dispatches a mix of large-chunk and small-chunk pipelines
+    ///     simultaneously. Total ~50 GB on disk. Designed to surface
+    ///     the structural-deadlock surface that B62/B63 fixed and
+    ///     would catch a regression there.</item>
+    /// </list>
+    /// </summary>
+    public static IEnumerable<string> AdversarialWorkloads =>
+    [
+        "adversarial-large-chunks",
+        "adversarial-pool-churn",
+        "adversarial-mixed",
+    ];
+
+    /// <summary>
     /// Rough expected-bytes-on-disk for the big-scale workloads, used
     /// by the disk preflight in <see cref="BaseGlobalSetup"/>. Returns
     /// 0 for the pre-B27 small workloads (no preflight needed -- they
@@ -432,6 +555,10 @@ public abstract class BackupBenchmarkBase
         "media-library-500" => 260L * 1024 * 1024 * 1024,
         "production-scale-3000" => 80L * 1024 * 1024 * 1024,
         "huge-outlier-mixed" => 35L * 1024 * 1024 * 1024,
+        // W5 adversarial workloads: see AdversarialWorkloads xmldoc.
+        "adversarial-large-chunks" => 70L * 1024 * 1024 * 1024,
+        "adversarial-pool-churn" => 14L * 1024 * 1024 * 1024,
+        "adversarial-mixed" => 55L * 1024 * 1024 * 1024,
         _ => 0,
     };
 
@@ -475,6 +602,10 @@ public abstract class BackupBenchmarkBase
         "media-library" => MediaLibrarySize(rng),
         "production-scale" => ProductionScaleSize(rng),
         "huge-outlier" => HugeOutlierSize(index, count, rng),
+        // W5 Phase 1 (B64) adversarial profiles.
+        "adversarial-large-chunks" => AdversarialLargeChunksSize(rng),
+        "adversarial-pool-churn" => AdversarialPoolChurnSize(index, rng),
+        "adversarial-mixed" => AdversarialMixedSize(index, count, rng),
         _ => throw new ArgumentException($"Unknown size profile: {profile}", nameof(profile)),
     };
 
@@ -580,5 +711,81 @@ public abstract class BackupBenchmarkBase
         if (index == count - 1) return 20L * 1024 * 1024 * 1024;
         if (index == count - 2) return 10L * 1024 * 1024 * 1024;
         return rng.NextInt64(1L * 1024 * 1024, 5L * 1024 * 1024);
+    }
+
+    /// <summary>
+    /// W5 Phase 1 (B64) adversarial-large-chunks size profile.
+    /// All files in 1.5-2.5 GB so every file is firmly in the
+    /// XXLargeChunkMaskBits band (1-64 MB chunks for media
+    /// extensions). 32 files at this size produce a per-iteration
+    /// in-flight chunk ceiling much larger than a 4 GB budget can
+    /// honour, so the fidelity sweep can distinguish "budget bound"
+    /// from "budget honoured but residency leaking" regimes.
+    /// </summary>
+    private static long AdversarialLargeChunksSize(Random rng) =>
+        rng.NextInt64(1500L * 1024 * 1024, 2500L * 1024 * 1024);
+
+    /// <summary>
+    /// W5 Phase 1 (B64) adversarial-pool-churn size profile.
+    /// Sizes drawn from a fixed set of values immediately above and
+    /// below <see cref="LargeChunkBufferPool"/>'s tier boundaries
+    /// (the recycler's bucket sizes plus or minus a single byte) to
+    /// guarantee that the rent-oversize gap and bucket-eviction
+    /// policy are exercised on every file. The deterministic
+    /// rotation across <c>index</c> (rather than rng-only sampling)
+    /// guarantees coverage even at modest file counts.
+    /// </summary>
+    private static long AdversarialPoolChurnSize(int index, Random rng)
+    {
+        // Sizes that straddle the LOH boundary (85,000 bytes) and
+        // common pool-bucket boundaries. The deterministic picker
+        // ensures the fidelity sweep visits every boundary on every
+        // run rather than randomly missing some.
+        long[] boundaries =
+        [
+            65_537,      // 64 KB + 1
+            85_001,      // LOH threshold + 1
+            1_048_577,   // 1 MB + 1
+            4_194_305,   // 4 MB + 1
+            16_777_217,  // 16 MB + 1
+        ];
+        var pick = boundaries[index % boundaries.Length];
+        // +/- a few bytes of jitter so the chunker also sees a
+        // non-degenerate boundary distribution.
+        return pick + rng.Next(-7, 8);
+    }
+
+    /// <summary>
+    /// W5 Phase 1 (B64) adversarial-mixed size profile. 200 files
+    /// where the largest is ~10x the smallest, deterministically
+    /// interleaved (large at every 10th index, medium at every 3rd,
+    /// small everywhere else) so the orchestrator dispatches a mix
+    /// of pipelines concurrently. Designed to expose the residency
+    /// pattern that combined the producer-buffered chunks with
+    /// per-file Azure SDK staging in the B62-era restore deadlock.
+    /// </summary>
+    private static long AdversarialMixedSize(int index, int count, Random rng)
+    {
+        if (index % 10 == 0) return rng.NextInt64(1500L * 1024 * 1024, 2500L * 1024 * 1024);
+        if (index % 3 == 0) return rng.NextInt64(50L * 1024 * 1024, 200L * 1024 * 1024);
+        return rng.NextInt64(64L * 1024, 5L * 1024 * 1024);
+    }
+
+    /// <summary>
+    /// W5 Phase 1 (B64): tiny IDisposable shim used by the iteration
+    /// setup to detach the fidelity hook on cleanup. Kept private and
+    /// allocation-light; not reused outside this file because the
+    /// pattern is one line and the helper would be over-engineered if
+    /// promoted to a Core utility.
+    /// </summary>
+    private sealed class ActionDisposable : IDisposable
+    {
+        private Action? _action;
+        public ActionDisposable(Action action) { _action = action; }
+        public void Dispose()
+        {
+            var a = Interlocked.Exchange(ref _action, null);
+            a?.Invoke();
+        }
     }
 }
