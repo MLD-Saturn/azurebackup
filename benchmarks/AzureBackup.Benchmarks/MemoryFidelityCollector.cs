@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -101,22 +102,48 @@ public sealed class MemoryFidelityCollector
     private const long MB = 1024L * 1024L;
 
     /// <summary>
-    /// Environment variable that carries the shared samples directory
-    /// between the BDN host and the benchmark child process. The host
-    /// resolves a per-run path and exports it before
-    /// <see cref="BenchmarkDotNet.Running.BenchmarkSwitcher.Run"/>;
-    /// the child appends one JSON-lines record per iteration into
-    /// <c>samples.jsonl</c> under that directory; the host's
-    /// <see cref="MemoryFidelityColumnProvider"/> loads the file at
-    /// end-of-run. Without this seam the columns render as "-"
-    /// because BDN's default toolchain runs the benchmark method
-    /// in a child process and our in-memory singleton lives only
-    /// inside that child.
+    /// Directory where every process (host + BDN children) writes its
+    /// per-iteration JSON-lines fidelity records, and from which the
+    /// host's <see cref="MemoryFidelityColumnProvider"/> reads them at
+    /// end-of-run. Derived from <see cref="[CallerFilePath]"/> at
+    /// compile time so the path is baked into IL: both the BDN host
+    /// process and every BDN child process resolve to the SAME
+    /// absolute path without any runtime state, env-var inheritance,
+    /// or entry-point cooperation.
+    /// <para>
+    /// <b>Why not env vars (B65, retracted by B66):</b> the original
+    /// B65 design published a per-run random temp directory via the
+    /// AZBK_BENCH_FIDELITY_DIR env var in <c>Program.Main</c> and
+    /// relied on BDN to inherit it into the child. Two failure modes
+    /// killed that approach: (1) some launchers (Visual Studio 2026's
+    /// benchmark integration, <c>dotnet test</c>, BDN's own re-launch
+    /// paths) bypass <c>Program.Main</c> entirely, so the publication
+    /// never runs; (2) even when the publication does run,
+    /// <c>Environment.SetEnvironmentVariable</c> after process start
+    /// is not guaranteed to propagate to children that BDN's default
+    /// toolchain spawns via <c>ProcessStartInfo</c>. The first real
+    /// benchmark run after B65 created no temp dir at all, confirming
+    /// the failure. A compile-time path constant cannot be defeated by
+    /// either failure mode.
+    /// </para>
     /// </summary>
-    public const string SamplesDirEnvVar = "AZBK_BENCH_FIDELITY_DIR";
+    public static string SamplesDirectory { get; } = ResolveSamplesDirectory();
 
-    /// <summary>Per-run JSON-lines filename inside the samples dir.</summary>
-    public const string SamplesFileName = "samples.jsonl";
+    /// <summary>Per-PID JSON-lines filename inside the samples dir.</summary>
+    private static string SamplesFileName { get; } =
+        $"samples-pid{Environment.ProcessId}.jsonl";
+
+    private static string ResolveSamplesDirectory([CallerFilePath] string thisFile = "")
+    {
+        // thisFile is baked into IL as the absolute path to this source
+        // file at compile time. Its parent is the benchmarks project
+        // directory; place the samples folder alongside the source so
+        // host and child resolve to the same path regardless of cwd.
+        var projectDir = Path.GetDirectoryName(thisFile) ?? Path.GetTempPath();
+        var dir = Path.Combine(projectDir, ".fidelity-samples");
+        try { Directory.CreateDirectory(dir); } catch { /* best effort */ }
+        return dir;
+    }
 
     /// <summary>
     /// Process-wide singleton. BDN constructs benchmark types per
@@ -206,72 +233,101 @@ public sealed class MemoryFidelityCollector
             toPersist = result;
         }
 
-        // B64 Phase 1.1: cross-process persistence. BDN's default
-        // toolchain runs benchmark methods in a child process; the
-        // host-side IColumnProvider would otherwise see an empty
-        // singleton and render every fidelity cell as "-". Writing
-        // one JSON line per iteration to a shared file is the
-        // smallest seam that crosses the boundary without depending
-        // on a custom IDiagnoser. Best-effort -- a failure here must
-        // never tear down the benchmark process, so all I/O is
-        // wrapped and silently swallowed (the worst case degrades
-        // gracefully back to the empty-column output the user
-        // already saw on the first B64 run).
+        // B66: cross-process persistence using a compile-time
+        // derived path (see SamplesDirectory xmldoc for why B65's
+        // env-var approach was retracted). One file per PID so the
+        // host and any number of BDN children write without
+        // contending for an exclusive lock. The host reads every
+        // samples-pid*.jsonl in the directory at end-of-run.
         if (toPersist is null) return;
+        var path = Path.Combine(SamplesDirectory, SamplesFileName);
         try
         {
-            var dir = Environment.GetEnvironmentVariable(SamplesDirEnvVar);
-            if (string.IsNullOrWhiteSpace(dir)) return;
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, SamplesFileName);
             var json = JsonSerializer.Serialize(toPersist);
             File.AppendAllText(path, json + Environment.NewLine);
+            // Visible in BDN's child stderr so the next time fidelity
+            // columns regress to "-" the failure is diagnosable from
+            // the run log instead of from a forensic temp-dir hunt.
+            Console.Error.WriteLine(
+                $"[B66 fidelity persist] pid={Environment.ProcessId} " +
+                $"-> {path} (benchmark={toPersist.BenchmarkName}, " +
+                $"workload={toPersist.Workload}, " +
+                $"memoryLimitMB={toPersist.MemoryLimitMB}, " +
+                $"bytesProcessed={toPersist.BytesProcessed})");
         }
-        catch
+        catch (Exception ex)
         {
-            // Defensive: see rationale above.
+            // Defensive: never throw out of an event handler. But do
+            // surface the failure -- a silent catch is what made B65
+            // undebuggable.
+            try
+            {
+                Console.Error.WriteLine(
+                    $"[B66 fidelity persist FAILED] pid={Environment.ProcessId} " +
+                    $"-> {path}: {ex.GetType().Name}: {ex.Message}");
+            }
+            catch { /* very best effort */ }
         }
     }
 
     /// <summary>
-    /// Loads every persisted iteration sample from the JSON-lines
-    /// file under the directory named by
-    /// <see cref="SamplesDirEnvVar"/>. Returns an empty list if the
-    /// env var is unset, the file is missing, or every line failed
-    /// to parse. Called by
+    /// Loads every persisted iteration sample from every
+    /// <c>samples-pid*.jsonl</c> file under
+    /// <see cref="SamplesDirectory"/>. Returns an empty list if the
+    /// directory is missing or contains no readable files. Called by
     /// <see cref="MemoryFidelityColumnProvider"/> during the host
-    /// process's end-of-run column projection.
+    /// process's end-of-run column projection. Reads every PID's
+    /// samples (B66) so a benchmark run that spawned multiple BDN
+    /// children -- typical for multi-iteration benchmarks -- has all
+    /// of them aggregated, not just the first.
     /// </summary>
     public static IReadOnlyList<MemoryFidelityResult> LoadPersistedResults()
     {
-        var dir = Environment.GetEnvironmentVariable(SamplesDirEnvVar);
-        if (string.IsNullOrWhiteSpace(dir)) return [];
-        var path = Path.Combine(dir, SamplesFileName);
-        if (!File.Exists(path)) return [];
+        var dir = SamplesDirectory;
+        if (!Directory.Exists(dir)) return [];
 
         var results = new List<MemoryFidelityResult>();
-        try
+        string[] files;
+        try { files = Directory.GetFiles(dir, "samples-pid*.jsonl"); }
+        catch { return results; }
+
+        foreach (var path in files)
         {
-            foreach (var line in File.ReadAllLines(path))
+            try
             {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                try
+                foreach (var line in File.ReadAllLines(path))
                 {
-                    var parsed = JsonSerializer.Deserialize<MemoryFidelityResult>(line);
-                    if (parsed is not null) results.Add(parsed);
-                }
-                catch
-                {
-                    // Skip malformed lines: a previous run's partial
-                    // write or a future schema change should not
-                    // poison the whole table.
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        var parsed = JsonSerializer.Deserialize<MemoryFidelityResult>(line);
+                        if (parsed is not null) results.Add(parsed);
+                    }
+                    catch
+                    {
+                        // Skip malformed lines: a previous run's partial
+                        // write or a future schema change should not
+                        // poison the whole table.
+                    }
                 }
             }
+            catch
+            {
+                // Skip unreadable files; the rest still count.
+            }
         }
-        catch
+
+        // Diagnostic: visible in BDN's host stderr at end-of-run so
+        // the next "every column is -" regression is debuggable in
+        // one glance.
+        try
         {
-            // Best-effort.
+            Console.Error.WriteLine(
+                $"[B66 fidelity load] dir={dir} files={files.Length} " +
+                $"records={results.Count}");
         }
+        catch { /* best effort */ }
+
         return results;
     }
 

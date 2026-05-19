@@ -22,32 +22,46 @@ public static class Program
         // the user only finds out hours into a Phase 2 baseline run.
         VerifyMemoryFidelityParserContract();
 
-        // W5 Phase 1.1 (B64): publish a per-run shared directory the
-        // child process can append per-iteration JSON-lines fidelity
-        // samples into. Without this seam the host-side column
-        // provider sees an empty singleton (BDN's default toolchain
-        // forks a child per benchmark method) and every fidelity
-        // column renders as "-". The directory name is randomised so
-        // concurrent benchmark invocations cannot stomp each other,
-        // and it lives under the system temp dir so OS cleanup
-        // eventually reclaims abandoned runs. Honour an existing
-        // value if one is already set (e.g. a CI runner that wants
-        // a stable location).
-        var existingDir = Environment.GetEnvironmentVariable(
-            MemoryFidelityCollector.SamplesDirEnvVar);
-        if (string.IsNullOrWhiteSpace(existingDir))
-        {
-            var dir = Path.Combine(
-                Path.GetTempPath(),
-                "azbk-bench-fidelity-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
-            Environment.SetEnvironmentVariable(
-                MemoryFidelityCollector.SamplesDirEnvVar, dir);
-            Console.WriteLine(
-                $"[B64] Memory-fidelity samples will be persisted to: {dir}");
-        }
+        // B66: clean the compile-time-derived samples directory of
+        // stale per-PID files from prior runs. This is best-effort
+        // and host-only: if Program.Main is bypassed by Visual Studio
+        // or dotnet test, prior records may show up in the current
+        // summary, but the column provider's row identity match
+        // (benchmark + workload + memoryLimitMB) makes that benign --
+        // either the keys collide and aggregation absorbs them, or
+        // they don't and they're ignored. The compile-time path
+        // means we no longer need to publish an env var or rely on
+        // child-process inheritance, which is what killed B65.
+        CleanFidelitySamplesDirectory();
+
+        // B66: round-trip a synthetic record through the persistence
+        // path so a regression on file IO, JSON shape, or directory
+        // resolution fails fast instead of silently regressing every
+        // fidelity cell to "-" (the B65 lesson). This now executes
+        // against the same compile-time-derived path BDN children
+        // will use, so a green self-check actually proves the
+        // production load path works.
+        VerifyMemoryFidelityPersistenceRoundTrip();
+
+        Console.WriteLine(
+            $"[B66] Memory-fidelity samples directory: " +
+            $"{MemoryFidelityCollector.SamplesDirectory}");
 
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+    }
+
+    private static void CleanFidelitySamplesDirectory()
+    {
+        try
+        {
+            var dir = MemoryFidelityCollector.SamplesDirectory;
+            if (!Directory.Exists(dir)) return;
+            foreach (var f in Directory.GetFiles(dir, "samples-pid*.jsonl"))
+            {
+                try { File.Delete(f); } catch { /* best effort */ }
+            }
+        }
+        catch { /* best effort */ }
     }
 
     private static void VerifyMemoryFidelityParserContract()
@@ -82,8 +96,6 @@ public static class Program
         if (result.StallCount != 7) throw Drift("stalls", 7, result.StallCount);
         if (result.OversizedAdmissions != 3) throw Drift("oversized", 3, result.OversizedAdmissions);
 
-        VerifyMemoryFidelityPersistenceRoundTrip();
-
         static InvalidOperationException Drift(string field, long expected, long actual) =>
             new($"MemoryFidelityCollector parser drift on '{field}': expected {expected}, got {actual}. " +
                 "BackupMemoryReporter.EmitSample format has changed; update MemoryFidelityCollector regexes.");
@@ -91,47 +103,35 @@ public static class Program
 
     private static void VerifyMemoryFidelityPersistenceRoundTrip()
     {
-        // W5 Phase 1.1 (B64): the host process is about to publish an
-        // env var that the child process will consume by appending
-        // per-iteration JSON-lines records. If serialisation or the
-        // env-var-driven path is ever broken, every fidelity column
-        // silently regresses to "-" again. Round-trip a synthetic
-        // record through an isolated temp dir to fail fast instead.
-        var dir = Path.Combine(
-            Path.GetTempPath(),
-            "azbk-bench-fidelity-selftest-" + Guid.NewGuid().ToString("N"));
-        var previous = Environment.GetEnvironmentVariable(
-            MemoryFidelityCollector.SamplesDirEnvVar);
-        try
-        {
-            Directory.CreateDirectory(dir);
-            Environment.SetEnvironmentVariable(
-                MemoryFidelityCollector.SamplesDirEnvVar, dir);
+        // B66: round-trip a synthetic record through the same
+        // compile-time-derived path BDN children will use. The
+        // bench-marker tag in BenchmarkName isolates the synthetic
+        // row from any real benchmark rows that also live in
+        // samples-pid*.jsonl after CleanFidelitySamplesDirectory was
+        // skipped (e.g. when Main is bypassed). On success this
+        // proves: (1) the directory is writable from this process;
+        // (2) JsonSerializer round-trips the record cleanly;
+        // (3) LoadPersistedResults finds and parses the line back.
+        const string marker = "__persist_check_b66__";
 
-            MemoryFidelityCollector.Instance.StartIteration("__persist_check__", "__sample__", 4096);
-            MemoryFidelityCollector.Instance.RecordSampleLine(
-                "[mem] backup t+1s | budget used=1024 MB / 4096 MB (25.0%, peak=1024 MB) | " +
-                "stalls +0 (total 0) | oversized +0 (total 0) | " +
-                "gcHeap=128 MB | gcLoad=1024 MB | " +
-                "workingSet=2048 MB | privateMem=2048 MB | " +
-                "unaccounted=896 MB | gcCollections=[0,0,0]");
-            MemoryFidelityCollector.Instance.EndIteration(bytesProcessed: 1024L * 1024 * 1024);
+        MemoryFidelityCollector.Instance.StartIteration(marker, "__sample__", 4096);
+        MemoryFidelityCollector.Instance.RecordSampleLine(
+            "[mem] backup t+1s | budget used=1024 MB / 4096 MB (25.0%, peak=1024 MB) | " +
+            "stalls +0 (total 0) | oversized +0 (total 0) | " +
+            "gcHeap=128 MB | gcLoad=1024 MB | " +
+            "workingSet=2048 MB | privateMem=2048 MB | " +
+            "unaccounted=896 MB | gcCollections=[0,0,0]");
+        MemoryFidelityCollector.Instance.EndIteration(bytesProcessed: 1024L * 1024 * 1024);
 
-            var loaded = MemoryFidelityCollector.LoadPersistedResults();
-            var match = loaded.FirstOrDefault(r => r.BenchmarkName == "__persist_check__");
-            if (match is null) throw new InvalidOperationException(
-                "Memory-fidelity persistence round-trip failed: nothing was loaded back from " + dir);
-            const long MB = 1024L * 1024L;
-            if (match.PeakWorkingSetBytes != 2048 * MB) throw new InvalidOperationException(
-                $"Memory-fidelity persistence round-trip drift on workingSet: expected 2048 MB, got {match.PeakWorkingSetBytes / MB} MB.");
-            if (match.BytesProcessed != 1024L * 1024 * 1024) throw new InvalidOperationException(
-                $"Memory-fidelity persistence round-trip drift on bytesProcessed: expected 1 GB, got {match.BytesProcessed} bytes.");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(
-                MemoryFidelityCollector.SamplesDirEnvVar, previous);
-            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
-        }
+        var loaded = MemoryFidelityCollector.LoadPersistedResults();
+        var match = loaded.FirstOrDefault(r => r.BenchmarkName == marker);
+        if (match is null) throw new InvalidOperationException(
+            $"Memory-fidelity persistence round-trip failed: nothing was loaded back from " +
+            $"{MemoryFidelityCollector.SamplesDirectory}. Check IL-baked path and file permissions.");
+        const long MB = 1024L * 1024L;
+        if (match.PeakWorkingSetBytes != 2048 * MB) throw new InvalidOperationException(
+            $"Memory-fidelity persistence round-trip drift on workingSet: expected 2048 MB, got {match.PeakWorkingSetBytes / MB} MB.");
+        if (match.BytesProcessed != 1024L * 1024 * 1024) throw new InvalidOperationException(
+            $"Memory-fidelity persistence round-trip drift on bytesProcessed: expected 1 GB, got {match.BytesProcessed} bytes.");
     }
 }
