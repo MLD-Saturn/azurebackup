@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Reflection.Emit;
 using BenchmarkDotNet.Running;
 
 namespace AzureBackup.Benchmarks;
@@ -29,6 +31,16 @@ public static class Program
         // regressing every fidelity cell to "-" exactly the way the
         // first three post-B66 benchmark runs did.
         VerifyBenchmarkNameResolutionContract();
+
+        // W5 Phase 1 (B68): guarantee no static Runnable_* shim leaks
+        // into BDN's discovery surface. B67's first attempt put the
+        // synthetic wrapper in the entry assembly as a private nested
+        // type; BDN's GetRunnableBenchmarks scan picked it up anyway
+        // and rejected it as 'within a non-visible class' / 'within
+        // a sealed class', failing the entire run before any real
+        // benchmark could execute. Catch a future recurrence here
+        // instead of during a multi-hour benchmark sweep.
+        VerifyNoStaticRunnableShimInEntryAssembly();
 
         // B66: clean the compile-time-derived samples directory of
         // stale per-PID files from prior runs. This is best-effort
@@ -157,16 +169,85 @@ public static class Program
         if (resolvedDirect != nameof(MemoryBudgetBenchmark)) throw new InvalidOperationException(
             $"ResolveBenchmarkTypeName regression: expected '{nameof(MemoryBudgetBenchmark)}', got '{resolvedDirect}'.");
 
-        var resolvedWrapped = BackupBenchmarkBase.ResolveBenchmarkTypeName(typeof(Runnable_999_SelfCheckOnly));
+        // B68: the synthetic Runnable_* subclass MUST live in a
+        // dynamic assembly, never as a static nested type in the
+        // benchmark entry assembly. B67's first attempt declared
+        // 'private sealed class Runnable_999_SelfCheckOnly :
+        // MemoryBudgetBenchmark { }' here, and BDN's discovery scan
+        // picked it up and rejected the entire run with
+        //   * Benchmarked method `Backup` is within a sealed class
+        //   * Benchmarked method `Backup` is within a non-visible class
+        // breaking *MemoryBudget* in production on the remote PC.
+        // Reflection.Emit puts the wrapper in a transient assembly
+        // that BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
+        // never visits, so the self-check stays local.
+        var wrapperType = BuildSyntheticRunnableWrapperType(typeof(MemoryBudgetBenchmark));
+        var resolvedWrapped = BackupBenchmarkBase.ResolveBenchmarkTypeName(wrapperType);
         if (resolvedWrapped != nameof(MemoryBudgetBenchmark)) throw new InvalidOperationException(
-            $"ResolveBenchmarkTypeName regression: wrapper '{nameof(Runnable_999_SelfCheckOnly)}' resolved to '{resolvedWrapped}', expected '{nameof(MemoryBudgetBenchmark)}'.");
+            $"ResolveBenchmarkTypeName regression: wrapper '{wrapperType.Name}' resolved to '{resolvedWrapped}', expected '{nameof(MemoryBudgetBenchmark)}'.");
     }
 
-    // Synthetic stand-in mirroring BDN's Runnable_N wrapper shape so
-    // VerifyBenchmarkNameResolutionContract can prove the walk past
-    // the generated wrapper still lands on the user benchmark class.
-    // Marked private so it can't leak into the benchmark discovery
-    // surface (BDN ignores non-public types when scanning for
-    // [Benchmark] methods).
-    private sealed class Runnable_999_SelfCheckOnly : MemoryBudgetBenchmark { }
+    /// <summary>
+    /// B68: emits a runtime-generated subclass of
+    /// <paramref name="parent"/> named like BDN's
+    /// <c>Runnable_N</c> wrapper, in a transient
+    /// <see cref="AssemblyBuilder"/>. The wrapper exists solely to
+    /// drive
+    /// <see cref="BackupBenchmarkBase.ResolveBenchmarkTypeName"/>
+    /// from the host self-check; because it lives in a separate
+    /// dynamic assembly, BDN's
+    /// <c>BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)</c>
+    /// scan does not enumerate it and cannot reject it during
+    /// validation. Do not move this class declaration into the
+    /// benchmark entry assembly as a nested type -- B67's first
+    /// attempt did exactly that and produced the
+    /// "Benchmarked method `Backup` is within a sealed class /
+    /// non-visible class" validator failures that blocked every
+    /// *MemoryBudget* run.
+    /// </summary>
+    private static Type BuildSyntheticRunnableWrapperType(Type parent)
+    {
+        var asm = AssemblyBuilder.DefineDynamicAssembly(
+            new AssemblyName("AzureBackup.Benchmarks.SelfCheck.Dynamic"),
+            AssemblyBuilderAccess.Run);
+        var mod = asm.DefineDynamicModule("MainModule");
+        var typeBuilder = mod.DefineType(
+            "Runnable_999_SelfCheckOnly",
+            TypeAttributes.NotPublic | TypeAttributes.Sealed,
+            parent);
+        return typeBuilder.CreateType()
+            ?? throw new InvalidOperationException(
+                "B68: Reflection.Emit returned null for the synthetic Runnable wrapper.");
+    }
+
+    private static void VerifyNoStaticRunnableShimInEntryAssembly()
+    {
+        // B68: walk every static type in the entry assembly and fail
+        // fast if anything Runnable_*-shaped sneaks back in. BDN's
+        // default discovery is
+        //   BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
+        //     .Run(args)
+        // which enumerates *every* type (public and non-public,
+        // nested or not) looking for [Benchmark]-decorated methods,
+        // and validates each candidate against rules including "must
+        // be in a public, non-sealed class". A synthetic wrapper
+        // hidden as 'private sealed class Runnable_N' will satisfy
+        // none of those rules and will fail the whole run. The
+        // dynamic assembly used by the resolution self-check is
+        // intentionally not enumerated here -- it lives in its own
+        // AssemblyBuilder that BenchmarkSwitcher never visits.
+        var entry = typeof(Program).Assembly;
+        foreach (var t in entry.GetTypes())
+        {
+            if (t.Name.StartsWith("Runnable_", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"B68 contract violation: entry assembly contains a static type '{t.FullName}' " +
+                    $"whose name matches BDN's autogenerated 'Runnable_N' wrapper pattern. BDN's " +
+                    $"benchmark discovery will pick it up and reject the entire run " +
+                    $"(see B67->B68). Move the synthetic wrapper into a dynamic " +
+                    $"AssemblyBuilder (see BuildSyntheticRunnableWrapperType).");
+            }
+        }
+    }
 }
