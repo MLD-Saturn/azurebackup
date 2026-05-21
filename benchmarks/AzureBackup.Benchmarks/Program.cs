@@ -22,6 +22,14 @@ public static class Program
         // the user only finds out hours into a Phase 2 baseline run.
         VerifyMemoryFidelityParserContract();
 
+        // W5 Phase 1 (B67): pin the benchmark-name resolution rule.
+        // Without this check a future refactor of
+        // BackupBenchmarkBase.ResolveBenchmarkTypeName could quietly
+        // start storing BDN's wrapper type name (Runnable_N) again,
+        // regressing every fidelity cell to "-" exactly the way the
+        // first three post-B66 benchmark runs did.
+        VerifyBenchmarkNameResolutionContract();
+
         // B66: clean the compile-time-derived samples directory of
         // stale per-PID files from prior runs. This is best-effort
         // and host-only: if Program.Main is bypassed by Visual Studio
@@ -134,4 +142,31 @@ public static class Program
         if (match.BytesProcessed != 1024L * 1024 * 1024) throw new InvalidOperationException(
             $"Memory-fidelity persistence round-trip drift on bytesProcessed: expected 1 GB, got {match.BytesProcessed} bytes.");
     }
+
+    private static void VerifyBenchmarkNameResolutionContract()
+    {
+        // The host-side column provider keys lookups by the user's
+        // benchmark class name (BenchmarkCase.Descriptor.Type.Name),
+        // but BDN's default toolchain instantiates the benchmark via
+        // a generated wrapper class named Runnable_N that subclasses
+        // the user class. If the collector stores the wrapper name,
+        // the join misses and every fidelity cell renders as "-".
+        // Verify directly: a Runnable_*-named subclass of an actual
+        // benchmark class must resolve back to the user class name.
+        var resolvedDirect = BackupBenchmarkBase.ResolveBenchmarkTypeName(typeof(MemoryBudgetBenchmark));
+        if (resolvedDirect != nameof(MemoryBudgetBenchmark)) throw new InvalidOperationException(
+            $"ResolveBenchmarkTypeName regression: expected '{nameof(MemoryBudgetBenchmark)}', got '{resolvedDirect}'.");
+
+        var resolvedWrapped = BackupBenchmarkBase.ResolveBenchmarkTypeName(typeof(Runnable_999_SelfCheckOnly));
+        if (resolvedWrapped != nameof(MemoryBudgetBenchmark)) throw new InvalidOperationException(
+            $"ResolveBenchmarkTypeName regression: wrapper '{nameof(Runnable_999_SelfCheckOnly)}' resolved to '{resolvedWrapped}', expected '{nameof(MemoryBudgetBenchmark)}'.");
+    }
+
+    // Synthetic stand-in mirroring BDN's Runnable_N wrapper shape so
+    // VerifyBenchmarkNameResolutionContract can prove the walk past
+    // the generated wrapper still lands on the user benchmark class.
+    // Marked private so it can't leak into the benchmark discovery
+    // surface (BDN ignores non-public types when scanning for
+    // [Benchmark] methods).
+    private sealed class Runnable_999_SelfCheckOnly : MemoryBudgetBenchmark { }
 }
