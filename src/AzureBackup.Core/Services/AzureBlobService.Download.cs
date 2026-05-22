@@ -203,7 +203,19 @@ public partial class AzureBlobService
     /// The caller SHOULD return the plaintext buffer via <c>ArrayPool&lt;byte&gt;.Shared.Return</c>
     /// after writing to disk; non-pooled arrays are accepted harmlessly by Return.
     /// </summary>
-    public async Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default)
+    public Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default)
+        => DownloadChunkStreamingAsync(blobName, plaintextBufferPool: null, cancellationToken);
+
+    /// <summary>
+    /// B71 (W5 Phase 3 Commit 3) overload: rent the plaintext output from the
+    /// caller-supplied <see cref="ChunkBufferPool"/> when non-null, otherwise
+    /// fall back to <see cref="ArrayPool{T}.Shared"/>. The encrypted download
+    /// buffer is still rented from <see cref="ArrayPool{T}.Shared"/> internally
+    /// because it never crosses the orchestrator boundary (returned before this
+    /// method exits) and the per-core tier-cache retention that the recycler
+    /// avoids only matters for buffers whose lifetime spans the channel.
+    /// </summary>
+    public async Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, ChunkBufferPool? plaintextBufferPool, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
@@ -246,7 +258,9 @@ public partial class AzureBlobService
                 // that Decrypt() would make internally. The caller returns this buffer
                 // to the pool after writing to disk and hashing.
                 var plaintextSize = bytesRead - EncryptionService.EncryptionOverhead;
-                var rentedPlaintext = ArrayPool<byte>.Shared.Rent(plaintextSize);
+                byte[] rentedPlaintext = plaintextBufferPool is null
+                    ? ArrayPool<byte>.Shared.Rent(plaintextSize)
+                    : plaintextBufferPool.Rent(plaintextSize).Buffer;
                 try
                 {
                     var decryptedLength = _encryptionService.DecryptInto(
@@ -258,7 +272,10 @@ public partial class AzureBlobService
                 catch
                 {
                     // Decrypt failed — return the plaintext buffer we rented (caller won't see it)
-                    ArrayPool<byte>.Shared.Return(rentedPlaintext, clearArray: true);
+                    if (plaintextBufferPool is null)
+                        ArrayPool<byte>.Shared.Return(rentedPlaintext, clearArray: true);
+                    else
+                        plaintextBufferPool.Return(rentedPlaintext);
                     throw;
                 }
             }

@@ -210,6 +210,21 @@ public partial class RestoreService
     /// signal and every transient HTTP retry / detected stall halves
     /// file-level concurrency. Single-file restores from the UI pass null
     /// because no batch-level scheduling decision exists.</param>
+    /// <param name="largeChunkPool">B71 (W5 Phase 3 Commit 3): optional
+    /// operation-scope <see cref="ChunkBufferPool"/> built with
+    /// <see cref="ChunkBufferPool.LargeChunkBucketSizes"/>. When supplied,
+    /// downloaded plaintext buffers for chunks at or above
+    /// <see cref="ChunkingService.PoolSkipThresholdBytes"/> are rented
+    /// from this pool instead of <see cref="System.Buffers.ArrayPool{T}.Shared"/>,
+    /// keeping restore-side residency inside the budget's accounting.
+    /// Single-file restores from the UI pass null and fall back to the
+    /// shared ArrayPool.</param>
+    /// <param name="smallChunkPool">B71: optional operation-scope
+    /// <see cref="ChunkBufferPool"/> built with
+    /// <see cref="ChunkBufferPool.SmallChunkBucketSizes"/>. When supplied,
+    /// downloaded plaintext buffers for chunks below
+    /// <see cref="ChunkingService.PoolSkipThresholdBytes"/> are rented
+    /// from this pool. Null falls back to the shared ArrayPool.</param>
     public async Task<bool> RestoreFileAsync(
         BackedUpFile file,
         string? restorePath = null,
@@ -217,7 +232,9 @@ public partial class RestoreService
         IProgress<(long current, long total)>? progress = null,
         MemoryBudget? memoryBudget = null,
         CancellationToken cancellationToken = default,
-        BandwidthScheduler? bandwidthScheduler = null)
+        BandwidthScheduler? bandwidthScheduler = null,
+        ChunkBufferPool? largeChunkPool = null,
+        ChunkBufferPool? smallChunkPool = null)
     {
         ArgumentNullException.ThrowIfNull(file);
         var diag = new FileOperationDiagnostics(file.LocalPath, "Restore", DiagnosticsDirectory);
@@ -310,7 +327,8 @@ public partial class RestoreService
                     // Hash is computed incrementally as chunks are written in order — no file re-read needed
                     restoredHash = await RestoreWithBoundedParallelDownloadsAsync(
                         sortedChunks, file, tempPath, budget, progress, 
-                        p => currentBytes = p, diag, bandwidthScheduler, cancellationToken);
+                        p => currentBytes = p, diag, bandwidthScheduler,
+                        largeChunkPool, smallChunkPool, cancellationToken);
                 }
                 finally
                 {
@@ -535,6 +553,24 @@ public partial class RestoreService
     }
 
     /// <summary>
+    /// B71 (W5 Phase 3 Commit 3): return a plaintext chunk buffer to the
+    /// source it was rented from. When <paramref name="sourcePool"/> is
+    /// non-null the buffer was rented from a restore-scope
+    /// <see cref="ChunkBufferPool"/>; otherwise it was rented from
+    /// <see cref="ArrayPool{T}.Shared"/>. Routing through this helper at
+    /// every return site keeps the ownership rule in one place and prevents
+    /// a buffer rented from one pool from accidentally being returned to a
+    /// different pool's bucket geometry.
+    /// </summary>
+    private static void ReturnPlaintextBuffer(byte[] buffer, ChunkBufferPool? sourcePool)
+    {
+        if (sourcePool is not null)
+            sourcePool.Return(buffer);
+        else
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+    }
+
+    /// <summary>
     /// Determines whether an exception represents a transient Azure error worth retrying.
     /// Covers HTTP 408/429/500/502/503/504 from Azure, I/O timeouts, and TaskCanceledException
     /// caused by HttpClient timeouts (not user cancellation).
@@ -588,6 +624,11 @@ public partial class RestoreService
     /// fast path, and a deadlock-suspect watchdog snapshot triggers an
     /// immediate decrease. Pass <see langword="null"/> for single-file
     /// restores from the UI where no batch scheduler exists.</param>
+    /// <param name="largeChunkPool">B71 (W5 Phase 3 Commit 3): optional
+    /// large-geometry plaintext-buffer recycler. See
+    /// <see cref="RestoreFileAsync"/> for the contract.</param>
+    /// <param name="smallChunkPool">B71: optional small-geometry plaintext-buffer
+    /// recycler. See <see cref="RestoreFileAsync"/> for the contract.</param>
     private async Task<string> RestoreWithBoundedParallelDownloadsAsync(
         List<ChunkInfo> sortedChunks,
         BackedUpFile file,
@@ -597,6 +638,8 @@ public partial class RestoreService
         Action<long> updateCurrentBytes,
         FileOperationDiagnostics diag,
         BandwidthScheduler? bandwidthScheduler,
+        ChunkBufferPool? largeChunkPool,
+        ChunkBufferPool? smallChunkPool,
         CancellationToken cancellationToken)
     {
         var maxChunkBytes = sortedChunks.Max(c => c.Length);
@@ -636,7 +679,7 @@ public partial class RestoreService
             SingleReader = true,
             SingleWriter = false
         };
-        var channel = Channel.CreateBounded<(int index, byte[] data, int length)>(channelOptions);
+        var channel = Channel.CreateBounded<(int index, byte[] data, int length, ChunkBufferPool? pool)>(channelOptions);
 
         // B62 (C): writer-released in-order chunk window. The producer
         // acquires a slot BEFORE asking for budget; the writer releases the
@@ -685,7 +728,7 @@ public partial class RestoreService
         // if the writer ever forgot to mirror an add/remove. The locked snapshot
         // is taken at most once per WatchdogPollMs (5 s) so contention is
         // negligible.
-        var pendingChunks = new Dictionary<int, (byte[] data, int length)>();
+        var pendingChunks = new Dictionary<int, (byte[] data, int length, ChunkBufferPool? pool)>();
         var pendingChunksLock = new Lock();
 
         // Producer task: Download chunks in parallel and write to channel
@@ -722,6 +765,19 @@ public partial class RestoreService
 
                     var downloadTask = Task.Run(async () =>
                     {
+                        // B71 (W5 Phase 3 Commit 3): pick the restore-scope
+                        // recycler whose bucket geometry covers this chunk's
+                        // length. The producer/consumer-side return MUST go
+                        // through the same pool reference so a buffer rented
+                        // from the large pool cannot be returned to the small
+                        // pool (or vice versa); pinning `selectedPool` to the
+                        // download lets the writer dispatch correctly via the
+                        // per-chunk tuple field even after the producer has
+                        // exited. When neither pool is supplied the path falls
+                        // through to ArrayPool<byte>.Shared exactly as pre-B71.
+                        var selectedPool = chunk.Length >= ChunkingService.PoolSkipThresholdBytes
+                            ? largeChunkPool
+                            : smallChunkPool;
                         // Two-phase memory budget for accurate memory modeling:
                         // Phase A: Acquire 2× chunk size before download (encrypted + plaintext overlap during DecryptInto)
                         // Phase B: Release 1× after download returns (encrypted buffer freed inside blob service)
@@ -763,7 +819,7 @@ public partial class RestoreService
                             {
                                 try
                                 {
-                                    (chunkBuffer, chunkLength) = await _blobService.DownloadChunkStreamingAsync(chunk.BlobName, linkedCts.Token);
+                                    (chunkBuffer, chunkLength) = await _blobService.DownloadChunkStreamingAsync(chunk.BlobName, selectedPool, linkedCts.Token);
                                     break; // success
                                 }
                                 catch (Exception ex) when (attempt < MaxChunkRetries && IsTransientError(ex))
@@ -806,7 +862,7 @@ public partial class RestoreService
                             memoryBudget.Release(chunk.Length);
                             owedBudget -= chunk.Length;
 
-                            await channel.Writer.WriteAsync((chunk.Index, chunkBuffer!, chunkLength), linkedCts.Token);
+                            await channel.Writer.WriteAsync((chunk.Index, chunkBuffer!, chunkLength, selectedPool), linkedCts.Token);
                             // B63: ownership of buffer + remaining plaintext budget has
                             // now transferred to the writer. We owe nothing.
                             owedBudget = 0;
@@ -828,7 +884,7 @@ public partial class RestoreService
                             // (when OCE fired between Phase B and channel write) and leaked
                             // ArrayPool buffers (when OCE fired after the buffer was rented).
                             if (owedBudget > 0) memoryBudget.Release(owedBudget);
-                            if (rentedBuffer != null) ArrayPool<byte>.Shared.Return(rentedBuffer, clearArray: true);
+                            if (rentedBuffer != null) ReturnPlaintextBuffer(rentedBuffer, selectedPool);
                             // B62 (C): chunk will never reach the writer, so the writer
                             // will never release this window slot. Release it here so the
                             // producer loop can dispatch the next chunk during shutdown.
@@ -838,7 +894,7 @@ public partial class RestoreService
                         catch (Exception ex)
                         {
                             if (owedBudget > 0) memoryBudget.Release(owedBudget);
-                            if (rentedBuffer != null) ArrayPool<byte>.Shared.Return(rentedBuffer, clearArray: true);
+                            if (rentedBuffer != null) ReturnPlaintextBuffer(rentedBuffer, selectedPool);
                             // B62 (C): same reasoning as the cancellation branch -- the
                             // chunk will never reach the writer because we are about to
                             // cancel the linked CTS, so the writer cannot release the slot.
@@ -923,9 +979,10 @@ public partial class RestoreService
             try
             {
                 // Local function: writes one chunk to disk, updates hash + counters,
-                // returns the ArrayPool buffer, and releases the memory budget.
-                // Shared by the direct-write and pending-drain paths.
-                async Task WriteChunkAndReleaseAsync(byte[] chunkData, int chunkLength)
+                // returns the plaintext buffer to its source (per-chunk pool when
+                // present, else the shared ArrayPool), and releases the memory
+                // budget. Shared by the direct-write and pending-drain paths.
+                async Task WriteChunkAndReleaseAsync(byte[] chunkData, int chunkLength, ChunkBufferPool? sourcePool)
                 {
                     // B63: every successful chunk write owes the window slot back
                     // to the producer, otherwise the producer can starve. Wrap the
@@ -942,7 +999,7 @@ public partial class RestoreService
                         currentBytes += chunkLength;
                         chunksWritten++;
                         nextChunkToWrite++;
-                        ArrayPool<byte>.Shared.Return(chunkData, clearArray: true);
+                        ReturnPlaintextBuffer(chunkData, sourcePool);
                         // Phase C: Release remaining 1× for plaintext buffer
                         // (producer already released the encrypted buffer portion in Phase B)
                         memoryBudget.Release(chunkLength);
@@ -971,22 +1028,22 @@ public partial class RestoreService
                     }
                 }
 
-                await foreach (var (index, data, length) in channel.Reader.ReadAllAsync(linkedCts.Token))
+                await foreach (var (index, data, length, pool) in channel.Reader.ReadAllAsync(linkedCts.Token))
                 {
                     if (index == nextChunkToWrite)
                     {
-                        await WriteChunkAndReleaseAsync(data, length);
+                        await WriteChunkAndReleaseAsync(data, length, pool);
 
                         while (true)
                         {
-                            (byte[] data, int length) pending;
+                            (byte[] data, int length, ChunkBufferPool? pool) pending;
                             lock (pendingChunksLock)
                             {
                                 if (!pendingChunks.TryGetValue(nextChunkToWrite, out pending))
                                     break;
                                 pendingChunks.Remove(nextChunkToWrite);
                             }
-                            await WriteChunkAndReleaseAsync(pending.data, pending.length);
+                            await WriteChunkAndReleaseAsync(pending.data, pending.length, pending.pool);
                         }
 
                         // Throttled progress reporting to reduce UI thread pressure
@@ -1012,7 +1069,7 @@ public partial class RestoreService
                         long bufferedBytes;
                         lock (pendingChunksLock)
                         {
-                            pendingChunks[index] = (data, length);
+                            pendingChunks[index] = (data, length, pool);
                             currentPending = pendingChunks.Count;
                             // Defer summing bytes until the verbose log path actually
                             // runs; the common path takes the lock for two pointer
@@ -1084,7 +1141,7 @@ public partial class RestoreService
                 // in a shared multi-file restore.
                 // These chunks already had Phase B release (encrypted portion) by the producer,
                 // so only release the remaining 1× plaintext portion here.
-                List<(byte[] data, int length)> toDrain;
+                List<(byte[] data, int length, ChunkBufferPool? pool)> toDrain;
                 lock (pendingChunksLock)
                 {
                     if (pendingChunks.Count == 0)
@@ -1093,7 +1150,7 @@ public partial class RestoreService
                     }
                     else
                     {
-                        toDrain = new List<(byte[] data, int length)>(pendingChunks.Count);
+                        toDrain = new List<(byte[] data, int length, ChunkBufferPool? pool)>(pendingChunks.Count);
                         foreach (var (_, pending) in pendingChunks) toDrain.Add(pending);
                         pendingChunks.Clear();
                     }
@@ -1104,7 +1161,7 @@ public partial class RestoreService
                         $"(returning buffers and releasing budget)");
                     foreach (var pending in toDrain)
                     {
-                        ArrayPool<byte>.Shared.Return(pending.data, clearArray: true);
+                        ReturnPlaintextBuffer(pending.data, pending.pool);
                         memoryBudget.Release(pending.length);
                         // B62 (C): each drained chunk holds a window slot the writer
                         // will never release on the success path, so release here so

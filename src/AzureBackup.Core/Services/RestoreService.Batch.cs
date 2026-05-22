@@ -441,12 +441,15 @@ public partial class RestoreService
         string logPrefix,
         MemoryBudget? memoryBudget,
         BandwidthScheduler? bandwidthScheduler,
+        ChunkBufferPool? largeChunkPool,
+        ChunkBufferPool? smallChunkPool,
         CancellationToken cancellationToken)
     {
         try
         {
             var success = await RestoreFileAsync(file, targetPath, overwriteExisting,
-                fileProgress, memoryBudget, cancellationToken, bandwidthScheduler);
+                fileProgress, memoryBudget, cancellationToken, bandwidthScheduler,
+                largeChunkPool, smallChunkPool);
 
             if (success)
             {
@@ -851,6 +854,24 @@ public partial class RestoreService
         const long SmallFileThreshold = SmallFileThresholdBytes;
         const int MaxParallelSmallFiles = 32;
 
+        // B71 (W5 Phase 3 Commit 3): restore-scope chunk-buffer recyclers
+        // owned at the batch level so the residency is bounded across every
+        // file in the batch. The cap policy is the same as the backup-side
+        // pools (see ComputePoolCapBytes / ComputeSmallPoolCapBytes on
+        // BackupOrchestrator) so a user who configures a single MemoryLimitMB
+        // value sees consistent residency behaviour across backup and restore.
+        // Pools are disposed at the end of the batch which drains every
+        // cached buffer back to the GC; in-flight rents that have not yet
+        // been returned (only possible on a hard cancellation that bypasses
+        // the writer drain) tolerate the disposal because Return is a no-op
+        // on a disposed pool.
+        using var largeChunkPool = new ChunkBufferPool(
+            ChunkBufferPool.LargeChunkBucketSizes,
+            BackupOrchestrator.ComputePoolCapBytes(memoryBudget));
+        using var smallChunkPool = new ChunkBufferPool(
+            ChunkBufferPool.SmallChunkBucketSizes,
+            BackupOrchestrator.ComputeSmallPoolCapBytes(memoryBudget));
+
         var smallFiles = new List<(BackedUpFile file, string targetPath, int originalIndex)>();
         var largeFiles = new List<(BackedUpFile file, string targetPath, int originalIndex)>();
 
@@ -896,7 +917,8 @@ public partial class RestoreService
                     await RestoreOneFileWithRemappingAsync(
                         item.file, item.targetPath, item.originalIndex, totalFiles,
                         overwriteExisting, progress, fileByteProgress, result, resultLock,
-                        completedFiles, memoryBudget, bandwidthScheduler, ct);
+                        completedFiles, memoryBudget, bandwidthScheduler,
+                        largeChunkPool, smallChunkPool, ct);
                 }));
         }
 
@@ -925,7 +947,8 @@ public partial class RestoreService
                             await RestoreOneFileWithRemappingAsync(
                                 captured.file, captured.targetPath, captured.originalIndex, totalFiles,
                                 overwriteExisting, progress, fileByteProgress, result, resultLock,
-                                completedFiles, memoryBudget, bandwidthScheduler, cancellationToken);
+                                completedFiles, memoryBudget, bandwidthScheduler,
+                                largeChunkPool, smallChunkPool, cancellationToken);
                         }
                         finally
                         {
@@ -977,6 +1000,8 @@ public partial class RestoreService
         int[] completedFiles,
         MemoryBudget? memoryBudget,
         BandwidthScheduler? bandwidthScheduler,
+        ChunkBufferPool? largeChunkPool,
+        ChunkBufferPool? smallChunkPool,
         CancellationToken cancellationToken)
     {
         var done = Interlocked.Increment(ref completedFiles[0]);
@@ -1013,7 +1038,8 @@ public partial class RestoreService
 
         var logPrefix = $"RestoreFilesWithRemappingAsync: [{done}/{totalFiles}]";
         var (outcome, recoveredPath, unrecoverableChunks) = await RestoreFileWithRecoveryAsync(
-            file, normalizedPath, overwriteExisting, individualFileProgress, logPrefix, memoryBudget, bandwidthScheduler, cancellationToken);
+            file, normalizedPath, overwriteExisting, individualFileProgress, logPrefix, memoryBudget, bandwidthScheduler,
+            largeChunkPool, smallChunkPool, cancellationToken);
 
         lock (resultLock)
         {

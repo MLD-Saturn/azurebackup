@@ -350,12 +350,23 @@ public class InMemoryBlobService : IBlobStorageService
     /// <summary>
     /// Streaming download variant — in-memory implementation delegates to <see cref="DownloadChunkAsync"/>
     /// since there is no actual I/O stream to optimize.
-    /// Copies into a rented buffer so the consumer can safely call ArrayPool.Return.
+    /// Copies into a rented buffer so the consumer can safely call Return.
     /// </summary>
-    public virtual async Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default)
+    public virtual Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default)
+        => DownloadChunkStreamingAsync(blobName, plaintextBufferPool: null, cancellationToken);
+
+    /// <summary>
+    /// B71 (W5 Phase 3 Commit 3) overload: rent the plaintext output from the
+    /// caller-supplied <see cref="ChunkBufferPool"/> when non-null, otherwise
+    /// from <see cref="ArrayPool{T}.Shared"/>. Mirrors
+    /// <see cref="AzureBlobService.DownloadChunkStreamingAsync(string, ChunkBufferPool?, CancellationToken)"/>.
+    /// </summary>
+    public virtual async Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, ChunkBufferPool? plaintextBufferPool, CancellationToken cancellationToken = default)
     {
         var data = await DownloadChunkAsync(blobName, cancellationToken);
-        var rented = ArrayPool<byte>.Shared.Rent(data.Length);
+        byte[] rented = plaintextBufferPool is null
+            ? ArrayPool<byte>.Shared.Rent(data.Length)
+            : plaintextBufferPool.Rent(data.Length).Buffer;
         data.CopyTo(rented, 0);
         return (rented, data.Length);
     }

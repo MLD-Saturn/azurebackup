@@ -133,12 +133,30 @@ public interface IBlobStorageService : IAsyncDisposable
 
     /// <summary>
     /// Downloads and decrypts a chunk using streaming download with pooled buffers.
-    /// Uses ArrayPool for both the download and plaintext buffers, avoiding LOH pressure.
-    /// The returned buffer may be oversized (rented from ArrayPool) — use Length for actual data.
-    /// The caller SHOULD return the buffer via <c>ArrayPool&lt;byte&gt;.Shared.Return</c> after use.
-    /// Preferred over <see cref="DownloadChunkAsync"/> for large-scale restore operations.
+    /// The encrypted download buffer is always rented from
+    /// <see cref="System.Buffers.ArrayPool{T}.Shared"/> internally and returned
+    /// before this method exits. The plaintext buffer is rented from
+    /// <paramref name="plaintextBufferPool"/> when supplied (B71 / W5 Phase 3
+    /// Commit 3, restore-side small-buffer routing), otherwise from
+    /// <see cref="System.Buffers.ArrayPool{T}.Shared"/> for pre-B71 caller
+    /// compatibility. The returned buffer may be oversized (rented) -- use
+    /// <c>Length</c> for actual data. The caller MUST return the plaintext
+    /// buffer via the SAME source it was rented from: if
+    /// <paramref name="plaintextBufferPool"/> was supplied, pass the buffer to
+    /// <see cref="ChunkBufferPool.Return(byte[])"/> on that pool; otherwise
+    /// pass it to <c>ArrayPool&lt;byte&gt;.Shared.Return</c>.
+    /// Preferred over <see cref="DownloadChunkAsync"/> for large-scale restore
+    /// operations.
     /// </summary>
     Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// B71 (W5 Phase 3 Commit 3) overload that lets a restore-scope caller
+    /// supply a <see cref="ChunkBufferPool"/> as the plaintext-buffer source.
+    /// See <see cref="DownloadChunkStreamingAsync(string, CancellationToken)"/>
+    /// for the return-ownership contract.
+    /// </summary>
+    Task<(byte[] Buffer, int Length)> DownloadChunkStreamingAsync(string blobName, ChunkBufferPool? plaintextBufferPool, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Downloads a chunk and attempts best-effort decryption, skipping CRC32 verification.

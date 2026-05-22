@@ -261,7 +261,7 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// budget are unaffected.
     /// </para>
     /// </summary>
-    private static long ComputePoolCapBytes(MemoryBudget budget)
+    internal static long ComputePoolCapBytes(MemoryBudget budget)
     {
         ArgumentNullException.ThrowIfNull(budget);
         if (budget.IsUnlimited)
@@ -301,7 +301,7 @@ public partial class BackupOrchestrator : IAsyncDisposable
     /// budget are unaffected.
     /// </para>
     /// </summary>
-    private static long ComputeSmallPoolCapBytes(MemoryBudget budget)
+    internal static long ComputeSmallPoolCapBytes(MemoryBudget budget)
     {
         ArgumentNullException.ThrowIfNull(budget);
         if (budget.IsUnlimited)
