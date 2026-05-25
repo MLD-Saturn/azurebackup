@@ -165,8 +165,10 @@ public sealed class ChunkBufferPool : IDisposable
     private readonly ConcurrentBag<byte[]>[] _buckets;
     private readonly int[] _bucketCounts;
     private readonly long _maxCachedBytes;
+    private readonly MemoryBudget? _retentionBudget;
     private long _totalBytesCached;
     private long _peakBytesCached;
+    private long _budgetChargedBytes;
     private long _totalRents;
     private long _totalRentsFromPool;
     private long _totalReturns;
@@ -188,7 +190,7 @@ public sealed class ChunkBufferPool : IDisposable
     /// positive. The array is copied defensively so callers may
     /// reuse the supplied array.
     /// </param>
-    public ChunkBufferPool(int[] bucketSizes) : this(bucketSizes, long.MaxValue)
+    public ChunkBufferPool(int[] bucketSizes) : this(bucketSizes, long.MaxValue, retentionBudget: null)
     {
     }
 
@@ -220,6 +222,61 @@ public sealed class ChunkBufferPool : IDisposable
     /// to disable the global cap.
     /// </param>
     public ChunkBufferPool(int[] bucketSizes, long maxCachedBytes)
+        : this(bucketSizes, maxCachedBytes, retentionBudget: null)
+    {
+    }
+
+    /// <summary>
+    /// B72 (W5 Phase 4): full constructor that additionally attributes
+    /// every accepted <see cref="Return"/> (and the matching
+    /// <see cref="Rent"/>-from-cache) to <paramref name="retentionBudget"/>
+    /// so the pool's cached bytes show up inside
+    /// <see cref="MemoryBudget.UsedBytes"/> and
+    /// <see cref="MemoryBudget.PeakUsedBytes"/> instead of leaking into
+    /// the pre-B72 <c>unaccounted</c> residency gap that
+    /// <see cref="MemoryFidelityCollector"/> reported on the 16 GB-budget
+    /// adversarial cells.
+    /// <para>
+    /// Charge semantics: when a <see cref="Return"/> is accepted into a
+    /// bucket the pool charges <c>bucketSize</c> against the budget; when
+    /// a <see cref="Rent"/> serves a cached buffer it releases the same
+    /// amount. Charging uses a non-blocking
+    /// <see cref="MemoryBudget.ChargeRetention"/> call that may
+    /// temporarily push <c>UsedBytes</c> above the budget total without
+    /// blocking the consumer; the cap policy on the pool itself
+    /// (<see cref="MaxCachedBytes"/>) is the hard ceiling that keeps the
+    /// momentary overshoot small. Producers reading the budget for their
+    /// own <see cref="MemoryBudget.AcquireAsync"/> calls will then stall
+    /// until enough rents have drained the pool's retention -- which is
+    /// exactly the back-pressure shape we want.
+    /// </para>
+    /// <para>
+    /// Pass <see langword="null"/> for <paramref name="retentionBudget"/>
+    /// to skip budget attribution and preserve the pre-B72 behaviour
+    /// (rent/return remain free and the pool's residency continues to
+    /// live outside the budget). The unit-test ChunkBufferPoolTests
+    /// suite and any non-production caller that does not own a
+    /// <see cref="MemoryBudget"/> should use this overload with
+    /// <see langword="null"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="bucketSizes">
+    /// Bucket sizes, smallest first, strictly increasing, all
+    /// positive. The array is copied defensively so callers may
+    /// reuse the supplied array.
+    /// </param>
+    /// <param name="maxCachedBytes">
+    /// Maximum total bytes the pool may keep cached across every
+    /// bucket. Must be positive. Pass <see cref="long.MaxValue"/>
+    /// to disable the global cap.
+    /// </param>
+    /// <param name="retentionBudget">
+    /// Optional budget against which to charge the pool's cached
+    /// retention. The pool does not take ownership of the budget;
+    /// callers continue to dispose it via the existing operation-scope
+    /// <c>using</c>.
+    /// </param>
+    public ChunkBufferPool(int[] bucketSizes, long maxCachedBytes, MemoryBudget? retentionBudget)
     {
         ArgumentNullException.ThrowIfNull(bucketSizes);
         if (bucketSizes.Length == 0)
@@ -235,6 +292,7 @@ public sealed class ChunkBufferPool : IDisposable
 
         _bucketSizes = (int[])bucketSizes.Clone();
         _maxCachedBytes = maxCachedBytes;
+        _retentionBudget = retentionBudget;
         _buckets = new ConcurrentBag<byte[]>[_bucketSizes.Length];
         _bucketCounts = new int[_bucketSizes.Length];
         for (int i = 0; i < _bucketSizes.Length; i++)
@@ -295,6 +353,17 @@ public sealed class ChunkBufferPool : IDisposable
     public long TotalReturnsAccepted => Volatile.Read(ref _totalReturnsAccepted);
 
     /// <summary>
+    /// B72: total bytes currently charged against the optional
+    /// <see cref="MemoryBudget"/> supplied at construction. Equal to
+    /// <see cref="TotalBytesCached"/> in steady state; the two can
+    /// briefly diverge under contention because the bucket-count
+    /// gate and the budget charge are not atomic together, but every
+    /// accepted Return / cache-served Rent pair eventually balances
+    /// out. Always zero when no retention budget was supplied.
+    /// </summary>
+    public long BudgetChargedBytes => Volatile.Read(ref _budgetChargedBytes);
+
+    /// <summary>
     /// Pool hit rate as a fraction in [0, 1]. Returns 0 when no
     /// rents have happened yet. A hit rate near 1 means the pool is
     /// doing its job; near 0 means most rents are still allocating
@@ -347,6 +416,13 @@ public sealed class ChunkBufferPool : IDisposable
             // count never sits below zero from a transient ordering.
             Interlocked.Decrement(ref _bucketCounts[bucketIndex]);
             Interlocked.Add(ref _totalBytesCached, -bucketSize);
+            // B72: release the retention attribution for this buffer
+            // BEFORE returning it to the caller. The caller's own
+            // AcquireAsync charge (from ChunkingService or restore-side
+            // batch code) is independent of this attribution; releasing
+            // here frees the headroom we held while the buffer was
+            // sitting in the cache.
+            ReleaseRetentionCharge(bucketSize);
             Interlocked.Increment(ref _totalRentsFromPool);
             return (cached, true);
         }
@@ -433,6 +509,12 @@ public sealed class ChunkBufferPool : IDisposable
 
         _buckets[bucketIndex].Add(buffer);
         var newTotal = Interlocked.Add(ref _totalBytesCached, _bucketSizes[bucketIndex]);
+        // B72: charge the retention attribution AFTER the buffer is
+        // visible in the bucket so a concurrent Rent that races us can
+        // either see+take the cached buffer (and apply the matching
+        // release in Rent) or miss it and allocate fresh; either way
+        // the steady-state charge equals TotalBytesCached.
+        ChargeRetention(bucketSize);
 
         // CAS-max update of the peak. The loop terminates on the
         // first iteration in the uncontended case and is bounded by
@@ -447,6 +529,48 @@ public sealed class ChunkBufferPool : IDisposable
         while (Interlocked.CompareExchange(ref _peakBytesCached, newTotal, oldPeak) != oldPeak);
 
         Interlocked.Increment(ref _totalReturnsAccepted);
+    }
+
+    /// <summary>
+    /// B72: attribute <paramref name="bytes"/> of pool-cache retention
+    /// to the configured <see cref="MemoryBudget"/>. No-op when no
+    /// budget was supplied or after the pool was disposed. Never
+    /// blocks and never throws; the call site is on the Return hot
+    /// path so a blocking or throwing implementation would break the
+    /// consumer's upload/restore flow.
+    /// </summary>
+    private void ChargeRetention(long bytes)
+    {
+        if (_retentionBudget is null) return;
+        _retentionBudget.ChargeRetention(bytes);
+        Interlocked.Add(ref _budgetChargedBytes, bytes);
+    }
+
+    /// <summary>
+    /// B72: release <paramref name="bytes"/> of pool-cache retention
+    /// from the configured <see cref="MemoryBudget"/>. Called when a
+    /// cache-served Rent or a Dispose drains buffers out of the pool.
+    /// The retention counter is decremented to mirror the budget; both
+    /// floor at zero so a transient race cannot drive either negative.
+    /// </summary>
+    private void ReleaseRetentionCharge(long bytes)
+    {
+        if (_retentionBudget is null) return;
+        // Clamp at the currently-charged amount so a race that lands
+        // Returns and Rents out of order can never over-release the
+        // budget. The budget itself clamps at zero too, but mirroring
+        // it here keeps _budgetChargedBytes monotonically consistent
+        // with TotalBytesCached.
+        long previous;
+        long released;
+        do
+        {
+            previous = Volatile.Read(ref _budgetChargedBytes);
+            released = Math.Min(previous, bytes);
+            if (released == 0) return;
+        }
+        while (Interlocked.CompareExchange(ref _budgetChargedBytes, previous - released, previous) != previous);
+        _retentionBudget.ReleaseRetention(released);
     }
 
     /// <summary>
@@ -500,5 +624,18 @@ public sealed class ChunkBufferPool : IDisposable
             Volatile.Write(ref _bucketCounts[i], 0);
         }
         Volatile.Write(ref _totalBytesCached, 0);
+
+        // B72: drain every byte we charged against the retention budget
+        // so disposing the pool leaves the budget with no lingering
+        // attribution. Producers that are still waiting on AcquireAsync
+        // (only possible during a hard cancellation tear-down) will see
+        // the headroom open up immediately. Snapshot-then-CAS so a
+        // concurrent ReleaseRetentionCharge cannot double-release.
+        if (_retentionBudget is not null)
+        {
+            long charged = Interlocked.Exchange(ref _budgetChargedBytes, 0);
+            if (charged > 0)
+                _retentionBudget.ReleaseRetention(charged);
+        }
     }
 }

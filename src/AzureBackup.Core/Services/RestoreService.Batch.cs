@@ -865,12 +865,19 @@ public partial class RestoreService
         // been returned (only possible on a hard cancellation that bypasses
         // the writer drain) tolerate the disposal because Return is a no-op
         // on a disposed pool.
+        // B72 (W5 Phase 4): attribute the pools' cached retention to the
+        // active MemoryBudget so restore-side residency shows up inside
+        // PeakUsedBytes instead of leaking into the pre-B72 unaccounted
+        // residency gap. Restore-side ownership mirrors the backup-side
+        // pattern from BackupOrchestrator.Operations.cs.
         using var largeChunkPool = new ChunkBufferPool(
             ChunkBufferPool.LargeChunkBucketSizes,
-            BackupOrchestrator.ComputePoolCapBytes(memoryBudget));
+            BackupOrchestrator.ComputePoolCapBytes(memoryBudget),
+            memoryBudget);
         using var smallChunkPool = new ChunkBufferPool(
             ChunkBufferPool.SmallChunkBucketSizes,
-            BackupOrchestrator.ComputeSmallPoolCapBytes(memoryBudget));
+            BackupOrchestrator.ComputeSmallPoolCapBytes(memoryBudget),
+            memoryBudget);
 
         var smallFiles = new List<(BackedUpFile file, string targetPath, int originalIndex)>();
         var largeFiles = new List<(BackedUpFile file, string targetPath, int originalIndex)>();

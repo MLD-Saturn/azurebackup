@@ -290,7 +290,15 @@ public partial class BackupOrchestrator
             // B52: cap the pool's cached residency at 25% of the
             // configured budget so the recycler cannot drift past
             // the user's MemoryLimitMB ceiling.
-            using var largeChunkPool = new ChunkBufferPool(ChunkBufferPool.LargeChunkBucketSizes, ComputePoolCapBytes(memoryBudget));
+            // B72 (W5 Phase 4): attribute the pool's cached retention
+            // to the same MemoryBudget so the cached bytes show up
+            // inside PeakUsedBytes instead of the pre-B72 unaccounted
+            // residency gap; producers stalling on AcquireAsync now
+            // see the correct headroom.
+            using var largeChunkPool = new ChunkBufferPool(
+                ChunkBufferPool.LargeChunkBucketSizes,
+                ComputePoolCapBytes(memoryBudget),
+                memoryBudget);
             // B69 (W5 Phase 3 Commit 1): a single small-chunk
             // ChunkBufferPool spans the entire operation so the
             // small-chunk recycler shares the operation's lifetime and
@@ -298,7 +306,12 @@ public partial class BackupOrchestrator
             // longer leak residency outside the budget. Cap derived
             // from the active budget so the pool's hidden residency
             // cannot drift past the user's MemoryLimitMB ceiling.
-            using var smallChunkPool = new ChunkBufferPool(ChunkBufferPool.SmallChunkBucketSizes, ComputeSmallPoolCapBytes(memoryBudget));
+            // B72: pool retention is now charged against the budget
+            // (see large-pool comment above for the rationale).
+            using var smallChunkPool = new ChunkBufferPool(
+                ChunkBufferPool.SmallChunkBucketSizes,
+                ComputeSmallPoolCapBytes(memoryBudget),
+                memoryBudget);
             // B36: emit a periodic memory snapshot through StatusChanged so
             // the always-visible log pane records budget vs working-set
             // drift during the operation. Wired before BackupFilesCoreAsync
@@ -635,12 +648,23 @@ public partial class BackupOrchestrator
         // residency in each emitted line.
         // B52: cap the pool's cached residency at 25% of the
         // configured budget (see ComputePoolCapBytes).
-        using var largeChunkPool = new ChunkBufferPool(ChunkBufferPool.LargeChunkBucketSizes, ComputePoolCapBytes(memoryBudget));
+        // B72 (W5 Phase 4): attribute the pool's cached retention to
+        // the same MemoryBudget so the cached bytes show up inside
+        // PeakUsedBytes (see MirrorSyncToAzureAsync for the full
+        // rationale; same pattern here).
+        using var largeChunkPool = new ChunkBufferPool(
+            ChunkBufferPool.LargeChunkBucketSizes,
+            ComputePoolCapBytes(memoryBudget),
+            memoryBudget);
         // B69 (W5 Phase 3 Commit 1): operation-scoped small-chunk
         // recycler that replaces the per-core ArrayPool<byte>.Shared
         // tier caches on the producer-side small-chunk path. See
         // ComputeSmallPoolCapBytes for the per-budget sizing.
-        using var smallChunkPool = new ChunkBufferPool(ChunkBufferPool.SmallChunkBucketSizes, ComputeSmallPoolCapBytes(memoryBudget));
+        // B72: pool retention is now charged against the budget.
+        using var smallChunkPool = new ChunkBufferPool(
+            ChunkBufferPool.SmallChunkBucketSizes,
+            ComputeSmallPoolCapBytes(memoryBudget),
+            memoryBudget);
         // B36: see MirrorSyncToAzureAsync for the rationale; same pattern
         // here so any backup operation -- not just mirror -- gets the
         // periodic memory snapshot in the always-visible log pane.

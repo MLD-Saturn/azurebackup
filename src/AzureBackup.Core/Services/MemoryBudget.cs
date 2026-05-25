@@ -208,6 +208,56 @@ public sealed class MemoryBudget : IDisposable
     }
 
     /// <summary>
+    /// B72 (W5 Phase 4): synchronous, non-blocking attribution of pool-cache
+    /// retention to the budget. Unlike <see cref="AcquireAsync"/>, this never
+    /// waits and never refuses -- the caller (currently
+    /// <see cref="ChunkBufferPool.Return"/>) is on a hot path that cannot
+    /// block the consumer. The budget total may temporarily exceed
+    /// <see cref="TotalBytes"/> while the pool sits at its configured cap;
+    /// the cap on <see cref="ChunkBufferPool.MaxCachedBytes"/> bounds the
+    /// overshoot, and the producer's next <see cref="AcquireAsync"/> call
+    /// will simply wait until enough cached buffers have been rented out
+    /// (each rent invoking <see cref="ReleaseRetention"/>) to free
+    /// headroom. <see cref="PeakUsedBytes"/> tracks the elevated total so
+    /// the operator sees the pool's residency reflected in the same
+    /// metric that already tracked in-flight chunks.
+    /// </summary>
+    /// <remarks>
+    /// Does NOT increment <see cref="StallCount"/> or
+    /// <see cref="OversizedAdmissions"/> -- both metrics are reserved for
+    /// chunk-admission events on the <see cref="AcquireAsync"/> path.
+    /// Does NOT wake waiters -- a charge can only reduce headroom, so
+    /// there is never a waiter that could newly succeed.
+    /// </remarks>
+    /// <param name="bytes">Bytes to attribute. Must be positive.</param>
+    public void ChargeRetention(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        if (_isUnlimited)
+            return;
+
+        lock (_lock)
+        {
+            _usedBytes += bytes;
+            if (_usedBytes > _peakUsedBytes) _peakUsedBytes = _usedBytes;
+        }
+    }
+
+    /// <summary>
+    /// B72 (W5 Phase 4): release pool-cache retention attributed by an
+    /// earlier <see cref="ChargeRetention"/>. Symmetrical with
+    /// <see cref="Release"/> but kept as a distinct entry point so the
+    /// pool's call sites read clearly and a future debugger can tell a
+    /// rent-from-cache release apart from a chunk-completion release.
+    /// Wakes any waiting acquirers so they can re-check; releasing
+    /// retention is the exact event that frees the headroom a stalled
+    /// producer was waiting on.
+    /// </summary>
+    /// <param name="bytes">Bytes to release. Must be positive.</param>
+    public void ReleaseRetention(long bytes) => Release(bytes);
+
+    /// <summary>
     /// Creates a budget from the user's configuration.
     /// Returns an unlimited budget when memory limiting is disabled.
     /// Reserves <paramref name="fixedOverheadBytes"/> for non-chunk allocations
