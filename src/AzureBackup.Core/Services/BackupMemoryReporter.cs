@@ -198,9 +198,22 @@ public sealed class BackupMemoryReporter : IDisposable
         // accounts for the small-chunk pool's cached residency so the
         // unaccounted residual stays a true "uncovered" figure after
         // the small-chunk path migrates off ArrayPool<byte>.Shared.
+        // B74 (W5 Phase 4 Commit 3, Fix A): formula extracted to
+        // ComputeUnaccountedBytes so the invariant can be pinned by
+        // a focused unit test without depending on the noisy
+        // Process.WorkingSet64 reading. The change in semantics is
+        // the post-B72 retention attribution: _budget.UsedBytes now
+        // ALREADY contains the pool's cached retention via the
+        // ChargeRetention seam, so the pre-B74 formula
+        // (workingSet - used - poolCached - smallPoolCached) was
+        // double-subtracting the pool cache and producing an
+        // artificially small unaccounted reading.
         var poolCachedNow = _largeChunkPool?.TotalBytesCached ?? 0L;
         var smallPoolCachedNow = _smallChunkPool?.TotalBytesCached ?? 0L;
-        var unaccounted = Math.Max(0, workingSet - used - poolCachedNow - smallPoolCachedNow);
+        var poolBudgetCharged = (_largeChunkPool?.BudgetChargedBytes ?? 0L)
+                              + (_smallChunkPool?.BudgetChargedBytes ?? 0L);
+        var unaccounted = ComputeUnaccountedBytes(workingSet, used, poolBudgetCharged,
+            poolCachedNow, smallPoolCachedNow);
 
         var budgetText = _budget.IsUnlimited
             ? $"used={used / MB} MB / unlimited (peak={peakUsed / MB} MB)"
@@ -229,6 +242,48 @@ public sealed class BackupMemoryReporter : IDisposable
             smallPoolText;
 
         _emit(line);
+    }
+
+    /// <summary>
+    /// B74 (W5 Phase 4 Commit 3, Fix A): pure formula extracted from
+    /// <see cref="EmitSample"/> so the invariant can be pinned by a
+    /// focused unit test independent of <see cref="Process.WorkingSet64"/>'s
+    /// jitter.
+    /// </summary>
+    /// <param name="workingSet">Process working-set bytes.</param>
+    /// <param name="budgetUsedBytes">
+    /// <see cref="MemoryBudget.UsedBytes"/>. Post-B72 this INCLUDES the
+    /// pool's cached retention via the <c>ChargeRetention</c> seam, which
+    /// is exactly why the pre-B74 formula's third subtraction was a
+    /// double-subtract.
+    /// </param>
+    /// <param name="poolBudgetChargedBytes">
+    /// Sum of <c>BudgetChargedBytes</c> across every pool wired into the
+    /// reporter. Subtracted from <paramref name="budgetUsedBytes"/> first
+    /// so the remaining <c>usedExcludingPoolRetention</c> tracks only the
+    /// in-flight allocations; the pool's cached bytes are then put back
+    /// in their correct bucket exactly once via
+    /// <paramref name="largePoolCachedBytes"/> +
+    /// <paramref name="smallPoolCachedBytes"/>.
+    /// </param>
+    /// <param name="largePoolCachedBytes">
+    /// <see cref="ChunkBufferPool.TotalBytesCached"/> for the large pool, 0 when unwired.
+    /// </param>
+    /// <param name="smallPoolCachedBytes">
+    /// <see cref="ChunkBufferPool.TotalBytesCached"/> for the small pool, 0 when unwired.
+    /// </param>
+    /// <returns>
+    /// The unaccounted-residency estimate in bytes, clamped to non-negative.
+    /// When no pool is wired and <paramref name="poolBudgetChargedBytes"/> is 0,
+    /// the formula reduces to the pre-B72 shape so non-pool callers are
+    /// completely unaffected.
+    /// </returns>
+    internal static long ComputeUnaccountedBytes(
+        long workingSet, long budgetUsedBytes, long poolBudgetChargedBytes,
+        long largePoolCachedBytes, long smallPoolCachedBytes)
+    {
+        var usedExcludingPoolRetention = Math.Max(0, budgetUsedBytes - poolBudgetChargedBytes);
+        return Math.Max(0, workingSet - usedExcludingPoolRetention - largePoolCachedBytes - smallPoolCachedBytes);
     }
 
     /// <inheritdoc/>

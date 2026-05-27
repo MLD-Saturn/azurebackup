@@ -789,8 +789,16 @@ public partial class RestoreService
                         // the download call so the source-pool reference does
                         // NOT need to be pinned on the per-chunk channel tuple
                         // the way the plaintext source does in B71.
+                        //
+                        // B74 (W5 Phase 4 Commit 3, Fix C2): same large-pool
+                        // revert as BackupOrchestrator. Restore the
+                        // pre-B73 ArrayPool routing for large encrypted
+                        // download buffers so gen-2 trim continues to
+                        // decay the steady-state residency on large-chunk
+                        // restore workloads. The small-pool routing is
+                        // preserved (bounded cap + B72 retention charge).
                         var selectedEncryptedPool = (chunk.Length + EncryptionService.EncryptionOverhead) >= ChunkingService.PoolSkipThresholdBytes
-                            ? largeChunkPool
+                            ? null
                             : smallChunkPool;
                         // Two-phase memory budget for accurate memory modeling:
                         // Phase A: Acquire 2× chunk size before download (encrypted + plaintext overlap during DecryptInto)

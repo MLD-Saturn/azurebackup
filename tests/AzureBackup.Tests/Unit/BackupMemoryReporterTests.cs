@@ -257,4 +257,88 @@ public class BackupMemoryReporterTests
 
         Assert.DoesNotContain("lohPool=", lines[0]);
     }
+
+    [Fact]
+    public void UnaccountedDoesNotDoubleSubtractPoolRetentionAfterB72()
+    {
+        // B74 (W5 Phase 4 Commit 3, Fix A): pre-B74 the unaccounted formula
+        // was workingSet - used - poolCachedNow - smallPoolCachedNow, but
+        // after B72 `used` already INCLUDES the pool's retention via
+        // ChargeRetention. The pre-B74 formula therefore double-subtracted
+        // the pool cache and produced a too-low MaxUnacc reading. This
+        // test pins the corrected formula via the extracted
+        // ComputeUnaccountedBytes helper so the invariant holds
+        // independent of Process.WorkingSet64 jitter.
+        //
+        // Scenario: workingSet = 100 MB, budget.UsedBytes = 30 MB
+        // (10 MB in-flight + 20 MB pool retention via B72 charge),
+        // largePool cached = 20 MB, smallPool cached = 0.
+        // The correct unaccounted = 100 - (30 - 20) - 20 - 0 = 70 MB.
+        // The pre-B74 buggy formula would have given 100 - 30 - 20 - 0 = 50 MB,
+        // i.e. 20 MB too low (exactly the double-subtracted retention).
+        long workingSet = 100L * 1024 * 1024;
+        long budgetUsed = 30L * 1024 * 1024;       // includes 20 MB of pool retention
+        long poolBudgetCharged = 20L * 1024 * 1024; // sum across both pools
+        long largePoolCached = 20L * 1024 * 1024;
+        long smallPoolCached = 0L;
+
+        var unaccounted = BackupMemoryReporter.ComputeUnaccountedBytes(
+            workingSet, budgetUsed, poolBudgetCharged, largePoolCached, smallPoolCached);
+
+        Assert.Equal(70L * 1024 * 1024, unaccounted);
+    }
+
+    [Fact]
+    public void UnaccountedFormulaIsBackwardsCompatibleWhenNoPoolWired()
+    {
+        // When no pool is wired BudgetChargedBytes is 0 and both pool
+        // cache values are 0, so the formula MUST reduce to the pre-B72
+        // shape workingSet - used. Non-pool callers' MaxUnacc readings
+        // are completely unaffected by B74.
+        long workingSet = 100L * 1024 * 1024;
+        long budgetUsed = 30L * 1024 * 1024;
+
+        var unaccounted = BackupMemoryReporter.ComputeUnaccountedBytes(
+            workingSet, budgetUsed, poolBudgetChargedBytes: 0,
+            largePoolCachedBytes: 0, smallPoolCachedBytes: 0);
+
+        Assert.Equal(70L * 1024 * 1024, unaccounted);
+    }
+
+    [Fact]
+    public void UnaccountedFormulaClampsToZero()
+    {
+        // When the budget tracks more bytes than the process actually
+        // holds (transient: charge fired before allocation completed)
+        // the formula must NOT report a negative number -- the line
+        // would be confusing and the downstream MaxUnaccountedBytes
+        // tracker would interpret negatives as huge unsigned values.
+        long workingSet = 10L * 1024 * 1024;
+        long budgetUsed = 100L * 1024 * 1024;
+
+        var unaccounted = BackupMemoryReporter.ComputeUnaccountedBytes(
+            workingSet, budgetUsed, poolBudgetChargedBytes: 0,
+            largePoolCachedBytes: 0, smallPoolCachedBytes: 0);
+
+        Assert.Equal(0, unaccounted);
+    }
+
+    [Fact]
+    public void UnaccountedFormulaHandlesPoolBudgetChargeGreaterThanUsed()
+    {
+        // Defensive: if a race causes pool BudgetChargedBytes to be
+        // momentarily larger than budget.UsedBytes (e.g. a Release
+        // arrived between two reads), the usedExcludingPoolRetention
+        // calculation must clamp to 0 rather than going negative.
+        long workingSet = 50L * 1024 * 1024;
+        long budgetUsed = 10L * 1024 * 1024;
+        long poolBudgetCharged = 20L * 1024 * 1024; // larger than used
+        long largePoolCached = 5L * 1024 * 1024;
+
+        var unaccounted = BackupMemoryReporter.ComputeUnaccountedBytes(
+            workingSet, budgetUsed, poolBudgetCharged, largePoolCached, smallPoolCachedBytes: 0);
+
+        // usedExcludingPoolRetention clamps to 0, so unaccounted = 50 - 0 - 5 - 0 = 45.
+        Assert.Equal(45L * 1024 * 1024, unaccounted);
+    }
 }

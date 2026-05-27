@@ -274,8 +274,26 @@ public class ChunkingService
         // NEXT tier (256 MB) because of the 37-byte overhead. That is
         // the correct charge for that case -- ArrayPool will indeed
         // hand back the next-larger tier.
+        //
+        // B74 (W5 Phase 4 Commit 3, Fix B): when B73 routes the
+        // encrypted-buffer rent through the small ChunkBufferPool, the
+        // pool's bucket geometry [64K, 256K, 1M, 4M, 16M] has 4x gaps
+        // that NextPowerOfTwoOrSelf (which matches ArrayPool's
+        // power-of-two tier shape) under-charges by up to 2x. Concrete
+        // case: a 4 MB plaintext chunk encrypts to 4 MB + 37 bytes,
+        // which the small pool rents at 16 MB but the pre-B74 charge
+        // computed as 8 MB -- an 8 MB per-chunk under-charge that
+        // could undercount multi-GB at 96-way in-flight worst case.
+        // The corrected branch picks the matching pool's BucketCeiling
+        // when the encrypt rent will route through a ChunkBufferPool;
+        // when the encrypted size crosses PoolSkipThresholdBytes B74's
+        // C2 fix routes the rent back to ArrayPool<byte>.Shared, so
+        // NextPowerOfTwoOrSelf is the correct charge for that branch.
         var encryptedPayloadLen = payloadSize + EncryptionService.EncryptionOverhead;
-        var encryptCharge = (long)NextPowerOfTwoOrSelf(encryptedPayloadLen);
+        var encryptCharge = (long)(
+            encryptedPayloadLen < PoolSkipThresholdBytes && smallChunkPool != null
+                ? BucketCeiling(encryptedPayloadLen, smallChunkPool)
+                : NextPowerOfTwoOrSelf(encryptedPayloadLen));
 
         // B55 (W3 Phase D): fold the Azure SDK's per-upload staging
         // residency into the producer-side charge. The SDK retains
@@ -383,7 +401,13 @@ public class ChunkingService
     /// back; without this the charge would under-account for the
     /// bucket overshoot the pool's <c>Rent</c> performs.
     /// </summary>
-    private static long BucketCeiling(int value, ChunkBufferPool pool)
+    /// <remarks>
+    /// B74 (W5 Phase 4 Commit 3): promoted from private to internal
+    /// so the charge-vs-rent invariant for the small-pool encrypt-buffer
+    /// path can be pinned directly by a focused unit test. The method
+    /// itself is unchanged; the visibility bump is purely for testability.
+    /// </remarks>
+    internal static long BucketCeiling(int value, ChunkBufferPool pool)
     {
         foreach (var size in pool.BucketSizes)
         {
@@ -401,7 +425,13 @@ public class ChunkingService
     /// case and conservatively over-charges for the few non-power-of-two
     /// edge sizes the configured chunk maxes happen to land on.
     /// </summary>
-    private static int NextPowerOfTwoOrSelf(int value)
+    /// <remarks>
+    /// B74 (W5 Phase 4 Commit 3): promoted from private to internal
+    /// alongside <see cref="BucketCeiling"/> for the same reason -- the
+    /// B74 contract test pins the bucket-vs-pow2 invariant directly
+    /// rather than going through the producer hot path.
+    /// </remarks>
+    internal static int NextPowerOfTwoOrSelf(int value)
     {
         if (value <= 1) return 1;
         if ((value & (value - 1)) == 0) return value;

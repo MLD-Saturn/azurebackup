@@ -1244,9 +1244,31 @@ public partial class BackupOrchestrator : IAsyncDisposable
                         // allocation, but Return is still a no-op for
                         // non-pool-shaped lengths) so the dispatch is
                         // safe at every chunk size.
+                        //
+                        // B74 (W5 Phase 4 Commit 3, Fix C2): revert B73's
+                        // LARGE-pool encrypted-buffer routing. The
+                        // ChunkBufferPool never evicts under GC pressure
+                        // (by design -- see B37 rationale), while
+                        // ArrayPool<byte>.Shared trims its per-core tier
+                        // caches at every gen-2 collection via the BCL's
+                        // Gen2GcCallback. For large-chunk workloads
+                        // (LargeFileConfig, encrypted form >= 16 MB) the
+                        // pre-B73 GC trim was doing real work, and B73's
+                        // routing pinned those bytes at the high-water
+                        // mark instead. Reverting the large branch to
+                        // ArrayPool restores the steady-state decay the
+                        // production media-library / large-file workloads
+                        // depend on. The small-pool routing is kept
+                        // because (a) the small-pool retention is
+                        // bounded by the 12.5%-of-budget / 64 MB-floor
+                        // cap so it cannot dominate residency, and (b)
+                        // the B72 retention charge already attributes
+                        // its cached bytes to the budget so it is
+                        // strictly an improvement over ArrayPool's
+                        // un-attributed per-core caches.
                         var encryptedSize = payload.Length + EncryptionService.EncryptionOverhead;
                         var encryptedBufferPool = encryptedSize >= ChunkingService.PoolSkipThresholdBytes
-                            ? largeChunkPool
+                            ? null
                             : smallChunkPool;
                         payload.Info.BlobName = isNewFile
                             ? await _blobService.UploadChunkDirectAsync(chunkData, payload.Info.Hash, encryptedBufferPool, storageTier,
