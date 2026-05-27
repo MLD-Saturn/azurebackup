@@ -24,6 +24,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AzureBackup.Core\AzureBackup.Core.csproj" />
+    <!--
+      B75: reference the benchmarks project so the
+      BenchmarkSummaryWriter format helpers (gated by InternalsVisibleTo
+      on the benchmarks csproj) can be pinned by unit tests. The
+      reference is metadata-only. Nothing in the test assembly
+      invokes a benchmark or pulls the BDN runtime past load time.
+    -->
+    <ProjectReference Include="..\..\benchmarks\AzureBackup.Benchmarks\AzureBackup.Benchmarks.csproj" />
   </ItemGroup>
 
 </Project>

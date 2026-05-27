@@ -67,7 +67,24 @@ public static class Program
             $"[B66] Memory-fidelity samples directory: " +
             $"{MemoryFidelityCollector.SamplesDirectory}");
 
-        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+        var summaries = BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+
+        // B75: after BDN finishes, emit a compact markdown summary per
+        // benchmark next to the CSV at
+        // BenchmarkDotNet.Artifacts/results/{BenchmarkType}-summary.md
+        // so the relevant portions of a run are committable and
+        // diff-friendly across runs. The writer NEVER throws so a
+        // failure in the post-run hook cannot tear down a multi-hour
+        // benchmark with no surviving artifacts.
+        var resultsDir = Path.Combine(
+            Directory.GetCurrentDirectory(),
+            "BenchmarkDotNet.Artifacts",
+            "results");
+        var written = BenchmarkSummaryWriter.WriteAll(summaries, resultsDir);
+        foreach (var path in written)
+        {
+            Console.WriteLine($"[B75] BenchmarkSummaryWriter: wrote {path}");
+        }
     }
 
     private static void CleanFidelitySamplesDirectory()

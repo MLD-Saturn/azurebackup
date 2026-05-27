@@ -21,4 +21,14 @@
     <ProjectReference Include="..\..\src\AzureBackup.Core\AzureBackup.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    B75: AzureBackup.Tests reaches BenchmarkSummaryWriter's internal
+    formatters (FormatNanos / FormatBytes / FormatDuration) so the
+    format-shape invariants can be pinned without spinning up a real
+    BDN Summary. No production code references these internals.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="AzureBackup.Tests" />
+  </ItemGroup>
+
 </Project>
