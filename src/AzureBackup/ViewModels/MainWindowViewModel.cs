@@ -465,7 +465,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     // Collections
     public ObservableCollection<WatchedFolderViewModel> WatchedFolders { get; } = [];
-    public BulkObservableCollection<BackedUpFileViewModel> BackedUpFiles { get; } = [];
     public BulkObservableCollection<BackedUpFileViewModel> RestorableFiles { get; } = [];
     public BulkObservableCollection<string> LogMessages { get; } = [];
 
@@ -526,12 +525,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     [ObservableProperty]
     private WatchedFolderViewModel? _selectedWatchedFolder;
 
-    /// <summary>
-    /// The last clicked file for shift-click range selection.
-    /// Not displayed in UI — used only for internal range selection logic.
-    /// </summary>
-    private BackedUpFileViewModel? _lastClickedFile;
-
     [ObservableProperty]
     private BackedUpFileViewModel? _selectedRestoreFile;
 
@@ -544,9 +537,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     [ObservableProperty]
     private bool _restoreToOriginalLocation = true;
 
-    [ObservableProperty]
-    private string _searchPattern = string.Empty;
-    
     /// <summary>
     /// Controls whether diagnostic logging is enabled (shows detailed service logs).
     /// </summary>
@@ -1269,20 +1259,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 
     #region Helper Methods
 
-    private void RefreshBackedUpFiles()
-    {
-        var files = _databaseService.GetAllBackedUpFiles();
-        
-        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-        {
-            BackedUpFiles.Clear();
-            foreach (var file in files.OrderByDescending(f => f.BackedUpAt))
-            {
-                BackedUpFiles.Add(new BackedUpFileViewModel(file));
-            }
-        });
-    }
-
     /// <summary>
     /// Notifies the UI that selection-related properties have changed.
     /// </summary>
@@ -1291,57 +1267,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedFilesCount));
         OnPropertyChanged(nameof(HasSelectedFiles));
         OnPropertyChanged(nameof(SelectedFilesText));
-    }
-
-    /// <summary>
-    /// Handles file selection with support for Ctrl+Click and Shift+Click.
-    /// </summary>
-    /// <param name="file">The file that was clicked.</param>
-    /// <param name="isCtrlPressed">Whether Ctrl key is pressed (toggle selection).</param>
-    /// <param name="isShiftPressed">Whether Shift key is pressed (range selection).</param>
-    public void HandleFileSelection(BackedUpFileViewModel file, bool isCtrlPressed, bool isShiftPressed)
-    {
-        if (isShiftPressed && _lastClickedFile != null)
-        {
-            // Range selection: select all files between last clicked and current
-            var startIndex = RestorableFiles.IndexOf(_lastClickedFile);
-            var endIndex = RestorableFiles.IndexOf(file);
-            
-            if (startIndex >= 0 && endIndex >= 0)
-            {
-                var minIndex = Math.Min(startIndex, endIndex);
-                var maxIndex = Math.Max(startIndex, endIndex);
-                
-                // If Ctrl is not pressed, clear existing selection first
-                if (!isCtrlPressed)
-                {
-                    foreach (var f in RestorableFiles)
-                        f.IsSelected = false;
-                }
-                
-                // Select the range
-                for (var i = minIndex; i <= maxIndex; i++)
-                {
-                    RestorableFiles[i].IsSelected = true;
-                }
-            }
-        }
-        else if (isCtrlPressed)
-        {
-            // Toggle selection for this file only
-            file.IsSelected = !file.IsSelected;
-        }
-        else
-        {
-            // Single click without modifiers: select only this file
-            foreach (var f in RestorableFiles)
-                f.IsSelected = false;
-            file.IsSelected = true;
-        }
-        
-        _lastClickedFile = file;
-        SelectedRestoreFile = file;
-        NotifySelectionChanged();
     }
 
     /// <summary>
@@ -1361,16 +1286,6 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     {
         foreach (var file in RestorableFiles)
             file.IsSelected = false;
-        NotifySelectionChanged();
-    }
-
-    /// <summary>
-    /// Toggles selection of a file (used by checkbox binding).
-    /// </summary>
-    public void ToggleFileSelection(BackedUpFileViewModel file)
-    {
-        file.IsSelected = !file.IsSelected;
-        _lastClickedFile = file;
         NotifySelectionChanged();
     }
 

@@ -374,6 +374,20 @@ public class InMemoryBlobService : IBlobStorageService
     }
 
     /// <summary>
+    /// B77 overload for interface symmetry: the in-memory store has no
+    /// separate encrypted scratch buffer (the stored blob bytes ARE the
+    /// encrypted payload, decrypted into a fresh array by
+    /// <see cref="EncryptionService.Decrypt(ReadOnlySpan{byte})"/>), so
+    /// <paramref name="encryptedBufferPool"/> is accepted for symmetry with
+    /// <see cref="AzureBlobService.DownloadChunkAsync(string, ChunkBufferPool?, CancellationToken)"/>
+    /// and ignored. The pre-B77 single-argument overload above delegates
+    /// here so tests that rent through the in-memory backend exercise the
+    /// same dispatch shape as production.
+    /// </summary>
+    public virtual Task<byte[]> DownloadChunkAsync(string blobName, ChunkBufferPool? encryptedBufferPool, CancellationToken cancellationToken = default)
+        => DownloadChunkAsync(blobName, cancellationToken);
+
+    /// <summary>
     /// Streaming download variant — in-memory implementation delegates to <see cref="DownloadChunkAsync"/>
     /// since there is no actual I/O stream to optimize.
     /// Copies into a rented buffer so the consumer can safely call Return.

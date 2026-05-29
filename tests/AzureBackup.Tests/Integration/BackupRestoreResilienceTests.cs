@@ -194,37 +194,6 @@ public class BackupRestoreResilienceTests : IAsyncLifetime
 
     #endregion
 
-    #region Delete Operation Tests
-
-    [Fact]
-    public async Task DeleteFileAsync_RemovesMetadata()
-    {
-        // Arrange
-        InMemoryBlobService blobService = new(_encryptionService);
-        await blobService.ConnectAsync("fake", "container");
-        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
-
-        var content = CreateRandomContent(50 * 1024);
-        var sourceFile = Path.Combine(_sourceDirectory, "to_delete.txt");
-        await File.WriteAllBytesAsync(sourceFile, content);
-
-        var backedUp = await BackupFileAsync(blobService, sourceFile);
-
-        // Verify file exists
-        var filesBefore = await restoreService.ListRestorableFilesAsync();
-        Assert.Single(filesBefore);
-
-        // Act
-        var result = await restoreService.DeleteFileAsync(backedUp);
-
-        // Assert
-        Assert.True(result);
-        var filesAfter = await restoreService.ListRestorableFilesAsync();
-        Assert.Empty(filesAfter);
-    }
-
-    #endregion
-
     #region Empty and Boundary Tests
 
     [Fact]

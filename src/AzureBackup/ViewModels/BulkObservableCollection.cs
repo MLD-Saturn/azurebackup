@@ -67,43 +67,4 @@ public class BulkObservableCollection<T> : ObservableCollection<T>
         OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
         OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
     }
-
-    /// <summary>
-    /// Appends every item in <paramref name="items"/> to the end of the
-    /// collection and raises a single Reset event. Use when adding more
-    /// than a handful of items at once to a non-empty collection.
-    /// </summary>
-    public void AddRange(IEnumerable<T> items)
-    {
-        CheckReentrancy();
-        var anyAdded = false;
-        foreach (var item in items)
-        {
-            Items.Add(item);
-            anyAdded = true;
-        }
-        if (!anyAdded) return;
-        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
-    }
-
-    /// <summary>
-    /// Removes the trailing <paramref name="count"/> items in one shot and
-    /// raises a single Reset event. Used by the Logs cap-trim path so a
-    /// large drain does not produce hundreds of Remove events.
-    /// </summary>
-    public void RemoveLast(int count)
-    {
-        if (count <= 0) return;
-        CheckReentrancy();
-        var actual = System.Math.Min(count, Items.Count);
-        for (var i = 0; i < actual; i++)
-        {
-            Items.RemoveAt(Items.Count - 1);
-        }
-        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
-    }
 }

@@ -157,6 +157,19 @@ public interface IBlobStorageService : IAsyncDisposable
     Task<byte[]> DownloadChunkAsync(string blobName, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// B77 (W5 hot-path migration follow-up to B71/B73) overload that lets a
+    /// caller in the chunk hot path (per-chunk integrity-check T2, single-chunk
+    /// restore, legacy-MD5 backfill) supply an
+    /// <paramref name="encryptedBufferPool"/> for the encrypted scratch buffer
+    /// that is rented and returned strictly inside this method. Mirrors the
+    /// B73 contract on <see cref="DownloadChunkStreamingAsync(string, ChunkBufferPool?, ChunkBufferPool?, CancellationToken)"/>:
+    /// passing <see langword="null"/> preserves the pre-B77 routing through
+    /// <see cref="System.Buffers.ArrayPool{T}.Shared"/> for non-hot-path
+    /// callers (best-effort recovery, metadata, tests).
+    /// </summary>
+    Task<byte[]> DownloadChunkAsync(string blobName, ChunkBufferPool? encryptedBufferPool, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Downloads and decrypts a chunk using streaming download with pooled buffers.
     /// The encrypted download buffer is always rented from
     /// <see cref="System.Buffers.ArrayPool{T}.Shared"/> internally and returned

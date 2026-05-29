@@ -17,7 +17,22 @@ public partial class AzureBlobService
     /// Downloads and decrypts a chunk. Uses a single API call to retrieve both
     /// content and Content-MD5 hash for transport integrity verification.
     /// </summary>
-    public async Task<byte[]> DownloadChunkAsync(string blobName, CancellationToken cancellationToken = default)
+    public Task<byte[]> DownloadChunkAsync(string blobName, CancellationToken cancellationToken = default)
+        => DownloadChunkAsync(blobName, encryptedBufferPool: null, cancellationToken);
+
+    /// <summary>
+    /// B77 (W5 hot-path migration follow-up to B71/B73) overload: rent the
+    /// encrypted scratch buffer from <paramref name="encryptedBufferPool"/>
+    /// when non-null instead of <see cref="ArrayPool{T}.Shared"/>. The
+    /// scratch buffer never crosses the channel/orchestrator boundary
+    /// (returned in this method's finally block before the call exits) so
+    /// routing it through a budget-charged <see cref="ChunkBufferPool"/>
+    /// moves the working-set bytes out of the per-core tier cache and into
+    /// <see cref="MemoryBudget.UsedBytes"/> for the same reason B72/B73 moved
+    /// the plaintext and streaming-download encrypted buffers there. Passing
+    /// <see langword="null"/> preserves the pre-B77 behaviour.
+    /// </summary>
+    public async Task<byte[]> DownloadChunkAsync(string blobName, ChunkBufferPool? encryptedBufferPool, CancellationToken cancellationToken = default)
     {
         EnsureConnected();
         ArgumentException.ThrowIfNullOrWhiteSpace(blobName);
@@ -37,10 +52,11 @@ public partial class AzureBlobService
             var storedContentHash = response.Value.Details.ContentHash;
             TotalOperations++;
 
-            // Rent a buffer for the encrypted data instead of ToArray() which allocates on the LOH
-            // for chunks > 85 KB. The BinaryData's internal buffer is outside our control,
-            // but avoiding the ToArray() copy-allocation reduces GC pressure.
-            var rentedEncrypted = ArrayPool<byte>.Shared.Rent(contentMemory.Length);
+            // B77: rent encrypted scratch through the supplied pool when present.
+            // Pre-B77 this was always ArrayPool<byte>.Shared.Rent; that path now
+            // only fires when encryptedBufferPool is null (best-effort recovery,
+            // metadata-only callers, and tests that have no operation-scope pool).
+            var rentedEncrypted = RentEncryptedBuffer(contentMemory.Length, encryptedBufferPool);
             try
             {
                 contentMemory.Span.CopyTo(rentedEncrypted);
@@ -71,7 +87,7 @@ public partial class AzureBlobService
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(rentedEncrypted);
+                ReturnEncryptedBuffer(rentedEncrypted, encryptedBufferPool);
             }
         }
         catch (RequestFailedException ex) when (ex.Status == 404)

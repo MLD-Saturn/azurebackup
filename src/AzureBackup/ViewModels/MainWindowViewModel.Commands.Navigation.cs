@@ -251,7 +251,6 @@ public partial class MainWindowViewModel
             {
                 // Clear all collections
                 WatchedFolders.Clear();
-                BackedUpFiles.Clear();
                 RestorableFiles.Clear();
                 LogMessages.Clear();
                 
@@ -386,7 +385,6 @@ public partial class MainWindowViewModel
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
                 WatchedFolders.Clear();
-                BackedUpFiles.Clear();
                 RestorableFiles.Clear();
 
                 IsInitialized = false;
@@ -704,10 +702,10 @@ public partial class MainWindowViewModel
                 // Sort once on the worker output rather than twice on the UI thread
                 // (was: RestorableFiles.Add(... OrderByDescending ...) then again
                 // for BackedUpFiles). Materialise once into a local list, then
-                // populate both bound collections from the same ordered sequence.
+                // populate the bound collection from the ordered sequence.
                 var ordered = files.OrderByDescending(f => f.LastModified).ToList();
 
-                // Bulk-rebuild both bound collections via ReplaceAll so each
+                // Bulk-rebuild the bound collection via ReplaceAll so the
                 // bound view receives a single Reset event instead of N Add
                 // events. Pre-fix a 50K-file refresh pumped 100K Add+layout
                 // round-trips through Avalonia's ItemsControl.
@@ -716,8 +714,6 @@ public partial class MainWindowViewModel
                 OnPropertyChanged(nameof(RestorableFilesCount));
                 OnPropertyChanged(nameof(ShowAzureEmptyState));
                 OnPropertyChanged(nameof(FilteredRestorableFiles)); // Update flat list view
-
-                BackedUpFiles.ReplaceAll(ordered.Select(f => new BackedUpFileViewModel(f)));
 
                 // Update statistics to reflect actual Azure storage
                 TotalFiles = files.Count;

@@ -644,7 +644,18 @@ public class ChunkingService
         // payload buffer off to a consumer immediately when a boundary fires
         // without copying.
         const int ScratchSize = 64 * 1024;
-        var scratch = ArrayPool<byte>.Shared.Rent(ScratchSize);
+        // B77 (W5 hot-path migration follow-up): rent the CDC scratch buffer
+        // from the operation-scope small ChunkBufferPool when supplied. The
+        // 64 KB scratch is the smallest bucket in
+        // <see cref="ChunkBufferPool.SmallChunkBucketSizes"/>, so the pool
+        // returns an exact-sized buffer with no overshoot. Falling back to
+        // ArrayPool<byte>.Shared when no pool is wired preserves the pre-B77
+        // behaviour for benchmark/test paths that do not construct an
+        // operation-scope recycler.
+        var (scratchBuffer, scratchAssignedPool) = smallChunkPool is null
+            ? (ArrayPool<byte>.Shared.Rent(ScratchSize), (ChunkBufferPool?)null)
+            : (smallChunkPool.Rent(ScratchSize).Buffer, smallChunkPool);
+        var scratch = scratchBuffer;
         byte[]? payloadBuffer = null;
         long payloadCharged = 0;
         bool payloadReturnToPool = false;
@@ -769,7 +780,14 @@ public class ChunkingService
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(scratch);
+            // B77: return the CDC scratch buffer to whichever source it was
+            // rented from. The two branches are mutually exclusive (one
+            // assigned, the other null) and routing through the assigned
+            // pool's Return preserves the bucket-bag invariants.
+            if (scratchAssignedPool != null)
+                scratchAssignedPool.Return(scratch);
+            else
+                ArrayPool<byte>.Shared.Return(scratch);
             // payloadBuffer is null here on success (ownership transferred)
             // and non-null only if we threw mid-chunk before emitting. In
             // that case we still own the budget charge and must release

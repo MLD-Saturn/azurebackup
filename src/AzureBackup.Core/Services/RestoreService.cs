@@ -351,6 +351,19 @@ public partial class RestoreService
 
                     Log($"RestoreFileAsync: Downloading chunk {chunk.Index} ({chunk.Length} bytes) blob={chunk.BlobName}");
 
+                    // B77 (W5 hot-path migration follow-up): mirror the multi-chunk
+                    // path's encrypted-pool routing (see RestoreWithBoundedParallelDownloadsAsync
+                    // and the B74 fact #36 rationale). Encrypted size below
+                    // PoolSkipThresholdBytes routes through the small ChunkBufferPool
+                    // when wired; encrypted size at or above the threshold continues
+                    // to route through ArrayPool<byte>.Shared so the BCL's
+                    // Gen2GcCallback can keep trimming the large-buffer per-core
+                    // cache between gen-2 collections.
+                    var singleEncryptedSize = chunk.Length + EncryptionService.EncryptionOverhead;
+                    var singleEncryptedPool = singleEncryptedSize >= ChunkingService.PoolSkipThresholdBytes
+                        ? null
+                        : smallChunkPool;
+
                     // Download with retry for transient Azure failures — same pattern as multi-chunk path.
                     // Single-chunk files are especially vulnerable to transient 503s
                     // at high concurrency since they have no other chunks to amortize a failure across.
@@ -359,7 +372,7 @@ public partial class RestoreService
                     {
                         try
                         {
-                            chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, cancellationToken);
+                            chunkData = await _blobService.DownloadChunkAsync(chunk.BlobName, singleEncryptedPool, cancellationToken);
                             break;
                         }
                         catch (Exception ex) when (attempt < MaxChunkRetries && IsTransientError(ex))

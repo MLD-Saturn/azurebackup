@@ -27,54 +27,6 @@ public partial class RestoreService
     /// specially. Both UI and production now read this single constant.
     /// </remarks>
     public const long SmallFileThresholdBytes = 16L * 1024 * 1024;
-    /// <summary>
-    /// Searches for files matching a pattern in the backup.
-    /// </summary>
-    public async Task<List<BackedUpFile>> SearchFilesAsync(
-        string searchPattern,
-        CancellationToken cancellationToken = default)
-    {
-        var allFiles = await ListRestorableFilesAsync(progress: null, cancellationToken);
-        
-        var pattern = searchPattern.ToLowerInvariant();
-        return allFiles.Where(f => 
-            Path.GetFileName(f.LocalPath).ToLowerInvariant().Contains(pattern) ||
-            f.LocalPath.ToLowerInvariant().Contains(pattern))
-            .ToList();
-    }
-
-    /// <summary>
-    /// Deletes a file and all its chunks from Azure storage.
-    /// </summary>
-    public async Task<bool> DeleteFileAsync(BackedUpFile file, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(file);
-
-        try
-        {
-            StatusChanged?.Invoke(this, $"Deleting: {Path.GetFileName(file.LocalPath)}");
-
-            // Delete all chunks
-            foreach (var chunk in file.Chunks)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await _blobService.DeleteBlobAsync(chunk.BlobName, cancellationToken);
-            }
-
-            // Delete metadata
-            var metadataHash = _encryptionService.ComputeHmacHex(file.LocalPath);
-            var metadataBlobName = $"metadata/{metadataHash}";
-            await _blobService.DeleteBlobAsync(metadataBlobName, cancellationToken);
-
-            StatusChanged?.Invoke(this, $"Deleted: {Path.GetFileName(file.LocalPath)}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            ErrorOccurred?.Invoke(this, $"Failed to delete {file.LocalPath}: {ex.Message}");
-            return false;
-        }
-    }
 
     // Concurrency for parallel blob deletion — DELETE is stateless and carries no payload,
     // so higher concurrency than upload/download is safe. 128 concurrent DELETEs produce
