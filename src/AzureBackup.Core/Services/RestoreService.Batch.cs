@@ -660,6 +660,18 @@ public partial class RestoreService
                 $"{recoveredChunks}/{sortedChunks.Count} chunks recovered, " +
                 $"saved to {corruptedPath}");
 
+            // Self-heal: when every chunk decrypted via AES-GCM (none zero-filled),
+            // the recovered plaintext is cryptographically proven to be the original
+            // bytes — only the CRC32 envelope was damaged at rest. Re-encrypt each
+            // chunk and force-overwrite the corrupted blob in Azure so the stored
+            // data is repaired for every file that references it. Scoped strictly to
+            // this fully-recoverable case (outcome 1); files with any zero-filled
+            // chunk are NOT repaired because their original bytes are unknown.
+            if (unrecoverableChunks == 0)
+            {
+                await RepairRecoveredChunksAsync(file, sortedChunks, diag, cancellationToken);
+            }
+
             return (corruptedPath, unrecoverableChunks);
         }
         catch (OperationCanceledException)
@@ -674,6 +686,79 @@ public partial class RestoreService
             FileSystemHelper.TryDelete(corruptedPath);
 
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Self-heals a fully-recoverable corrupted file by re-encrypting each chunk's
+    /// recovered plaintext and force-overwriting the damaged blob in storage.
+    /// Only invoked for the CRC-only case (every chunk's AES-GCM tag authenticated),
+    /// so the bytes written back are provably identical to the original chunk.
+    /// Best-effort: a repair failure never fails the restore — the recovered file
+    /// already exists on disk. Every per-chunk result is written to the file's
+    /// <paramref name="diag"/> log (and the application log) so the .diag file that
+    /// is flushed for the recovery captures the full repair trail.
+    /// </summary>
+    private async Task RepairRecoveredChunksAsync(
+        BackedUpFile file,
+        List<ChunkInfo> sortedChunks,
+        FileOperationDiagnostics diag,
+        CancellationToken cancellationToken)
+    {
+        var fileName = Path.GetFileName(file.LocalPath);
+        Log($"RepairRecoveredChunksAsync: Self-healing {sortedChunks.Count} chunk(s) of '{fileName}' in storage");
+        diag.Record($"[REPAIR] Starting in-place repair of {sortedChunks.Count} fully-recovered chunk(s)");
+        StatusChanged?.Invoke(this, $"Repairing storage for: {fileName}");
+
+        var repaired = 0;
+        var skipped = 0;
+        var failed = 0;
+
+        foreach (var chunk in sortedChunks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Re-download the chunk with best-effort decryption to obtain the proven
+            // plaintext. (The recovery loop already verified all chunks decrypt; we
+            // re-fetch rather than retain every plaintext to stay memory-flat for
+            // large files.)
+            var chunkData = await _blobService.DownloadChunkBestEffortAsync(chunk.BlobName, cancellationToken);
+            if (chunkData == null)
+            {
+                failed++;
+                diag.RecordChunk("RepairSkip", chunk.Index, chunk.Hash, chunk.Length,
+                    extra: $"blob={chunk.BlobName}, reason=best-effort re-download returned null");
+                Log($"RepairRecoveredChunksAsync: '{fileName}' chunk {chunk.Index} could not be re-fetched for repair");
+                continue;
+            }
+
+            var outcome = await _blobService.RepairChunkAsync(chunkData, chunk.Hash, cancellationToken);
+            switch (outcome)
+            {
+                case ChunkRepairOutcome.Repaired:
+                    repaired++;
+                    diag.RecordChunk("RepairOK", chunk.Index, chunk.Hash, chunkData.Length,
+                        extra: $"blob={chunk.BlobName}, fresh envelope written");
+                    break;
+                case ChunkRepairOutcome.SkippedArchived:
+                    skipped++;
+                    diag.RecordChunk("RepairSkip", chunk.Index, chunk.Hash, chunkData.Length,
+                        extra: $"blob={chunk.BlobName}, reason=Archive tier (rehydration required)");
+                    break;
+                default:
+                    failed++;
+                    diag.RecordChunk("RepairFail", chunk.Index, chunk.Hash, chunkData.Length,
+                        extra: $"blob={chunk.BlobName}, reason=overwrite failed");
+                    break;
+            }
+        }
+
+        var summary = $"repaired={repaired}, skipped(archived)={skipped}, failed={failed} of {sortedChunks.Count} chunk(s)";
+        diag.Record($"[REPAIR] Complete: {summary}");
+        Log($"RepairRecoveredChunksAsync: '{fileName}' repair complete — {summary}");
+        if (repaired > 0)
+        {
+            ErrorOccurred?.Invoke(this, $"Self-healed storage for {file.LocalPath}: {summary}");
         }
     }
 

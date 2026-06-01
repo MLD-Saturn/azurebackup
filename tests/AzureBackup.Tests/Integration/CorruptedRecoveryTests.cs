@@ -84,6 +84,51 @@ public class CorruptedRecoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RestoreFilesWithRemappingAsync_WhenCrcOnlyCorruption_AutoRepairsChunksInStorage()
+    {
+        // Arrange
+        CorruptOnDownloadBlobService blobService = new(_encryptionService);
+        await blobService.ConnectAsync("fake", "container");
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
+
+        var backedUp = await CreateAndBackupFile(blobService, "selfheal.bin", 100 * 1024);
+        blobService.CorruptDownloads = true;
+
+        var targetPath = Path.Combine(_restoreDirectory, "selfheal.bin");
+        var filesWithPaths = new List<(BackedUpFile file, string targetPath)> { (backedUp, targetPath) };
+
+        // Act
+        var result = await restoreService.RestoreFilesWithRemappingAsync(filesWithPaths);
+
+        // Assert — every chunk decrypted (CRC-only), so each one is repaired in place
+        Assert.Single(result.SuccessfulFiles);
+        Assert.Equal(backedUp.Chunks.Count, blobService.RepairedCount);
+    }
+
+    [Fact]
+    public async Task RestoreFilesWithRemappingAsync_WhenChunkUnrecoverable_DoesNotRepairInStorage()
+    {
+        // Arrange — best-effort returns null for all chunks, so recovery zero-fills
+        // and the file is NOT fully recoverable; no repair must be attempted.
+        AllChunksUnrecoverableBlobService blobService = new(_encryptionService);
+        await blobService.ConnectAsync("fake", "container");
+        RestoreService restoreService = new(_databaseService, blobService, _encryptionService);
+
+        var backedUp = await CreateAndBackupFile(blobService, "noheal.bin", 100 * 1024);
+        blobService.CorruptNormalDownloads = true;
+        blobService.FailBestEffort = true;
+
+        var targetPath = Path.Combine(_restoreDirectory, "noheal.bin");
+        var filesWithPaths = new List<(BackedUpFile file, string targetPath)> { (backedUp, targetPath) };
+
+        // Act
+        var result = await restoreService.RestoreFilesWithRemappingAsync(filesWithPaths);
+
+        // Assert — unrecoverable data is reported as a failure and never repaired
+        Assert.Equal(0, blobService.RepairCount);
+    }
+
+    [Fact]
     public async Task RestoreFilesAsync_WhenChunkCorrupted_RecoveresToCorruptedSubfolder()
     {
         // Arrange
@@ -258,6 +303,15 @@ internal class CorruptOnDownloadBlobService : InMemoryBlobService
 {
     public bool CorruptDownloads { get; set; }
 
+    private int _repairCount;
+    private int _repairedCount;
+
+    /// <summary>Number of times <see cref="RepairChunkAsync"/> was invoked.</summary>
+    public int RepairCount => _repairCount;
+
+    /// <summary>Number of chunks that reported <see cref="ChunkRepairOutcome.Repaired"/>.</summary>
+    public int RepairedCount => _repairedCount;
+
     public CorruptOnDownloadBlobService(EncryptionService encryptionService)
         : base(encryptionService) { }
 
@@ -278,6 +332,16 @@ internal class CorruptOnDownloadBlobService : InMemoryBlobService
         return data;
     }
 
+    public override async Task<ChunkRepairOutcome> RepairChunkAsync(
+        ReadOnlyMemory<byte> chunkData, string chunkHash, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _repairCount);
+        var outcome = await base.RepairChunkAsync(chunkData, chunkHash, cancellationToken);
+        if (outcome == ChunkRepairOutcome.Repaired)
+            Interlocked.Increment(ref _repairedCount);
+        return outcome;
+    }
+
     // DownloadChunkBestEffortAsync inherits from InMemoryBlobService — returns good data
     // This simulates: CRC corrupted (normal decrypt fails validation) but AES-GCM tag OK
 }
@@ -290,6 +354,11 @@ internal class AllChunksUnrecoverableBlobService : InMemoryBlobService
 {
     public bool CorruptNormalDownloads { get; set; }
     public bool FailBestEffort { get; set; }
+
+    private int _repairCount;
+
+    /// <summary>Number of times <see cref="RepairChunkAsync"/> was invoked.</summary>
+    public int RepairCount => _repairCount;
 
     public AllChunksUnrecoverableBlobService(EncryptionService encryptionService)
         : base(encryptionService) { }
@@ -316,6 +385,13 @@ internal class AllChunksUnrecoverableBlobService : InMemoryBlobService
             return Task.FromResult<byte[]?>(null);
 
         return base.DownloadChunkBestEffortAsync(blobName, cancellationToken);
+    }
+
+    public override Task<ChunkRepairOutcome> RepairChunkAsync(
+        ReadOnlyMemory<byte> chunkData, string chunkHash, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _repairCount);
+        return base.RepairChunkAsync(chunkData, chunkHash, cancellationToken);
     }
 }
 

@@ -444,6 +444,56 @@ public class InMemoryBlobService : IBlobStorageService
         return _encryptionService.DecryptBestEffort(encryptedData);
     }
 
+    /// <summary>
+    /// Force-overwrites an existing chunk blob with a freshly re-encrypted envelope,
+    /// preserving its current tier and skipping Archive-tier blobs. Mirrors
+    /// <see cref="AzureBlobService.RepairChunkAsync"/> for the corrupted-recovery self-heal.
+    /// </summary>
+    public virtual async Task<ChunkRepairOutcome> RepairChunkAsync(ReadOnlyMemory<byte> chunkData, string chunkHash,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        BlobNameValidator.ValidateChunkHash(chunkHash);
+
+        await SimulateLatencyAsync(cancellationToken);
+
+        var blobName = $"chunks/{chunkHash}";
+        var shortHash = chunkHash[..Math.Min(12, chunkHash.Length)];
+
+        // Preserve the existing tier; Archive-tier blobs cannot be overwritten
+        // without rehydration, so they are skipped.
+        var tier = _blobTiers.TryGetValue(blobName, out var existingTier) ? existingTier : StorageTier.Hot;
+        if (tier == StorageTier.Archive)
+        {
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] SKIPPED hash={shortHash}... reason=Archive tier (rehydration required)");
+            return ChunkRepairOutcome.SkippedArchived;
+        }
+
+        try
+        {
+            // Re-encrypt the recovered plaintext into a fresh, valid envelope and
+            // overwrite the corrupted blob under the same content-addressed name.
+            var encryptedData = _encryptionService.Encrypt(chunkData.Span);
+            StoreChunkBlob(blobName, encryptedData, tier);
+            Interlocked.Increment(ref _totalOperations);
+
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] OK hash={shortHash}... plain={chunkData.Length:N0}, enc={encryptedData.Length:N0}, tier={tier} (fresh envelope written over corrupted blob)");
+            return ChunkRepairOutcome.Repaired;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] FAILED hash={shortHash}... reason={ex.GetType().Name}: {ex.Message}");
+            return ChunkRepairOutcome.Failed;
+        }
+    }
+
     public Task<List<string>> ListMetadataBlobsAsync(CancellationToken cancellationToken = default)
     {
         EnsureConnected();

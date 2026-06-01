@@ -4,6 +4,21 @@ using AzureBackup.Core.Models;
 namespace AzureBackup.Core.Services;
 
 /// <summary>
+/// Result of an in-place chunk repair (see <see cref="IBlobStorageService.RepairChunkAsync"/>).
+/// </summary>
+public enum ChunkRepairOutcome
+{
+    /// <summary>The chunk blob was force-overwritten with a fresh, valid envelope.</summary>
+    Repaired,
+
+    /// <summary>The chunk was on the Archive tier and could not be overwritten without rehydration; left untouched.</summary>
+    SkippedArchived,
+
+    /// <summary>The repair write failed (transient/permanent storage error). The recovery itself is unaffected.</summary>
+    Failed
+}
+
+/// <summary>
 /// Interface for blob storage operations, enabling testing without Azure.
 /// Supports both Entra ID and Connection String authentication.
 /// </summary>
@@ -124,6 +139,27 @@ public interface IBlobStorageService : IAsyncDisposable
         ChunkBufferPool? encryptedBufferPool,
         StorageTier storageTier = StorageTier.Hot,
         IProgress<long>? progress = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Force-overwrites an existing chunk blob with a freshly re-encrypted envelope,
+    /// bypassing the deduplication short-circuit of <see cref="UploadChunkAsync"/>.
+    /// Used by corrupted-recovery self-heal: when a stored chunk's CRC32 envelope is
+    /// damaged but its AES-GCM tag still authenticates (so the decrypted plaintext is
+    /// provably the original bytes), the recovered plaintext is re-encrypted and written
+    /// back over the same content-addressed blob name, repairing the at-rest corruption
+    /// for every file that references the chunk.
+    /// <para>
+    /// The repair preserves the chunk's existing storage tier. Archive-tier blobs cannot
+    /// be overwritten without prior rehydration, so they are skipped (reported via the
+    /// returned <see cref="ChunkRepairOutcome"/>) rather than failing the recovery.
+    /// </para>
+    /// </summary>
+    /// <param name="chunkData">The recovered plaintext chunk bytes to re-encrypt and store.</param>
+    /// <param name="chunkHash">The chunk hash (content address / blob name) to overwrite.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The outcome describing whether the chunk was repaired, skipped, or failed.</returns>
+    Task<ChunkRepairOutcome> RepairChunkAsync(ReadOnlyMemory<byte> chunkData, string chunkHash,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Uploads file metadata (encrypted).

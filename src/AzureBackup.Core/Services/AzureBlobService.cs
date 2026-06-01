@@ -529,6 +529,91 @@ public partial class AzureBlobService : IBlobStorageService
 
 
     /// <summary>
+    /// Force-overwrites an existing chunk blob with a freshly re-encrypted envelope.
+    /// See <see cref="IBlobStorageService.RepairChunkAsync"/> for the self-heal contract.
+    /// Preserves the chunk's current storage tier; skips Archive-tier blobs (which cannot
+    /// be overwritten without rehydration). Records every step into the ambient
+    /// <see cref="FileOperationDiagnostics"/> so the recovery's .diag file captures the repair.
+    /// </summary>
+    public async Task<ChunkRepairOutcome> RepairChunkAsync(ReadOnlyMemory<byte> chunkData, string chunkHash,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        BlobNameValidator.ValidateChunkHash(chunkHash);
+
+        var blobName = $"chunks/{chunkHash}";
+        var blobClient = _containerClient!.GetBlobClient(blobName);
+        var shortHash = chunkHash[..Math.Min(12, chunkHash.Length)];
+
+        // Read the existing tier so the repaired blob lands on the same tier.
+        // Archive-tier blobs are offline and cannot be overwritten without a
+        // rehydration round-trip, so we skip them rather than fail recovery.
+        StorageTier tier;
+        try
+        {
+            var properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+            TotalOperations++;
+            tier = properties.Value.AccessTier?.ToString() switch
+            {
+                "Hot" => StorageTier.Hot,
+                "Cool" => StorageTier.Cool,
+                "Cold" => StorageTier.Cold,
+                "Archive" => StorageTier.Archive,
+                _ => StorageTier.Hot
+            };
+        }
+        catch (Exception ex)
+        {
+            Log($"RepairChunkAsync: Could not read properties for {blobName}: {ex.GetType().Name}: {ex.Message}");
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] FAILED hash={shortHash}... reason=GetProperties: {ex.GetType().Name}: {ex.Message}");
+            return ChunkRepairOutcome.Failed;
+        }
+
+        if (tier == StorageTier.Archive)
+        {
+            Log($"RepairChunkAsync: Chunk {shortHash}... is on Archive tier, skipping repair (needs rehydration)");
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] SKIPPED hash={shortHash}... reason=Archive tier (rehydration required)");
+            return ChunkRepairOutcome.SkippedArchived;
+        }
+
+        var encSize = chunkData.Length + EncryptionService.EncryptionOverhead;
+        var rentedBuffer = RentEncryptedBuffer(encSize, pool: null);
+        try
+        {
+            var encryptedLength = EncryptAndDiagnose(chunkData.Span, rentedBuffer, chunkHash, "RepairChunkAsync");
+
+            // UploadEncryptedChunkAsync issues an unconditional UploadAsync, which
+            // overwrites the existing blob (no If-None-Match guard), repairing the
+            // damaged envelope in place under the same content-addressed name.
+            await UploadEncryptedChunkAsync(blobClient, rentedBuffer, encryptedLength,
+                chunkData, chunkHash, tier, progress: null, "RepairChunkAsync", cancellationToken);
+
+            Log($"RepairChunkAsync: Repaired chunk {shortHash}... ({chunkData.Length} bytes plain, {tier} tier)");
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] OK hash={shortHash}... plain={chunkData.Length:N0}, enc={encryptedLength:N0}, tier={tier} (fresh envelope written over corrupted blob)");
+            return ChunkRepairOutcome.Repaired;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log($"RepairChunkAsync: Repair failed for {shortHash}...: {ex.GetType().Name}: {ex.Message}");
+            FileOperationDiagnostics.RecordAmbient(
+                $"[REPAIR] FAILED hash={shortHash}... reason=Upload: {ex.GetType().Name}: {ex.Message}");
+            return ChunkRepairOutcome.Failed;
+        }
+        finally
+        {
+            ReturnEncryptedBuffer(rentedBuffer, pool: null);
+        }
+    }
+
+
+    /// <summary>
     /// Uploads file metadata (encrypted).
     /// </summary>
     public async Task UploadFileMetadataAsync(BackedUpFile fileInfo, StorageTier storageTier = StorageTier.Hot, 
