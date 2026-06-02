@@ -8,7 +8,7 @@ This file is the **persistent memory** for Copilot agent sessions on the AzureBa
 
 ### Pre-commit checklist (run this immediately before every `git commit`)
 
-This section is the load-bearing rule of the file. **The agent has demonstrably skipped it before.** When that happens the file silently drifts and the next session inherits a lie. Treat it as non-optional.
+This is the load-bearing rule of the file; it has been skipped before, causing silent drift. Treat it as non-optional.
 
 Before running `git add .; git commit -m "..."`, walk through these questions in order. If the answer to any is "yes", the commit MUST also include an AGENT_CONTEXT.md edit (and frequently a `docs/USER_GUIDE.md` or `docs/SETUP.md` edit per the Documentation trust policy).
 
@@ -26,11 +26,11 @@ If the answer to all nine is "no", commit without touching this file. That is th
 
 ### Hidden failure mode that has happened before
 
-The trap is reasoning "this commit only changes code, it doesn't change documentation, so AGENT_CONTEXT doesn't need an update." That logic is wrong because **AGENT_CONTEXT documents the code, not the documentation**. A code commit that adds a new public constant is exactly the trigger for question 1 above. Commit `b9d5744` (B26) hit this trap; the catch-up was commit `df0df53` and cost the user an extra prompt to ask "did you remember the file?". Do not repeat it.
+The trap is reasoning "this commit only changes code, not documentation, so AGENT_CONTEXT doesn't need an update." That is wrong because **AGENT_CONTEXT documents the code, not the documentation**. A code commit that adds a new public constant is exactly the trigger for question 1 above. Commit `b9d5744` (B26) hit this trap; the catch-up was `df0df53`.
 
 ### Implausibility-prompts-verification (added 2026-04-27 after B43)
 
-When a user reports a measurement, log line, or behaviour whose magnitude looks *implausible* given the documented design (e.g. "throughput shows 6 Mbps on gigabit Azure", "memory used reads 41 GB on a 32 GB host", "auto-repair reset to zero after restart"), do NOT accept it at face value AND do NOT immediately blame the user's environment. Treat implausibility as a prompt to verify the LABEL against the FORMULA at every producer in the codebase before tuning anything. The B43 throughput rename was the textbook case: production logs showed values that looked like single-digit Mbps for a gigabit pipeline, but the on-disk number was actually MB/s -- a factor-of-8 label error that would have wasted a network-perf investigation. The check costs one `code_search` for the field name; the cost of skipping it is days of misdirected debugging.
+When a user reports a measurement, log line, or behaviour whose magnitude looks *implausible* given the documented design (e.g. "throughput shows 6 Mbps on gigabit Azure", "memory used reads 41 GB on a 32 GB host"), do NOT accept it at face value AND do NOT immediately blame the user's environment. Treat implausibility as a prompt to verify the LABEL against the FORMULA at every producer before tuning anything. The B43 throughput rename was the textbook case: logs showed values that looked like single-digit Mbps, but the on-disk number was MB/s -- a factor-of-8 label error. The check costs one `code_search`; skipping it costs days of misdirected debugging.
 
 ### Edit policy (style)
 
@@ -106,7 +106,8 @@ This file (`AGENT_CONTEXT.md`) is the one doc that future sessions are *required
 
 ### Git commits
 
-- **Committing is mandatory, not optional.** At a logical stopping point (build clean AND tests pass AND required AGENT_CONTEXT/docs updates done), you MUST commit before yielding your turn. Leaving finished changes uncommitted "for the user to review" is a policy violation -- the user reviews via git history, not the working tree.
+- **Committing is mandatory, not optional.** At a logical stopping point (build clean AND the **full test suite** passes AND required AGENT_CONTEXT/docs updates done), you MUST commit before yielding your turn. Leaving finished changes uncommitted "for the user to review" is a policy violation -- the user reviews via git history, not the working tree.
+- **Run the entire test suite before committing, never a relevant/affected subset.** A targeted run is fine for fast inner-loop iteration, but the gate for a commit is the whole suite green. A change that looks local can break a distant test; only a full run proves it did not.
 - **"Never push" does NOT mean "never commit."** The two rules are independent: commit locally every time, then stop. Do not end a task announcing "the changes are staged for you to review" -- that is the exact anti-pattern to avoid.
 - Use `git add .; git commit -m "..."` chained on one line, with multiple `-m` flags (one per paragraph). **Never** write the message to a file. **Never** use `git commit -F`.
 - **No emoji, no non-ASCII** in commit messages.
@@ -355,9 +356,11 @@ Build clean; 1002/1002 tests pass. See architectural fact #41.
 
 ### Tests
 
-`dotnet test tests/AzureBackup.Tests/AzureBackup.Tests.csproj -c Debug` from the repo root. All 759 tests pass deterministically.
+**Always run the entire suite before committing -- never a relevant/affected subset.** A targeted filter is fine while iterating, but the commit gate is the whole suite green (see "Git commits").
 
-If running from inside Visual Studio (which is the typical user environment), the `run_tests` / `get_tests` MCP tools work directly against Test Explorer. Use `Project=AzureBackup.Tests` as the filter.
+`dotnet test tests/AzureBackup.Tests/AzureBackup.Tests.csproj -c Debug` from the repo root runs every test.
+
+If running from inside Visual Studio (the typical user environment), the `run_tests` / `get_tests` MCP tools work directly against Test Explorer. Use `Project=AzureBackup.Tests` as the filter to run the full project.
 
 
 ---
