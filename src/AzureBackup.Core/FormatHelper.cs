@@ -37,7 +37,7 @@ public static class FormatHelper
             throw new ArgumentOutOfRangeException(nameof(totalSeconds), totalSeconds, "Value must be a finite number.");
 
         if (totalSeconds < 60)
-            return $"{totalSeconds:F0}s";
+            return $"{(int)totalSeconds}s";
 
         if (totalSeconds < 3600)
         {
@@ -48,6 +48,13 @@ public static class FormatHelper
 
         var hours = (int)(totalSeconds / 3600);
         var remainingMinutes = (int)((totalSeconds % 3600) / 60);
-        return $"{hours}h {remainingMinutes}m";
+        if (hours < 24)
+            return $"{hours}h {remainingMinutes}m";
+        else
+        {
+            var days = hours / 24;
+            hours %= 24;
+            return $"{days}d {hours}h {remainingMinutes}m";
+        }
     }
 }

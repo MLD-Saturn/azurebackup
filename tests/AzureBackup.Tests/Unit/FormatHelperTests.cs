@@ -60,6 +60,15 @@ public class FormatHelperTests
     }
 
     [Theory]
+    [InlineData(59.4, "59s")]
+    [InlineData(59.7, "59s")]
+    [InlineData(59.999, "59s")]
+    public void WhenDurationHasFractionalSecondsThenTruncatesAndNeverReportsSixtySeconds(double seconds, string expected)
+    {
+        Assert.Equal(expected, FormatHelper.FormatDuration(seconds));
+    }
+
+    [Theory]
     [InlineData(60, "1m 0s")]
     [InlineData(90, "1m 30s")]
     [InlineData(3599, "59m 59s")]
