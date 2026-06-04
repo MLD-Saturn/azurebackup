@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Konscious.Security.Cryptography;
 using Microsoft.Data.Sqlite;
+using static AzureBackup.Core.KdfParameters;
 
 namespace AzureBackup.Core.Services.Backends;
 

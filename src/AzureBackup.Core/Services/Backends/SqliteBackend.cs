@@ -26,12 +26,6 @@ namespace AzureBackup.Core.Services.Backends;
 /// </summary>
 internal sealed partial class SqliteBackend : IDatabaseBackend
 {
-    // Argon2id parameters - canonical values shared with EncryptionService via
-    // KdfParameters so the same password derives the same key during migration.
-    private const int Argon2DegreeOfParallelism = KdfParameters.Argon2DegreeOfParallelism;
-    private const int Argon2MemorySize = KdfParameters.Argon2MemorySize; // 64 MB
-    private const int Argon2Iterations = KdfParameters.Argon2Iterations;
-    private const int SaltSize = KdfParameters.SaltSize;
     private const int DerivedKeySize = 32;
 
     private SqliteConnection? _connection;

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
+using static AzureBackup.Core.KdfParameters;
 
 namespace AzureBackup.Core.Services;
 
@@ -15,12 +16,7 @@ public class EncryptionService : IDisposable
     private bool _disposed;
     private readonly Lock _keyLock = new();
 
-    // Argon2id parameters - canonical values shared with SqliteBackend via KdfParameters.
-    private const int Argon2DegreeOfParallelism = KdfParameters.Argon2DegreeOfParallelism;
-    private const int Argon2MemorySize = KdfParameters.Argon2MemorySize; // 64 MB
-    private const int Argon2Iterations = KdfParameters.Argon2Iterations;
     private const int KeySize = 32; // 256 bits for AES-256
-    private const int SaltSize = KdfParameters.SaltSize;
     private const int NonceSize = 12; // 96 bits for AES-GCM
     private const int TagSize = 16; // 128 bits for GCM authentication tag
     private const int ChecksumSize = 4; // CRC32 for corruption detection
