@@ -24,14 +24,7 @@ internal static class KdfParameters
     /// <summary>Argon2id lane count (degree of parallelism).</summary>
     public const int Argon2DegreeOfParallelism = 8;
 
-    /// <summary>
-    /// Argon2id working-memory size, expressed in <b>kibibytes</b> (65,536 KiB = 64 MB).
-    /// This is a deliberate raw literal, NOT <c>64 * ByteSizes.MB</c>: Konscious's
-    /// <c>Argon2id.MemorySize</c> is measured in KiB, so multiplying by
-    /// <see cref="ByteSizes.MB"/> would request 64 GiB (1024x too much) -- it would
-    /// OOM the process and derive a different key, locking every existing user out
-    /// of their database. Do not "centralize" this into a <c>ByteSizes</c> multiple.
-    /// </summary>
+    /// <summary>Argon2id working-memory size in kibibytes (65,536 KiB = 64 MB).</summary>
     public const int Argon2MemorySize = 65536;
 
     /// <summary>Argon2id iteration (time) cost.</summary>
