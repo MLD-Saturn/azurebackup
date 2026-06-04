@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Konscious.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using static AzureBackup.Core.KdfParameters;
+using static AzureBackup.Core.Services.KdfMemoryDiagnostics;
 
 namespace AzureBackup.Core.Services.Backends;
 
@@ -47,8 +48,8 @@ internal sealed partial class SqliteBackend
         var passwordBytes = PasswordBytes.FromChars(passwordChars);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var gcMode = System.Runtime.GCSettings.IsServerGC ? "Server" : "Workstation";
-        var workingSetMb = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024);
-        var managedMb = GC.GetTotalMemory(false) / (1024 * 1024);
+        var workingSetMb = ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64);
+        var managedMb = ToMegabytes(GC.GetTotalMemory(false));
         diag?.Invoke($"DeriveKey: starting Argon2id (memory={Argon2MemorySize / 1024} MB, lanes={Argon2DegreeOfParallelism}, " +
                      $"iterations={Argon2Iterations}, gcMode={gcMode}, workingSet={workingSetMb} MB, managedHeap={managedMb} MB)");
         try
@@ -75,19 +76,15 @@ internal sealed partial class SqliteBackend
             {
                 lastOom = ex;
                 diag?.Invoke($"DeriveKey: OutOfMemoryException at {sw.ElapsedMilliseconds} ms -- {ex.Message}");
-                diag?.Invoke($"  Pre-compaction: workingSet={System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024)} MB, " +
-                             $"GC managed={GC.GetTotalMemory(false) / (1024 * 1024)} MB, " +
-                             $"GC available={GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024)} MB, " +
-                             $"loh fragmented={GC.GetGCMemoryInfo().FragmentedBytes / (1024 * 1024)} MB");
-                System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-                    System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-                diag?.Invoke($"  Post-compaction: workingSet={System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024)} MB, " +
-                             $"GC managed={GC.GetTotalMemory(false) / (1024 * 1024)} MB, " +
-                             $"GC available={GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024)} MB, " +
-                             $"loh fragmented={GC.GetGCMemoryInfo().FragmentedBytes / (1024 * 1024)} MB");
+                diag?.Invoke($"  Pre-compaction: workingSet={ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64)} MB, " +
+                             $"GC managed={ToMegabytes(GC.GetTotalMemory(false))} MB, " +
+                             $"GC available={ToMegabytes(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes)} MB, " +
+                             $"loh fragmented={ToMegabytes(GC.GetGCMemoryInfo().FragmentedBytes)} MB");
+                ForceLargeObjectHeapCompaction();
+                diag?.Invoke($"  Post-compaction: workingSet={ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64)} MB, " +
+                             $"GC managed={ToMegabytes(GC.GetTotalMemory(false))} MB, " +
+                             $"GC available={ToMegabytes(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes)} MB, " +
+                             $"loh fragmented={ToMegabytes(GC.GetGCMemoryInfo().FragmentedBytes)} MB");
             }
 
             try
@@ -132,11 +129,11 @@ internal sealed partial class SqliteBackend
         try
         {
             var proc = System.Diagnostics.Process.GetCurrentProcess();
-            var workingSetMb = proc.WorkingSet64 / (1024 * 1024);
-            var privateMb = proc.PrivateMemorySize64 / (1024 * 1024);
-            var gcMb = GC.GetTotalMemory(forceFullCollection: false) / (1024 * 1024);
+            var workingSetMb = ToMegabytes(proc.WorkingSet64);
+            var privateMb = ToMegabytes(proc.PrivateMemorySize64);
+            var gcMb = ToMegabytes(GC.GetTotalMemory(forceFullCollection: false));
             var memInfo = GC.GetGCMemoryInfo();
-            var totalAvailableMb = memInfo.TotalAvailableMemoryBytes / (1024 * 1024);
+            var totalAvailableMb = ToMegabytes(memInfo.TotalAvailableMemoryBytes);
 
             return $"Unable to derive the {what}: Argon2id key derivation could not allocate " +
                    $"its {kdfMemoryKb / 1024} MB working memory after a forced LOH compaction. " +

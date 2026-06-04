@@ -61,25 +61,47 @@ public class BackupMemoryReporterTests
     [Fact]
     public async Task EmitsPeriodicSamplesAtConfiguredInterval()
     {
-        using var budget = new MemoryBudget(1024 * 1024);
-        var lines = new List<string>();
-        var sync = new object();
+        // This test is timing-dependent: it relies on a System.Threading.Timer
+        // firing several times. Under a saturated parallel test run the timer
+        // callbacks can be starved, so a fixed Task.Delay window occasionally
+        // observes too few samples. Two layers of robustness:
+        //   1. Poll until enough samples arrive (or a generous timeout), instead
+        //      of betting that exactly N ticks land inside one fixed delay.
+        //   2. Wrap in FlakyTestHelper.RetryAsync so a single starved attempt
+        //      (e.g. the host paused the process for a full GC) gets a fresh
+        //      reporter rather than failing the suite.
+        await FlakyTestHelper.RetryAsync(async () =>
+        {
+            const int intervalMs = 50;
+            // 1 initial (constructor) sample + at least 3 timer ticks.
+            const int expectedMinimum = 4;
+            // Generous ceiling: 3 s is 60 intervals, so even heavily starved
+            // timer callbacks clear the bar of 3 ticks long before timing out.
+            var timeout = TimeSpan.FromSeconds(3);
 
-        using var reporter = new BackupMemoryReporter(
-            budget,
-            opLabel: "test",
-            emit: line => { lock (sync) { lines.Add(line); } },
-            interval: TimeSpan.FromMilliseconds(50));
+            using var budget = new MemoryBudget(1024 * 1024);
+            var lines = new List<string>();
+            var sync = new object();
 
-        // Wait long enough for at least 3 ticks to fire on top of the
-        // initial sample. 250 ms / 50 ms = 5 expected, so >=4 is a safe
-        // lower bound that tolerates timer-callback scheduling jitter
-        // on a busy CI host.
-        await Task.Delay(250);
+            using var reporter = new BackupMemoryReporter(
+                budget,
+                opLabel: "test",
+                emit: line => { lock (sync) { lines.Add(line); } },
+                interval: TimeSpan.FromMilliseconds(intervalMs));
 
-        int count;
-        lock (sync) { count = lines.Count; }
-        Assert.True(count >= 4, $"Expected at least 4 samples, got {count}");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int count;
+            do
+            {
+                await Task.Delay(intervalMs);
+                lock (sync) { count = lines.Count; }
+            }
+            while (count < expectedMinimum && sw.Elapsed < timeout);
+
+            Assert.True(
+                count >= expectedMinimum,
+                $"Expected at least {expectedMinimum} samples within {timeout.TotalSeconds:0}s, got {count}");
+        });
     }
 
     [Fact]

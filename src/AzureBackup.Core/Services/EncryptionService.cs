@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
 using static AzureBackup.Core.KdfParameters;
+using static AzureBackup.Core.Services.KdfMemoryDiagnostics;
 
 namespace AzureBackup.Core.Services;
 
@@ -85,7 +86,7 @@ public class EncryptionService : IDisposable
         var passwordBytes = PasswordBytes.FromChars(password.Span);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var gcMode = System.Runtime.GCSettings.IsServerGC ? "Server" : "Workstation";
-        var workingSetMb = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024);
+        var workingSetMb = ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64);
         Log($"DeriveKeyAsync: starting Argon2id (memory={Argon2MemorySize / 1024} MB, lanes={Argon2DegreeOfParallelism}, " +
             $"iterations={Argon2Iterations}, gcMode={gcMode}, workingSet={workingSetMb} MB)");
         try
@@ -116,17 +117,13 @@ public class EncryptionService : IDisposable
             {
                 lastOom = ex;
                 Log($"DeriveKeyAsync: OutOfMemoryException at {sw.ElapsedMilliseconds} ms -- {ex.Message}");
-                Log($"  Pre-compaction state: workingSet={System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024)} MB, " +
-                    $"GC managed={GC.GetTotalMemory(false) / (1024 * 1024)} MB, " +
-                    $"GC available={GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024)} MB");
-                System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-                    System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-                Log($"  Post-compaction state: workingSet={System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024)} MB, " +
-                    $"GC managed={GC.GetTotalMemory(false) / (1024 * 1024)} MB, " +
-                    $"GC available={GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024)} MB");
+                Log($"  Pre-compaction state: workingSet={ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64)} MB, " +
+                    $"GC managed={ToMegabytes(GC.GetTotalMemory(false))} MB, " +
+                    $"GC available={ToMegabytes(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes)} MB");
+                ForceLargeObjectHeapCompaction();
+                Log($"  Post-compaction state: workingSet={ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64)} MB, " +
+                    $"GC managed={ToMegabytes(GC.GetTotalMemory(false))} MB, " +
+                    $"GC available={ToMegabytes(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes)} MB");
             }
 
             try
@@ -272,7 +269,7 @@ public class EncryptionService : IDisposable
         // log breadcrumbs.
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var gcMode = System.Runtime.GCSettings.IsServerGC ? "Server" : "Workstation";
-        var workingSetMb = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024);
+        var workingSetMb = ToMegabytes(System.Diagnostics.Process.GetCurrentProcess().WorkingSet64);
         Log($"CreatePasswordVerificationHashAsync: starting Argon2id (memory={Argon2MemorySize / 1024} MB, " +
             $"lanes={Argon2DegreeOfParallelism}, iterations={Argon2Iterations}, gcMode={gcMode}, " +
             $"workingSet={workingSetMb} MB)");
@@ -297,11 +294,7 @@ public class EncryptionService : IDisposable
             {
                 lastOom = ex;
                 Log($"CreatePasswordVerificationHashAsync: OutOfMemoryException at {sw.ElapsedMilliseconds} ms -- {ex.Message}");
-                System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-                    System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                ForceLargeObjectHeapCompaction();
             }
 
             try
