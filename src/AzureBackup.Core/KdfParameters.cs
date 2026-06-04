@@ -25,7 +25,7 @@ internal static class KdfParameters
     public const int Argon2DegreeOfParallelism = 8;
 
     /// <summary>Argon2id working-memory size in kibibytes (65,536 KiB = 64 MB).</summary>
-    public const int Argon2MemorySize = 65536;
+    public const int Argon2MemorySize = 64 * ByteSizes.MB;
 
     /// <summary>Argon2id iteration (time) cost.</summary>
     public const int Argon2Iterations = 3;

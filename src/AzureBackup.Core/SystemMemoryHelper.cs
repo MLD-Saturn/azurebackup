@@ -44,7 +44,7 @@ public static class SystemMemoryHelper
             var totalBytes = GetTotalPhysicalMemoryBytes();
             var heapBytes = GC.GetTotalMemory(forceFullCollection: false);
 
-            var osReserve = Math.Max(totalBytes / 4, 1024 * MBLong);
+            var osReserve = Math.Max(totalBytes / 4, KB * MBLong);
             var available = totalBytes - heapBytes - osReserve;
             return Math.Max(available, 0);
         }
