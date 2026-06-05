@@ -231,12 +231,42 @@ public sealed class BackupMemoryReporter : IDisposable
               $" dropped={_smallChunkPool.TotalReturnsDroppedForCap}," +
               $" hit={_smallChunkPool.HitRate:P0})"
             : string.Empty;
+
+        // Heap-detail segment. Appended with NEW label names so the
+        // MemoryFidelityCollector's existing regexes (workingSet=,
+        // unaccounted=, used=, peak=, stalls/oversized) are untouched.
+        // These are the signals a heap-overshoot investigation needs but
+        // the base line omits: which heap is growing (LOH vs POH), how much
+        // the GC has committed from the OS, how much of the committed heap
+        // is dead-but-unreclaimed fragmentation, and the GC pause-time
+        // fraction. When a gcdump is captured, the [mem] line at that
+        // timestamp says whether the growth is managed-LOH, pinned (POH,
+        // which the Azure SDK uses for native I/O), fragmentation, or truly
+        // off-heap/native (workingSet high but heapCommit low).
+        var generations = gcInfo.GenerationInfo;
+        var lohSize = generations.Length > 3 ? generations[3].SizeAfterBytes : 0L;
+        var pohSize = generations.Length > 4 ? generations[4].SizeAfterBytes : 0L;
+        var heapCommitted = gcInfo.TotalCommittedBytes;
+        var heapSize = gcInfo.HeapSizeBytes;
+        var fragmented = gcInfo.FragmentedBytes;
+        var pausePercent = gcInfo.PauseTimePercentage;
+        // Residency the GC heap does NOT explain: workingSet minus committed
+        // heap. A large value here points at native/off-heap memory (Azure
+        // SDK staging, TLS, OS file-cache pages) rather than the managed heap.
+        var nonHeapResident = Math.Max(0, workingSet - heapCommitted);
+        var heapDetailText =
+            $" | loh={lohSize / MB} MB | poh={pohSize / MB} MB | " +
+            $"heapCommit={heapCommitted / MB} MB | heapSize={heapSize / MB} MB | " +
+            $"frag={fragmented / MB} MB | gcPause={pausePercent:F1}% | " +
+            $"nonHeap={nonHeapResident / MB} MB";
+
         var line =
             $"{prefix} {_opLabel} t+{elapsed.TotalSeconds:F0}s | budget {budgetText} | " +
             $"stalls +{stallDelta} (total {stalls}) | oversized +{oversizedDelta} (total {oversized}) | " +
             $"gcHeap={gcHeap / MB} MB | gcLoad={gcInfo.MemoryLoadBytes / MB} MB | " +
             $"workingSet={workingSet / MB} MB | privateMem={privateMem / MB} MB | " +
             $"unaccounted={unaccounted / MB} MB | gcCollections=[{gen0Delta},{gen1Delta},{gen2Delta}]" +
+            heapDetailText +
             poolText +
             smallPoolText;
 

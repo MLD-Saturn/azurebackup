@@ -125,6 +125,31 @@ public class BackupMemoryReporterTests
     }
 
     [Fact]
+    public void ReportLineIncludesHeapDetailSignals()
+    {
+        using var budget = new MemoryBudget(1024 * 1024);
+        var lines = new List<string>();
+
+        using var reporter = new BackupMemoryReporter(
+            budget,
+            opLabel: "test",
+            emit: lines.Add,
+            interval: TimeSpan.FromMinutes(10));
+
+        // The heap-detail segment (added for the memory-profiling review)
+        // exposes which heap is growing and how much residency the GC heap
+        // does not explain. These labels are append-only and must not
+        // collide with the MemoryFidelityCollector parser tokens.
+        Assert.Contains("loh=", lines[0]);
+        Assert.Contains("poh=", lines[0]);
+        Assert.Contains("heapCommit=", lines[0]);
+        Assert.Contains("heapSize=", lines[0]);
+        Assert.Contains("frag=", lines[0]);
+        Assert.Contains("gcPause=", lines[0]);
+        Assert.Contains("nonHeap=", lines[0]);
+    }
+
+    [Fact]
     public void ReportLineLabelsUnlimitedBudgetExplicitly()
     {
         using var budget = new MemoryBudget(long.MaxValue);
