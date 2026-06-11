@@ -54,6 +54,21 @@ public partial class BackupOrchestrator : IAsyncDisposable
     // per file at the 64 MB MaxChunkSize ceiling.
     private const int MaxParallelFileBackups = 16;
 
+    // W6 Phase 3 (Item 2): file-level fan-out for the small-file backup lane.
+    // Small files (<= RestoreService.SmallFileThresholdBytes) have a tiny
+    // per-file in-flight residency (a few KB for a text file), so the
+    // budget-derived EffectiveMaxParallelFileBackups clamp -- which is sized
+    // for the 512 MB worst-case LARGE file (see EstimatedPerFileResidencyBytes)
+    // -- needlessly serialised them on small budgets: a 512 MB budget admitted
+    // only 1 file at a time even for kilobyte files. The small-file lane runs
+    // at this fixed ceiling instead; the shared MemoryBudget remains the hard
+    // throttle on actual in-flight bytes, so a pathological batch of small-but-
+    // media files (which over-rent a MaxChunkSize buffer) still cannot exceed
+    // the user's MemoryLimitMB. Mirrors the restore side's MaxParallelSmallFiles
+    // (RestoreFilesBatchCoreAsync) so backup and restore have symmetric
+    // small-file behaviour.
+    private const int MaxParallelSmallFileBackups = 32;
+
     /// <summary>
     /// B25-bench-2: optional per-instance override for
     /// <see cref="MaxParallelChunkUploads"/>. When non-null the

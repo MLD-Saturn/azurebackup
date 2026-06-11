@@ -289,6 +289,7 @@ The **Logs** view has a **Diagnostic Logging** ON/OFF toggle. This controls runt
 | Local database (production) | SQLCipher-encrypted SQLite (`SQLitePCLRaw.bundle_e_sqlcipher` 2.1.x, `Microsoft.Data.Sqlite` 10.x) |
 | Chunking | Content-defined, Rabin-style rolling hash (window 48, prime 31), per-extension config |
 | Default file-level concurrency | 16 (`MaxParallelFileBackups`, raised from 8 in B27 based on `TwoTierFileSplitBigScaleBenchmark`) |
+| Small-file backup lane concurrency (W6) | 32 (`MaxParallelSmallFileBackups`). Files at or below 16 MB (`RestoreService.SmallFileThresholdBytes`) back up on a fixed-concurrency lane independent of the budget-derived large-file fan-out, so a small `MemoryLimitMB` no longer serialises small files. The shared `MemoryBudget` remains the hard throttle on in-flight bytes. Mirrors the restore side's small-file lane. |
 | Default chunk-level concurrency per file | 6 (`MaxParallelChunkUploads`) |
 | Default `MemoryLimitEnabled` | `true` (raised from `false` in B27) |
 | Default `MemoryLimitMB` | hardware-aware: `min(round_down_to_step(0.25 * total_physical_RAM), 8192 MB)` (B29; was a flat `8192` from B27, was `2048` pre-B27). Existing user databases keep whatever value they previously stored; the rule only applies on fresh installs. See `SystemMemoryHelper.GetRecommendedDefaultLimitMB`. |

@@ -709,6 +709,7 @@ public partial class BackupOrchestrator
             ["files"] = filePaths.Count,
             ["maxParallelFileBackups"] = EffectiveMaxParallelFileBackups,
             ["effectiveFileConcurrency"] = effectiveFileConcurrency,
+            ["maxParallelSmallFileBackups"] = MaxParallelSmallFileBackups,
             ["memoryBudgetMb"] = memoryBudget.IsUnlimited ? "unlimited" : (memoryBudget.TotalBytes / (1024 * 1024)).ToString(),
             ["memoryBudgetEnabled"] = config.MemoryLimitEnabled,
             ["processors"] = Environment.ProcessorCount
@@ -794,110 +795,140 @@ public partial class BackupOrchestrator
         PaddedLong processedBytes = default;
         PaddedLong completedFiles = default;
 
-        // Calculate total bytes
-        foreach (var filePath in filePaths)
+        // Calculate total bytes AND partition the batch into a small-file lane
+        // and a large-file lane, capturing each file's STABLE index in the
+        // input list (the B19 progress-identity contract). Single stat pass.
+        const long SmallFileThreshold = RestoreService.SmallFileThresholdBytes;
+        var smallFiles = new List<(string path, int index)>();
+        var largeFiles = new List<(string path, int index)>();
+        for (var i = 0; i < filePaths.Count; i++)
         {
+            var path = filePaths[i];
+            long size = 0;
             try
             {
-                FileInfo fileInfo = new(filePath);
+                FileInfo fileInfo = new(path);
                 if (fileInfo.Exists)
-                    totalBytes += fileInfo.Length;
+                    size = fileInfo.Length;
             }
             catch
             {
-                // Skip files we can't access
+                // Unreadable here: treat as size 0 (routed to the small lane)
+                // and let the per-file body skip it via its own Exists check.
+            }
+            totalBytes += size;
+            if (size <= SmallFileThreshold)
+                smallFiles.Add((path, i));
+            else
+                largeFiles.Add((path, i));
+        }
+
+        // Per-file backup body, shared by both lanes. Extracted from the
+        // pre-W6 single Parallel.ForEachAsync lambda; behaviour is unchanged.
+        async Task BackupOneAsync(string filePath, int fileIndex, CancellationToken ct)
+        {
+            var fileName = Path.GetFileName(filePath);
+
+            try
+            {
+                FileInfo fileInfo = new(filePath);
+                if (!fileInfo.Exists)
+                {
+                    Log($"BackupFilesCoreAsync: File not found, skipping: {filePath}");
+                    return;
+                }
+
+                var currentFileSize = fileInfo.Length;
+                StatusChanged?.Invoke(this, $"Backing up: {fileName}");
+
+                // Track per-file byte deltas for accurate aggregate progress
+                long lastReportedFileBytes = 0;
+
+                Progress<(long current, long total)> fileProgress = new(p =>
+                {
+                    var delta = p.current - Interlocked.Exchange(ref lastReportedFileBytes, p.current);
+                    if (delta > 0)
+                        processedBytes.Add(delta);
+
+                    // B19: emit the file's own STABLE index as fileIndex.
+                    // The first tuple element used to be the running
+                    // count of completed files (a UI-counter value that
+                    // collided across workers); now it's the per-file
+                    // identity the UI keys ActiveFiles rows on.
+                    progress?.Report((
+                        fileIndex, totalFiles, fileName,
+                        processedBytes.Read(), totalBytes,
+                        p.current, currentFileSize));
+                });
+
+                var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, largeChunkPool, smallChunkPool, forceReupload, ct);
+
+                if (success)
+                {
+                    // Reconcile any remaining bytes not yet reported by progress callbacks
+                    var finalReported = Interlocked.Exchange(ref lastReportedFileBytes, currentFileSize);
+                    var remaining = currentFileSize - finalReported;
+                    if (remaining > 0)
+                        processedBytes.Add(remaining);
+
+                    var done = completedFiles.Increment();
+                    Log($"BackupFilesCoreAsync: [{done}/{totalFiles}] Successfully backed up: {fileName}");
+                    _databaseService.RemovePendingChange(filePath);
+
+                    // B19: the FINAL completion report also carries the
+                    // file's own stable index so the UI can match it
+                    // against the FileStarted row instead of guessing.
+                    progress?.Report((
+                        fileIndex, totalFiles, fileName,
+                        processedBytes.Read(), totalBytes,
+                        currentFileSize, currentFileSize));
+                }
+                else
+                {
+                    Log($"BackupFilesCoreAsync: Failed to backup: {fileName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"BackupFilesCoreAsync: Error backing up {filePath}: {ex.Message}");
+                ErrorOccurred?.Invoke(this, $"Failed to backup {fileName}: {ex.Message}");
             }
         }
 
-        await Parallel.ForEachAsync(
-            // B19: project to (filePath, fileIndex) so each parallel worker
-            // has a STABLE per-file identifier independent of completion
-            // order. Pre-B19 we passed (int)completedFiles.Read() as the
-            // fileIndex, which all 8 in-flight workers saw as the same
-            // value at the moment they fired their first progress callback
-            // -- the UI's startedFiles.TryAdd then suppressed every file
-            // after the first, and FindActiveFile(0) updated the wrong row
-            // when later files reported byte progress. The fix is the
-            // smallest possible: hand each file its index in the input
-            // list ONCE at iteration time and let it carry that index for
-            // its entire lifetime.
-            filePaths.Select((path, idx) => (path, idx)),
-            new ParallelOptions
-            {
-                MaxDegreeOfParallelism = effectiveFileConcurrency,
-                CancellationToken = cancellationToken
-            },
-            async (item, ct) =>
-            {
-                var filePath = item.path;
-                var fileIndex = item.idx;
-                var fileName = Path.GetFileName(filePath);
-
-                try
+        // W6 Phase 3 (Item 2): two-lane dispatch, mirroring the restore side
+        // (RestoreFilesBatchCoreAsync). Small files run at a high FIXED ceiling
+        // because each holds only a few KB-to-MB of in-flight chunk residency,
+        // so the budget-derived effectiveFileConcurrency (sized for the 512 MB
+        // worst-case large file) needlessly serialised them on small budgets.
+        // Large files keep the budget-clamped fan-out. Both lanes run
+        // concurrently and SHARE the same MemoryBudget, which remains the hard
+        // throttle on actual in-flight bytes -- so the small lane cannot
+        // over-commit memory even on a pathological batch of small-but-media
+        // files that over-rent a MaxChunkSize buffer.
+        var laneTasks = new List<Task>(2);
+        if (smallFiles.Count > 0)
+        {
+            laneTasks.Add(Parallel.ForEachAsync(
+                smallFiles,
+                new ParallelOptions
                 {
-                    FileInfo fileInfo = new(filePath);
-                    if (!fileInfo.Exists)
-                    {
-                        Log($"BackupFilesCoreAsync: File not found, skipping: {filePath}");
-                        return;
-                    }
-
-                    var currentFileSize = fileInfo.Length;
-                    StatusChanged?.Invoke(this, $"Backing up: {fileName}");
-
-                    // Track per-file byte deltas for accurate aggregate progress
-                    long lastReportedFileBytes = 0;
-
-                    Progress<(long current, long total)> fileProgress = new(p =>
-                    {
-                        var delta = p.current - Interlocked.Exchange(ref lastReportedFileBytes, p.current);
-                        if (delta > 0)
-                            processedBytes.Add(delta);
-
-                        // B19: emit the file's own STABLE index as fileIndex.
-                        // The first tuple element used to be the running
-                        // count of completed files (a UI-counter value that
-                        // collided across workers); now it's the per-file
-                        // identity the UI keys ActiveFiles rows on.
-                        progress?.Report((
-                            fileIndex, totalFiles, fileName,
-                            processedBytes.Read(), totalBytes,
-                            p.current, currentFileSize));
-                    });
-
-                    var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, largeChunkPool, smallChunkPool, forceReupload, ct);
-
-                    if (success)
-                    {
-                        // Reconcile any remaining bytes not yet reported by progress callbacks
-                        var finalReported = Interlocked.Exchange(ref lastReportedFileBytes, currentFileSize);
-                        var remaining = currentFileSize - finalReported;
-                        if (remaining > 0)
-                            processedBytes.Add(remaining);
-
-                        var done = completedFiles.Increment();
-                        Log($"BackupFilesCoreAsync: [{done}/{totalFiles}] Successfully backed up: {fileName}");
-                        _databaseService.RemovePendingChange(filePath);
-
-                        // B19: the FINAL completion report also carries the
-                        // file's own stable index so the UI can match it
-                        // against the FileStarted row instead of guessing.
-                        progress?.Report((
-                            fileIndex, totalFiles, fileName,
-                            processedBytes.Read(), totalBytes,
-                            currentFileSize, currentFileSize));
-                    }
-                    else
-                    {
-                        Log($"BackupFilesCoreAsync: Failed to backup: {fileName}");
-                    }
-                }
-                catch (Exception ex)
+                    MaxDegreeOfParallelism = MaxParallelSmallFileBackups,
+                    CancellationToken = cancellationToken
+                },
+                async (item, ct) => await BackupOneAsync(item.path, item.index, ct)));
+        }
+        if (largeFiles.Count > 0)
+        {
+            laneTasks.Add(Parallel.ForEachAsync(
+                largeFiles,
+                new ParallelOptions
                 {
-                    Log($"BackupFilesCoreAsync: Error backing up {filePath}: {ex.Message}");
-                    ErrorOccurred?.Invoke(this, $"Failed to backup {fileName}: {ex.Message}");
-                }
-            });
+                    MaxDegreeOfParallelism = effectiveFileConcurrency,
+                    CancellationToken = cancellationToken
+                },
+                async (item, ct) => await BackupOneAsync(item.path, item.index, ct)));
+        }
+        await Task.WhenAll(laneTasks);
 
         var completedSnapshot = (int)completedFiles.Read();
         return (completedSnapshot, totalFiles - completedSnapshot, processedBytes.Read());
