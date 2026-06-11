@@ -194,7 +194,7 @@ public abstract class BackupBenchmarkBase
         _fileWatcherService = new FileWatcherService(_databaseService);
         _blobService = new InMemoryBlobService(
             _encryptionService,
-            simulatedLatencyMs: 0,
+            simulatedLatencyMs: SimulatedLatencyMs,
             failureRate: 0.0,
             retainPayloads: RetainBlobPayloads);
 
@@ -261,6 +261,23 @@ public abstract class BackupBenchmarkBase
     /// published pre-B27 result tables remain directly comparable.
     /// </summary>
     protected virtual bool RetainBlobPayloads => true;
+
+    /// <summary>
+    /// Per-chunk simulated upload/download latency in milliseconds applied to
+    /// the per-iteration <see cref="InMemoryBlobService"/>. Default <c>0</c>
+    /// preserves the CPU-bound, network-free behaviour every pre-existing
+    /// benchmark relies on (so their published result tables remain comparable).
+    /// <para>
+    /// W6 (Item 1): the <c>AimdLatencyConvergenceBenchmark</c> overrides this
+    /// with a non-zero value so the run becomes latency-bound -- which both
+    /// makes file-level concurrency matter (more concurrent uploads hide more
+    /// round-trip latency, exactly like a real link) AND lengthens the run so
+    /// the AIMD scheduler gets enough 2-second evaluation ticks for its
+    /// start-low ramp to play out. A zero-latency benchmark cannot exercise
+    /// either property, which is why it over-states the ramp's cost.
+    /// </para>
+    /// </summary>
+    protected virtual int SimulatedLatencyMs => 0;
 
     /// <summary>
     /// Hook for subclasses to apply per-iteration orchestrator
