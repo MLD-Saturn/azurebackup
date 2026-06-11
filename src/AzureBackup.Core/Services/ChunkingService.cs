@@ -667,109 +667,181 @@ public class ChunkingService
             var windowPos = 0;
             var windowFilled = false;
 
-            // Scratch state: bytes [scratchPos .. scratchLen) are loaded but
-            // not yet copied into the chunk accumulator.
-            var scratchPos = 0;
-            var scratchLen = 0;
+            // W6 Phase 1 (CDC inner-loop speedup): hoist the per-byte config
+            // lookups into locals so the hot scan never re-reads the record
+            // properties on every byte.
+            var minChunkSize = config.MinChunkSize;
+            var maxChunkSize = config.MaxChunkSize;
+            var chunkMask = config.ChunkMask;
 
             // B30: rent (or allocate) the first chunk's payload buffer and
             // charge the budget for it. AcquireChunkBufferAsync awaits when
             // the budget is full, which is the throttling primitive that
             // keeps the producer side honest.
             (payloadBuffer, payloadCharged, payloadReturnToPool, payloadAssignedPool) =
-                await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, largeChunkPool, smallChunkPool, cancellationToken);
+                await AcquireChunkBufferAsync(maxChunkSize, memoryBudget, largeChunkPool, smallChunkPool, cancellationToken);
 
-            while (true)
+            // W6 Phase 1: the inner loop scans the rolling hash over each
+            // loaded scratch span WITHOUT copying every byte into the payload
+            // accumulator individually. Bytes between chunk boundaries are
+            // copied in one bulk Span.CopyTo per run (when a boundary fires or
+            // the scratch span is exhausted mid-chunk). This removes the
+            // per-byte payload store that dominated CPU on large media chunks
+            // and capped single-file upload throughput around 350 Mbps,
+            // replacing it with a vectorised memcpy per run. The rolling-hash
+            // recurrence, the window bookkeeping, and the boundary test are
+            // byte-for-byte identical to the pre-W6 code, so chunk boundaries
+            // (and therefore every chunk hash and dedup decision) are
+            // unchanged -- pinned by ChunkBoundaryGoldenVectorTests.
+            //
+            // The per-boundary Array.Clear(window) the pre-W6 code performed
+            // is intentionally dropped: after a boundary windowFilled resets
+            // to false, and the rolling hash only READS window[windowPos]
+            // once windowFilled is true again, which happens only after all
+            // WindowSize slots have been overwritten by the new chunk's first
+            // WindowSize bytes. The stale bytes are therefore never observed,
+            // so clearing them was pure overhead.
+            var done = false;
+            while (!done)
             {
-                // Refill scratch when we have consumed everything in it.
-                if (scratchPos >= scratchLen)
+                cancellationToken.ThrowIfCancellationRequested();
+                var scratchLen = await stream.ReadAsync(scratch.AsMemory(0, ScratchSize), cancellationToken);
+                if (scratchLen == 0)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    scratchLen = await stream.ReadAsync(scratch.AsMemory(0, ScratchSize), cancellationToken);
-                    scratchPos = 0;
-                    if (scratchLen == 0)
+                    // EOF. Emit the trailing partial chunk if one is still open.
+                    if (chunkLength > 0)
                     {
-                        // EOF mid-chunk. Emit whatever is accumulated, if any.
-                        if (chunkLength > 0)
-                        {
-                            var span = payloadBuffer.AsSpan(0, chunkLength);
-                            fileHasher.AppendData(span);
-                            var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
-                                ComputeChunkHash(span));
-                            await DispatchChunkAsync(chunk, payloadBuffer, payloadCharged,
-                                payloadReturnToPool, payloadAssignedPool, chunks, existingHashes,
-                                channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
-                            // Ownership transferred (or buffer + budget released
-                            // inside DispatchChunkAsync on the dedup branch).
-                            payloadBuffer = null;
-                            payloadCharged = 0;
-                            payloadAssignedPool = null;
-                        }
-                        break;
-                    }
-                }
-
-                var b = scratch[scratchPos++];
-                payloadBuffer[chunkLength++] = b;
-
-                if (windowFilled)
-                {
-                    var outByte = window[windowPos];
-                    rollingHash = (rollingHash - outByte * HashPrimePower) * HashPrime + b;
-                }
-                else
-                {
-                    rollingHash = rollingHash * HashPrime + b;
-                }
-
-                window[windowPos] = b;
-                // Branchless-friendly wrap (~5-10% faster than modulo on x64
-                // because WindowSize=48 is not a power of two, so the JIT
-                // cannot lower `% WindowSize` to an AND).
-                if (++windowPos == WindowSize)
-                {
-                    windowPos = 0;
-                    windowFilled = true;
-                }
-
-                var atMaxChunkSize = chunkLength >= config.MaxChunkSize;
-                var isChunkBoundary = chunkLength >= config.MinChunkSize &&
-                                      ((rollingHash & config.ChunkMask) == 0 || atMaxChunkSize);
-
-                if (isChunkBoundary)
-                {
-                    var span = payloadBuffer.AsSpan(0, chunkLength);
-                    fileHasher.AppendData(span);
-                    var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
-                        ComputeChunkHash(span));
-                    await DispatchChunkAsync(chunk, payloadBuffer, payloadCharged,
-                        payloadReturnToPool, payloadAssignedPool, chunks, existingHashes,
-                        channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
-
-                    // Ownership of the buffer was transferred to the consumer
-                    // (or returned to the pool + budget inside DispatchChunkAsync
-                    // on the dedup branch). Reset for the next chunk.
-                    chunkStart += chunkLength;
-                    chunkLength = 0;
-                    rollingHash = 0;
-                    windowFilled = false;
-                    windowPos = 0;
-                    Array.Clear(window);
-
-                    if (chunkStart >= fileLength)
-                    {
+                        // Invariant: a payload buffer is always rented while a
+                        // chunk is open, so payloadBuffer is non-null here.
+                        var buffer = payloadBuffer!;
+                        var span = buffer.AsSpan(0, chunkLength);
+                        fileHasher.AppendData(span);
+                        var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
+                            ComputeChunkHash(span));
+                        await DispatchChunkAsync(chunk, buffer, payloadCharged,
+                            payloadReturnToPool, payloadAssignedPool, chunks, existingHashes,
+                            channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
+                        // Ownership transferred (or buffer + budget released
+                        // inside DispatchChunkAsync on the dedup branch).
                         payloadBuffer = null;
                         payloadCharged = 0;
                         payloadAssignedPool = null;
-                        break;
+                    }
+                    break;
+                }
+
+                var scratchPos = 0;
+                // Start of the scanned-but-not-yet-copied run within this span.
+                var runStart = 0;
+
+                while (scratchPos < scratchLen)
+                {
+                    var b = scratch[scratchPos];
+
+                    if (windowFilled)
+                    {
+                        var outByte = window[windowPos];
+                        rollingHash = (rollingHash - outByte * HashPrimePower) * HashPrime + b;
+                    }
+                    else
+                    {
+                        rollingHash = rollingHash * HashPrime + b;
                     }
 
-                    // B30: charge the next chunk before allocating. This is
-                    // where the budget binds for files with many large
-                    // chunks -- the producer awaits here when the in-flight
-                    // headroom is consumed by upstream consumers.
-                    (payloadBuffer, payloadCharged, payloadReturnToPool, payloadAssignedPool) =
-                        await AcquireChunkBufferAsync(config.MaxChunkSize, memoryBudget, largeChunkPool, smallChunkPool, cancellationToken);
+                    window[windowPos] = b;
+                    // Branchless-friendly wrap (~5-10% faster than modulo on x64
+                    // because WindowSize=48 is not a power of two, so the JIT
+                    // cannot lower `% WindowSize` to an AND).
+                    if (++windowPos == WindowSize)
+                    {
+                        windowPos = 0;
+                        windowFilled = true;
+                    }
+
+                    scratchPos++;
+
+                    // Bytes accumulated in the current chunk INCLUDING b: the
+                    // already-copied prefix (chunkLength) plus the not-yet-
+                    // copied run [runStart, scratchPos). Matches the pre-W6
+                    // chunkLength value after its per-byte `chunkLength++`, so
+                    // the boundary test below is identical.
+                    var curChunkLength = chunkLength + (scratchPos - runStart);
+
+                    var atMaxChunkSize = curChunkLength >= maxChunkSize;
+                    var isChunkBoundary = curChunkLength >= minChunkSize &&
+                                          ((rollingHash & chunkMask) == 0 || atMaxChunkSize);
+
+                    if (isChunkBoundary)
+                    {
+                        // Bulk-copy the run that belongs to this chunk, then
+                        // finalise. The run lies entirely within the current
+                        // scratch span (scratch is overwritten on refill), so
+                        // the copy is at most ScratchSize bytes. The
+                        // destination always fits: payloadBuffer is sized to
+                        // maxChunkSize and curChunkLength <= maxChunkSize.
+                        // Invariant: a payload buffer is always rented while a
+                        // chunk is open, so payloadBuffer is non-null here.
+                        var buffer = payloadBuffer!;
+                        var runLength = scratchPos - runStart;
+                        scratch.AsSpan(runStart, runLength).CopyTo(buffer.AsSpan(chunkLength));
+                        chunkLength = curChunkLength;
+
+                        var span = buffer.AsSpan(0, chunkLength);
+                        fileHasher.AppendData(span);
+                        var chunk = BuildChunkInfo(chunkIndex++, chunkStart, chunkLength,
+                            ComputeChunkHash(span));
+                        await DispatchChunkAsync(chunk, buffer, payloadCharged,
+                            payloadReturnToPool, payloadAssignedPool, chunks, existingHashes,
+                            channel, cdcProgress, fileLength, memoryBudget, cancellationToken);
+
+                        // Ownership of the buffer was transferred to the consumer
+                        // (or returned to the pool + budget inside DispatchChunkAsync
+                        // on the dedup branch). Reset for the next chunk.
+                        chunkStart += chunkLength;
+                        chunkLength = 0;
+                        rollingHash = 0;
+                        windowFilled = false;
+                        windowPos = 0;
+                        runStart = scratchPos;
+
+                        if (chunkStart >= fileLength)
+                        {
+                            // Chunk ended exactly at EOF: no trailing chunk and
+                            // no need to rent another buffer.
+                            payloadBuffer = null;
+                            payloadCharged = 0;
+                            payloadAssignedPool = null;
+                            done = true;
+                            break;
+                        }
+
+                        // B30: charge the next chunk before allocating. This is
+                        // where the budget binds for files with many large
+                        // chunks -- the producer awaits here when the in-flight
+                        // headroom is consumed by upstream consumers.
+                        (payloadBuffer, payloadCharged, payloadReturnToPool, payloadAssignedPool) =
+                            await AcquireChunkBufferAsync(maxChunkSize, memoryBudget, largeChunkPool, smallChunkPool, cancellationToken);
+                    }
+                }
+
+                if (done)
+                {
+                    break;
+                }
+
+                // Scratch span exhausted mid-chunk: copy the unconsumed tail
+                // into the payload accumulator so it carries into the next
+                // refill. payloadBuffer is non-null here (a chunk is open) and
+                // the running chunk length is strictly below maxChunkSize
+                // (otherwise the atMax boundary would have fired), so the copy
+                // always fits.
+                var tailLength = scratchPos - runStart;
+                if (tailLength > 0)
+                {
+                    // Invariant: a payload buffer is always rented while a
+                    // chunk is open, so payloadBuffer is non-null here.
+                    scratch.AsSpan(runStart, tailLength).CopyTo(payloadBuffer!.AsSpan(chunkLength));
+                    chunkLength += tailLength;
                 }
             }
 
