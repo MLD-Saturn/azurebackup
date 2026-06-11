@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>AzureBackup.Benchmarks.AimdStartupIsolationBenchmark-20260611-125548</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8655/25H2/2025Update/HudsonValley2) (Hyper-V)
+AMD EPYC 7763 2.44GHz, 1 CPU, 16 logical and 8 physical cores
+.NET SDK 10.0.301
+  [Host]     : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+  Job-VWSJFF : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>InvocationCount=1  IterationCount=2  RunStrategy=Throughput  
+UnrollFactor=1  WarmupCount=1  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                                           </th><th>Workload     </th><th>StartAtCeiling</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>&#39;End-to-end backup, AIMD start-low vs start-at-ceiling&#39;</td><td>realistic-large-200</td><td>False</td><td>26.714 s</td><td>619.414 s</td><td>1.3760 s</td><td>26000.0000</td><td>11000.0000</td><td>8000.0000</td><td>11.14 GB</td>
+</tr><tr><td>&#39;End-to-end backup, AIMD start-low vs start-at-ceiling&#39;</td><td>realistic-large-200</td><td>True</td><td>17.931 s</td><td>473.048 s</td><td>1.0508 s</td><td>16000.0000</td><td>9000.0000</td><td>6000.0000</td><td>11.47 GB</td>
+</tr><tr><td>&#39;End-to-end backup, AIMD start-low vs start-at-ceiling&#39;</td><td>realistic-large-50</td><td>False</td><td>4.055 s</td><td>14.036 s</td><td>0.0312 s</td><td>7000.0000</td><td>5000.0000</td><td>5000.0000</td><td>2.75 GB</td>
+</tr><tr><td>&#39;End-to-end backup, AIMD start-low vs start-at-ceiling&#39;</td><td>realistic-large-50</td><td>True</td><td>2.032 s</td><td>31.855 s</td><td>0.0708 s</td><td>6000.0000</td><td>6000.0000</td><td>6000.0000</td><td>2.98 GB</td>
+</tr></tbody></table>
+</body>
+</html>

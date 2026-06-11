@@ -101,6 +101,27 @@ public partial class BackupOrchestrator : IAsyncDisposable
     public int? MaxParallelFileBackupsOverride { get; set; }
 
     /// <summary>
+    /// W6 (Item 3 follow-up) benchmark seam: when <c>true</c>, the large-file
+    /// backup lane's AIMD <see cref="BandwidthScheduler"/> starts at the
+    /// budget-derived ceiling (<c>effectiveFileConcurrency</c>) instead of the
+    /// production <c>min(4, effectiveFileConcurrency)</c>. This eliminates the
+    /// AIMD start-low ramp so a benchmark can ISOLATE the ramp's startup cost
+    /// from the rest of the pipeline (the CDC speedup, the two-lane split). It
+    /// is NOT a production tuning knob -- it exists only so the W6 throughput
+    /// benchmark can answer "how much of the realistic-large regression is the
+    /// ramp vs. a real pipeline change?" on the network-free
+    /// <see cref="InMemoryBlobService"/>, where AIMD has no bandwidth knee to
+    /// find and the ramp is pure overhead.
+    /// <para>
+    /// Defaults to <c>false</c> -- production behaviour (start low, probe up,
+    /// converge on the link's knee) is unchanged when the property is left
+    /// unset. Read once at large-lane scheduler construction so it cannot
+    /// change mid-operation.
+    /// </para>
+    /// </summary>
+    public bool AimdStartAtCeilingOverride { get; set; }
+
+
     /// W5 Phase 1: optional per-instance override for the
     /// <see cref="BackupMemoryReporter"/> sampling cadence. The
     /// production default of 30 s (see the reporter's class summary)

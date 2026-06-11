@@ -933,8 +933,14 @@ public partial class BackupOrchestrator
             // clamped to effectiveFileConcurrency so a tiny budget (ceiling 1)
             // degenerates to a no-op single-slot scheduler; the ceiling is the
             // budget-derived value so AIMD never exceeds the memory-safe bound.
+            // W6 benchmark seam: AimdStartAtCeilingOverride starts the lane at
+            // the ceiling (no ramp) so a benchmark can isolate the ramp cost;
+            // production default is the start-low min(4, ...) behaviour.
+            var aimdInitial = AimdStartAtCeilingOverride
+                ? effectiveFileConcurrency
+                : Math.Min(4, effectiveFileConcurrency);
             var bandwidthScheduler = new BandwidthScheduler(
-                initialConnections: Math.Min(4, effectiveFileConcurrency),
+                initialConnections: aimdInitial,
                 minConnections: Math.Min(2, effectiveFileConcurrency),
                 maxConnections: effectiveFileConcurrency);
 

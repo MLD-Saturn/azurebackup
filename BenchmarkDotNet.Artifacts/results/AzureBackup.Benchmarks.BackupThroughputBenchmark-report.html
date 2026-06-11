@@ -2,7 +2,7 @@
 <html lang='en'>
 <head>
 <meta charset='utf-8' />
-<title>AzureBackup.Benchmarks.BackupThroughputBenchmark-20260425-071940</title>
+<title>AzureBackup.Benchmarks.BackupThroughputBenchmark-20260611-122710</title>
 
 <style type="text/css">
 	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
@@ -13,27 +13,27 @@
 </head>
 <body>
 <pre><code>
-BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8246/25H2/2025Update/HudsonValley2) (Hyper-V)
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.8655/25H2/2025Update/HudsonValley2) (Hyper-V)
 AMD EPYC 7763 2.44GHz, 1 CPU, 16 logical and 8 physical cores
-.NET SDK 10.0.202
-  [Host]     : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
-  Job-VWSJFF : .NET 10.0.6 (10.0.6, 10.0.626.17701), X64 RyuJIT x86-64-v3
+.NET SDK 10.0.301
+  [Host]     : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
+  Job-VWSJFF : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v3
 </code></pre>
 <pre><code>InvocationCount=1  IterationCount=2  RunStrategy=Throughput  
 UnrollFactor=1  WarmupCount=1  
 </code></pre>
 
 <table>
-<thead><tr><th>Method                                </th><th>Workload      </th><th>Mean </th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
+<thead><tr><th>Method                                </th><th>Workload      </th><th>Mean </th><th>Error </th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Gen2</th><th>Allocated</th>
 </tr>
-</thead><tbody><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>large-skew-100</td><td>3,542.6 ms</td><td>11,436.3 ms</td><td>25.41 ms</td><td>5000.0000</td><td>4000.0000</td><td>2000.0000</td><td>1434.38 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>large-skew-200</td><td>4,100.2 ms</td><td>25,531.3 ms</td><td>56.72 ms</td><td>8000.0000</td><td>7000.0000</td><td>3000.0000</td><td>2098.39 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>mixed-realistic-100</td><td>1,217.0 ms</td><td>2,832.2 ms</td><td>6.29 ms</td><td>2000.0000</td><td>1000.0000</td><td>1000.0000</td><td>339.82 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>mixed-realistic-1000</td><td>7,370.6 ms</td><td>25,363.1 ms</td><td>56.34 ms</td><td>25000.0000</td><td>24000.0000</td><td>5000.0000</td><td>6530.62 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>realistic-large-200</td><td>12,346.3 ms</td><td>37,391.9 ms</td><td>83.06 ms</td><td>34000.0000</td><td>33000.0000</td><td>5000.0000</td><td>11306.83 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>realistic-large-50</td><td>2,724.2 ms</td><td>934.6 ms</td><td>2.08 ms</td><td>10000.0000</td><td>9000.0000</td><td>3000.0000</td><td>2799.23 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>uniform-1MB-100</td><td>276.9 ms</td><td>6,135.3 ms</td><td>13.63 ms</td><td>1000.0000</td><td>1000.0000</td><td>1000.0000</td><td>206.72 MB</td>
-</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>uniform-1MB-1000</td><td>2,909.6 ms</td><td>27,250.1 ms</td><td>60.53 ms</td><td>11000.0000</td><td>8000.0000</td><td>5000.0000</td><td>2067.96 MB</td>
+</thead><tbody><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>large-skew-100</td><td>3,122.7 ms</td><td>33,302.2 ms</td><td>73.98 ms</td><td>5000.0000</td><td>5000.0000</td><td>5000.0000</td><td>2055.38 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>large-skew-200</td><td>3,482.6 ms</td><td>65,472.2 ms</td><td>145.44 ms</td><td>6000.0000</td><td>5000.0000</td><td>5000.0000</td><td>3292.22 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>mixed-realistic-100</td><td>1,212.7 ms</td><td>42,553.2 ms</td><td>94.53 ms</td><td>4000.0000</td><td>4000.0000</td><td>4000.0000</td><td>379.74 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>mixed-realistic-1000</td><td>8,151.9 ms</td><td>34,378.6 ms</td><td>76.37 ms</td><td>10000.0000</td><td>6000.0000</td><td>6000.0000</td><td>7058.2 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>realistic-large-200</td><td>26,798.7 ms</td><td>636,574.9 ms</td><td>1,414.11 ms</td><td>26000.0000</td><td>9000.0000</td><td>5000.0000</td><td>11385.44 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>realistic-large-50</td><td>4,107.0 ms</td><td>10,853.0 ms</td><td>24.11 ms</td><td>8000.0000</td><td>5000.0000</td><td>5000.0000</td><td>2816.17 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>uniform-1MB-100</td><td>247.9 ms</td><td>5,706.1 ms</td><td>12.68 ms</td><td>4000.0000</td><td>4000.0000</td><td>4000.0000</td><td>302.98 MB</td>
+</tr><tr><td>&#39;End-to-end backup, unmodified orchestrator&#39;</td><td>uniform-1MB-1000</td><td>2,635.6 ms</td><td>17,354.2 ms</td><td>38.55 ms</td><td>7000.0000</td><td>7000.0000</td><td>7000.0000</td><td>2376.37 MB</td>
 </tr></tbody></table>
 </body>
 </html>
