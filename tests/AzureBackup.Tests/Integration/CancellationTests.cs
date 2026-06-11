@@ -246,7 +246,62 @@ public class CancellationTests : IAsyncLifetime
         {
             // Expected
         }
-        
+
+        await orchestrator.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task BackupFilesAsync_CancelDuringBatch_ThrowsCancellationNotPerFileErrors()
+    {
+        // Arrange: a batch large enough that cancellation reliably lands while
+        // files are still in flight, with per-operation latency so the cancel
+        // window is wide.
+        InMemoryBlobService blobService = new(_encryptionService, simulatedLatencyMs: 200);
+        await blobService.ConnectAsync("fake", "container");
+        FileWatcherService fileWatcherService = new(_databaseService);
+
+        BackupOrchestrator orchestrator = new(
+            _databaseService,
+            _encryptionService,
+            new ChunkingService(),
+            blobService,
+            fileWatcherService);
+
+        await orchestrator.InitializeAsync(TestPassword);
+
+        var paths = new List<string>();
+        for (var i = 0; i < 12; i++)
+        {
+            // 2 MB each: large enough to chunk + upload through the 200 ms
+            // latency, keeping the batch in flight when the cancel fires.
+            var content = CreateRandomContent(2 * 1024 * 1024);
+            var filePath = Path.Combine(_sourceDirectory, $"batch_cancel_{i}.bin");
+            await File.WriteAllBytesAsync(filePath, content);
+            paths.Add(filePath);
+        }
+
+        // Capture any per-file error events: cancellation must NOT surface as one.
+        var errors = new List<string>();
+        orchestrator.ErrorOccurred += (_, msg) => { lock (errors) { errors.Add(msg); } };
+
+        CancellationTokenSource cts = new();
+
+        // Act: start the batch and cancel once it is underway.
+        var backupTask = orchestrator.BackupFilesAsync(paths, cancellationToken: cts.Token);
+        await Task.Delay(150);
+        cts.Cancel();
+
+        // Assert: the batch surfaces a single cancellation rather than
+        // completing normally after swallowing the cancel into per-file errors.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => backupTask);
+
+        // And the cancellation was not reported through the per-file error
+        // channel ("Failed to backup ..."), which is the regression this guards.
+        lock (errors)
+        {
+            Assert.DoesNotContain(errors, e => e.Contains("Failed to backup", StringComparison.Ordinal));
+        }
+
         await orchestrator.DisposeAsync();
     }
 

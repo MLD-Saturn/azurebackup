@@ -888,6 +888,17 @@ public partial class BackupOrchestrator
                     Log($"BackupFilesCoreAsync: Failed to backup: {fileName}");
                 }
             }
+            catch (OperationCanceledException)
+            {
+                // User-initiated cancellation is NOT a per-file error. Let it
+                // propagate so the lane tasks (and BackupFilesCoreAsync's
+                // Task.WhenAll) surface a single OperationCanceledException to
+                // the caller, instead of converting the cancel into a flurry of
+                // ErrorOccurred "failed to backup" events. Mirrors the
+                // restore-side per-file catch in RestoreService.Batch.cs.
+                Log($"BackupFilesCoreAsync: Backup of {fileName} cancelled");
+                throw;
+            }
             catch (Exception ex)
             {
                 Log($"BackupFilesCoreAsync: Error backing up {filePath}: {ex.Message}");
