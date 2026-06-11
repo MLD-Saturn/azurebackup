@@ -288,7 +288,7 @@ The **Logs** view has a **Diagnostic Logging** ON/OFF toggle. This controls runt
 | Encryption envelope overhead | 37 bytes per chunk |
 | Local database (production) | SQLCipher-encrypted SQLite (`SQLitePCLRaw.bundle_e_sqlcipher` 2.1.x, `Microsoft.Data.Sqlite` 10.x) |
 | Chunking | Content-defined, Rabin-style rolling hash (window 48, prime 31), per-extension config |
-| Default file-level concurrency | 16 (`MaxParallelFileBackups`, raised from 8 in B27 based on `TwoTierFileSplitBigScaleBenchmark`) |
+| Default file-level concurrency | 16 (`MaxParallelFileBackups`, raised from 8 in B27 based on `TwoTierFileSplitBigScaleBenchmark`). W6: this is now the CEILING for the large-file lane, which dispatches through an AIMD `BandwidthScheduler` that converges file-level concurrency on the upstream link (probing up from a low initial of 4). The budget-derived clamp (`ComputeEffectiveFileConcurrency`) caps that ceiling further on small memory budgets, so AIMD can only reduce concurrency below the memory-safe bound, never exceed it. |
 | Small-file backup lane concurrency (W6) | 32 (`MaxParallelSmallFileBackups`). Files at or below 16 MB (`RestoreService.SmallFileThresholdBytes`) back up on a fixed-concurrency lane independent of the budget-derived large-file fan-out, so a small `MemoryLimitMB` no longer serialises small files. The shared `MemoryBudget` remains the hard throttle on in-flight bytes. Mirrors the restore side's small-file lane. |
 | Default chunk-level concurrency per file | 6 (`MaxParallelChunkUploads`) |
 | Default `MemoryLimitEnabled` | `true` (raised from `false` in B27) |

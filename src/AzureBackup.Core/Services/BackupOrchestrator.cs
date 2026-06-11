@@ -1088,7 +1088,8 @@ public partial class BackupOrchestrator : IAsyncDisposable
         ChunkBufferPool? largeChunkPool,
         ChunkBufferPool? smallChunkPool,
         bool forceReupload = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        BandwidthScheduler? bandwidthScheduler = null)
     {
         var diag = new FileOperationDiagnostics(filePath, "Backup", DiagnosticsDirectory);
         using var _ = diag.SetAmbient();
@@ -1260,6 +1261,13 @@ public partial class BackupOrchestrator : IAsyncDisposable
                         var uploadProgress = new Progress<long>(b =>
                         {
                             var uploaded = bytesUploaded.Add(b);
+                            // W6 Phase 4 (Item 3): feed the per-chunk uploaded
+                            // bytes into the AIMD bandwidth scheduler so the
+                            // large-file lane converges its file-level
+                            // concurrency on the upstream link's knee. Null on
+                            // the small-file lane and on single-file / UI
+                            // callers, so this is a no-op there.
+                            bandwidthScheduler?.RecordBytesCompleted(b);
                             progress?.Report((uploaded, totalFileSize));
                         });
 

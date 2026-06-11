@@ -825,7 +825,7 @@ public partial class BackupOrchestrator
 
         // Per-file backup body, shared by both lanes. Extracted from the
         // pre-W6 single Parallel.ForEachAsync lambda; behaviour is unchanged.
-        async Task BackupOneAsync(string filePath, int fileIndex, CancellationToken ct)
+        async Task BackupOneAsync(string filePath, int fileIndex, BandwidthScheduler? bandwidthScheduler, CancellationToken ct)
         {
             var fileName = Path.GetFileName(filePath);
 
@@ -861,7 +861,7 @@ public partial class BackupOrchestrator
                         p.current, currentFileSize));
                 });
 
-                var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, largeChunkPool, smallChunkPool, forceReupload, ct);
+                var success = await BackupFileAsync(filePath, fileProgress, memoryBudget, largeChunkPool, smallChunkPool, forceReupload, ct, bandwidthScheduler);
 
                 if (success)
                 {
@@ -895,19 +895,29 @@ public partial class BackupOrchestrator
             }
         }
 
-        // W6 Phase 3 (Item 2): two-lane dispatch, mirroring the restore side
-        // (RestoreFilesBatchCoreAsync). Small files run at a high FIXED ceiling
-        // because each holds only a few KB-to-MB of in-flight chunk residency,
-        // so the budget-derived effectiveFileConcurrency (sized for the 512 MB
-        // worst-case large file) needlessly serialised them on small budgets.
-        // Large files keep the budget-clamped fan-out. Both lanes run
+        // W6 Phase 3 (Item 2) + Phase 4 (Item 3): two-lane dispatch, mirroring
+        // the restore side (RestoreFilesBatchCoreAsync). Small files run at a
+        // high FIXED ceiling because each holds only a few KB-to-MB of in-flight
+        // chunk residency, so the budget-derived effectiveFileConcurrency (sized
+        // for the 512 MB worst-case large file) needlessly serialised them on
+        // small budgets. Large files dispatch through an AIMD BandwidthScheduler
+        // (Item 3) that converges file-level concurrency on the upstream link's
+        // knee instead of always running at the budget ceiling: it probes up
+        // from a low initial when throughput keeps improving and holds at the
+        // smallest concurrency that saturates the link. Both lanes run
         // concurrently and SHARE the same MemoryBudget, which remains the hard
-        // throttle on actual in-flight bytes -- so the small lane cannot
-        // over-commit memory even on a pathological batch of small-but-media
-        // files that over-rent a MaxChunkSize buffer.
+        // throttle on actual in-flight bytes -- so neither lane can over-commit
+        // memory even on a pathological batch of small-but-media files that
+        // over-rent a MaxChunkSize buffer, and the AIMD ceiling is itself
+        // effectiveFileConcurrency so the scheduler can only REDUCE the large
+        // lane below the memory-safe bound, never exceed it.
         var laneTasks = new List<Task>(2);
         if (smallFiles.Count > 0)
         {
+            // Small files are latency-bound, not bandwidth-bound, so they are
+            // NOT gated by the AIMD scheduler (passing null) and do not feed its
+            // throughput signal -- the scheduler measures the large-file
+            // throughput that actually drives the file-concurrency decision.
             laneTasks.Add(Parallel.ForEachAsync(
                 smallFiles,
                 new ParallelOptions
@@ -915,18 +925,54 @@ public partial class BackupOrchestrator
                     MaxDegreeOfParallelism = MaxParallelSmallFileBackups,
                     CancellationToken = cancellationToken
                 },
-                async (item, ct) => await BackupOneAsync(item.path, item.index, ct)));
+                async (item, ct) => await BackupOneAsync(item.path, item.index, null, ct)));
         }
         if (largeFiles.Count > 0)
         {
-            laneTasks.Add(Parallel.ForEachAsync(
-                largeFiles,
-                new ParallelOptions
+            // B62-style AIMD dispatcher for the large-file lane. initial/min are
+            // clamped to effectiveFileConcurrency so a tiny budget (ceiling 1)
+            // degenerates to a no-op single-slot scheduler; the ceiling is the
+            // budget-derived value so AIMD never exceeds the memory-safe bound.
+            var bandwidthScheduler = new BandwidthScheduler(
+                initialConnections: Math.Min(4, effectiveFileConcurrency),
+                minConnections: Math.Min(2, effectiveFileConcurrency),
+                maxConnections: effectiveFileConcurrency);
+
+            laneTasks.Add(Task.Run(async () =>
+            {
+                var perFileTasks = new List<Task>();
+                foreach (var item in largeFiles)
                 {
-                    MaxDegreeOfParallelism = effectiveFileConcurrency,
-                    CancellationToken = cancellationToken
-                },
-                async (item, ct) => await BackupOneAsync(item.path, item.index, ct)));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    // Gate admission on the AIMD-controlled CurrentConnections.
+                    // The slot is released by the handle's DisposeAsync when the
+                    // file finishes, so a multiplicative-decrease step lets
+                    // in-flight files drain without a hard kill while preventing
+                    // new files from entering above the shrunk ceiling.
+                    var slot = await bandwidthScheduler.AcquireSlotAsync(cancellationToken);
+                    var captured = item;
+                    perFileTasks.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await BackupOneAsync(captured.path, captured.index, bandwidthScheduler, cancellationToken);
+                        }
+                        finally
+                        {
+                            await slot.DisposeAsync();
+                        }
+                    }, cancellationToken));
+                }
+                await Task.WhenAll(perFileTasks);
+
+                Log($"BackupFilesCoreAsync: large-lane scheduler summary -- " +
+                    $"finalConnections={bandwidthScheduler.CurrentConnections}, " +
+                    $"peakActive={bandwidthScheduler.PeakActiveSlots}, " +
+                    $"increases={bandwidthScheduler.AdditiveIncreases}, " +
+                    $"decreases={bandwidthScheduler.MultiplicativeDecreases}, " +
+                    $"holds={bandwidthScheduler.Holds}, " +
+                    $"ewmaBps={bandwidthScheduler.EwmaBytesPerSecond:F0}");
+            }, cancellationToken));
         }
         await Task.WhenAll(laneTasks);
 
